@@ -18,8 +18,21 @@ except ImportError:
         "  pip install sentence-transformers"
     )
 
+try:
+    from tree_sitter import Language, Parser as TSParser
+    _TREESITTER_AVAILABLE = True
+except ImportError:
+    _TREESITTER_AVAILABLE = False
+    print(
+        "[Warning] tree-sitter not installed. Falling back to whole-file chunking.\n"
+        "  pip install tree-sitter tree-sitter-java tree-sitter-python "
+        "tree-sitter-go tree-sitter-rust tree-sitter-javascript tree-sitter-typescript"
+    )
+
 # Prerequisites:
 #   pip install sentence-transformers numpy
+#   pip install tree-sitter tree-sitter-java tree-sitter-python \
+#               tree-sitter-go tree-sitter-rust tree-sitter-javascript tree-sitter-typescript
 #   apt install python3-watchdog python3-anthropic
 #   Note: sentence-transformers pulls in PyTorch (~1.5 GB on first install)
 
@@ -42,6 +55,58 @@ SKIP_DIRS      = {
     ".git", "target", "build", "node_modules",
     ".idea", "__pycache__", ".mvn", ".gradle",
 }
+
+# ---------------------------------------------------------------------------
+# Tree-sitter language configuration
+# ---------------------------------------------------------------------------
+
+_LANG_CONFIG: dict = {}          # ext → {"lang": Language, "node_types": [...]} | None
+INDEXABLE_EXTENSIONS: set = set()  # all file extensions we want to index
+_NAME_CHILD_TYPES = {"identifier", "name", "field_identifier", "type_identifier"}
+
+# Extensions to index and their preferred tree-sitter node types (loaded lazily)
+_WANTED_LANGS = {
+    ".java": (lambda: Language(__import__("tree_sitter_java").language()),
+              ["method_declaration", "constructor_declaration"]),
+    ".py":   (lambda: Language(__import__("tree_sitter_python").language()),
+              ["function_definition", "async_function_definition", "decorated_definition"]),
+    ".js":   (lambda: Language(__import__("tree_sitter_javascript").language()),
+              ["function_declaration", "method_definition"]),
+    ".go":   (lambda: Language(__import__("tree_sitter_go").language()),
+              ["function_declaration", "method_declaration"]),
+    ".rs":   (lambda: Language(__import__("tree_sitter_rust").language()),
+              ["function_item"]),
+}
+
+
+def _load_languages():
+    """Populate _LANG_CONFIG and INDEXABLE_EXTENSIONS at import time."""
+    if not _TREESITTER_AVAILABLE:
+        for ext in _WANTED_LANGS:
+            _LANG_CONFIG[ext] = None
+        INDEXABLE_EXTENSIONS.update(_WANTED_LANGS)
+        return
+
+    for ext, (get_lang, node_types) in _WANTED_LANGS.items():
+        try:
+            _LANG_CONFIG[ext] = {"lang": get_lang(), "node_types": node_types}
+        except Exception:
+            _LANG_CONFIG[ext] = None
+
+    # TypeScript exposes two separate callables
+    try:
+        import tree_sitter_typescript as _tspy
+        ts_nodes = ["function_declaration", "method_definition", "arrow_function"]
+        _LANG_CONFIG[".ts"]  = {"lang": Language(_tspy.language_typescript()), "node_types": ts_nodes}
+        _LANG_CONFIG[".tsx"] = {"lang": Language(_tspy.language_tsx()),         "node_types": ts_nodes}
+    except Exception:
+        _LANG_CONFIG[".ts"] = _LANG_CONFIG[".tsx"] = None
+
+    INDEXABLE_EXTENSIONS.update(_LANG_CONFIG)
+
+
+_load_languages()
+
 
 SYSTEM_PROMPT = (
     "You are an expert code assistant. "
@@ -165,99 +230,88 @@ def build_skeleton():
 # RAG — method chunking, auto-tune, embed, retrieve
 # ---------------------------------------------------------------------------
 
-# Matches method/constructor declarations at class-body indent level
-_DECL_RE = re.compile(
-    r'^[ \t]{0,8}'
-    r'(?:(?:public|private|protected|static|final|abstract|'
-    r'synchronized|native|default)\s+)*'
-    r'(?:<[^>]+>\s+)?'           # optional generic return type
-    r'(?:[\w\[\]<>,.? ]+\s+)?'  # optional return type (absent for constructors)
-    r'(\w+)\s*\('                # method / constructor name
-)
+def _walk(node, node_types, results):
+    """DFS: collect nodes whose type is in node_types; don't recurse into matches."""
+    if node.type in node_types:
+        results.append(node)
+        return
+    for child in node.children:
+        _walk(child, node_types, results)
 
 
-def chunk_java_file(filepath, source):
+def _extract_symbol_name(node):
+    """Return the identifier name for an AST symbol node."""
+    # Python decorated_definition wraps a function — dig inside for the name
+    if node.type == "decorated_definition":
+        for child in node.children:
+            if child.type in {"function_definition", "async_function_definition"}:
+                return _extract_symbol_name(child)
+    for child in node.children:
+        if child.type in _NAME_CHILD_TYPES:
+            return child.text.decode("utf-8", errors="replace")
+    return f"{node.type}_{node.start_point[0]}"
+
+
+def _chunk_with_treesitter(filepath, source, language, node_types):
     """
-    Split a Java source file into method-level chunks.
-    Each chunk = file comment + package/imports + class header + one method body.
-    Falls back to the whole file as a single chunk if no methods are detected.
+    Parse source with tree-sitter and emit one chunk per matched symbol node.
+    Preamble = source lines before the first symbol (imports, class header, etc.).
+    Falls back to whole-file if parsing yields no symbols.
     """
-    lines = source.splitlines(keepends=True)
+    src_bytes = bytes(source, "utf-8")
+    parser    = TSParser(language)
+    tree      = parser.parse(src_bytes)
 
-    # Locate the top-level class opening brace (depth 0 → 1)
-    depth = 0
-    class_open = -1
-    for i, line in enumerate(lines):
-        depth += line.count('{') - line.count('}')
-        if depth == 1:
-            class_open = i
-            break
+    symbols = []
+    _walk(tree.root_node, node_types, symbols)
 
-    if class_open < 0:
+    if not symbols:
         return [{"id": filepath, "text": source}]
 
-    preamble = "".join(lines[: class_open + 1]).rstrip()
-    chunks   = []
-    i        = class_open + 1
-    pending  = []   # accumulated annotation lines
-    depth    = 1
+    lines          = source.splitlines(keepends=True)
+    first_sym_line = symbols[0].start_point[0]   # 0-indexed row
+    preamble       = "".join(lines[:first_sym_line]).rstrip()
 
-    while i < len(lines):
-        line     = lines[i]
-        stripped = line.strip()
-
-        if depth == 1:
-            if stripped.startswith("@"):
-                pending.append(line)
-                i += 1
-                continue
-
-            m          = _DECL_RE.match(line)
-            lookahead  = "".join(lines[i: i + 6])
-            is_method  = m and "{" in lookahead and ";" not in line
-
-            if is_method:
-                method_lines = pending + [line]
-                pending      = []
-                body_depth   = line.count("{") - line.count("}")
-                i += 1
-
-                # Opening brace may be on a following line
-                while i < len(lines) and body_depth == 0:
-                    method_lines.append(lines[i])
-                    body_depth += lines[i].count("{") - lines[i].count("}")
-                    i += 1
-
-                # Collect body until depth returns to 0
-                while i < len(lines) and body_depth > 0:
-                    method_lines.append(lines[i])
-                    body_depth += lines[i].count("{") - lines[i].count("}")
-                    i += 1
-
-                chunk_text = (
-                    f"// {filepath}\n"
-                    + preamble + "\n"
-                    + "    // ...\n"
-                    + "".join(method_lines).rstrip()
-                    + "\n}\n"
-                )
-                chunks.append({
-                    "id":   f"{filepath}::{m.group(1)}",
-                    "text": chunk_text,
-                })
-            else:
-                pending = []
-                depth  += line.count("{") - line.count("}")
-                i      += 1
+    chunks = []
+    seen: dict = {}
+    for node in symbols:
+        name = _extract_symbol_name(node)
+        # Deduplicate overloaded names with a numeric suffix
+        if name in seen:
+            seen[name] += 1
+            uid = f"{name}_{seen[name]}"
         else:
-            # Inside a nested class / static block — just track depth
-            depth += line.count("{") - line.count("}")
-            i     += 1
+            seen[name] = 1
+            uid = name
 
-    return chunks if chunks else [{"id": filepath, "text": source}]
+        node_text  = source[node.start_byte:node.end_byte]
+        chunk_text = (
+            f"// {filepath}\n"
+            + preamble + "\n"
+            + "    // ...\n"
+            + node_text.strip()
+            + "\n"
+        )
+        chunks.append({"id": f"{filepath}::{uid}", "text": chunk_text})
+
+    return chunks
 
 
-def auto_tune(java_files, chunks=None):
+def chunk_file(filepath, source):
+    """
+    Split a source file into symbol-level chunks using tree-sitter AST parsing.
+    Dispatches by file extension; falls back to whole-file for unsupported or
+    missing grammar packages.
+    Chunk ID format: 'filepath::symbolName' or 'filepath' (whole-file fallback).
+    """
+    ext = Path(filepath).suffix.lower()
+    cfg = _LANG_CONFIG.get(ext)
+    if cfg is None:
+        return [{"id": filepath, "text": source}]
+    return _chunk_with_treesitter(filepath, source, cfg["lang"], cfg["node_types"])
+
+
+def auto_tune(source_files, chunks=None):
     """
     Model selection (file count):
       <  50 files  → all-MiniLM-L6-v2        (22 MB,  fast)
@@ -268,7 +322,7 @@ def auto_tune(java_files, chunks=None):
     """
     global EMBED_MODEL, TOP_K, embedder
 
-    n = len(java_files)
+    n = len(source_files)
 
     if n < 50:
         chosen_model = "all-MiniLM-L6-v2"
@@ -287,7 +341,7 @@ def auto_tune(java_files, chunks=None):
         total_chars = sum(len(c["text"]) for c in chunks)
     else:
         n_units     = n
-        total_chars = sum(f.stat().st_size for f in java_files if f.exists())
+        total_chars = sum(f.stat().st_size for f in source_files if f.exists())
 
     avg_tokens = max(1, (total_chars // n_units) // 4) if n_units else 1
     TOP_K      = max(2, min(15, round(TARGET_RETRIEVED_TOKENS / avg_tokens)))
@@ -300,24 +354,27 @@ def auto_tune(java_files, chunks=None):
 
 
 def index_files():
-    """Chunk all .java files into methods, auto-tune, then batch-embed."""
-    java_files = [p for p in Path(".").rglob("*.java") if not _is_skipped(p)]
-    if not java_files:
-        print("[RAG] No Java files found.")
+    """Chunk all supported source files into symbols, auto-tune, then batch-embed."""
+    source_files = [
+        p for p in Path(".").rglob("*")
+        if not _is_skipped(p) and p.is_file() and p.suffix.lower() in INDEXABLE_EXTENSIONS
+    ]
+    if not source_files:
+        print("[RAG] No supported source files found.")
         return
 
-    auto_tune(java_files)          # load model first
+    auto_tune(source_files)          # load model first
 
-    print(f"[RAG] Chunking {len(java_files)} files...")
+    print(f"[RAG] Chunking {len(source_files)} files...")
     all_chunks = []
-    for f in java_files:
+    for f in source_files:
         try:
             text = f.read_text(encoding="utf-8", errors="ignore")
-            all_chunks.extend(chunk_java_file(str(f), text))
+            all_chunks.extend(chunk_file(str(f), text))
         except OSError:
             pass
 
-    auto_tune(java_files, chunks=all_chunks)   # refine TOP_K now we know chunk sizes
+    auto_tune(source_files, chunks=all_chunks)   # refine TOP_K now we know chunk sizes
 
     doc_prefix = _DOC_PREFIX.get(EMBED_MODEL, "")
     to_embed   = [doc_prefix + c["text"] for c in all_chunks]
@@ -333,16 +390,16 @@ def index_files():
     with lock:
         chunk_store.clear()
         chunk_store.update(new_store)
-    print(f"[RAG] Index ready — {len(java_files)} files → {len(new_store)} method chunks")
+    print(f"[RAG] Index ready — {len(source_files)} files → {len(new_store)} chunks")
 
 
 def reindex_file(path):
-    """Re-chunk and re-embed a single changed .java file."""
+    """Re-chunk and re-embed a single changed source file."""
     if embedder is None:
         return
     try:
         text   = Path(path).read_text(encoding="utf-8", errors="ignore")
-        chunks = chunk_java_file(path, text)
+        chunks = chunk_file(path, text)
 
         doc_prefix = _DOC_PREFIX.get(EMBED_MODEL, "")
         embeddings = embedder.encode(
@@ -449,7 +506,7 @@ def warm_cache():
 
 
 def full_refresh():
-    """Startup and heartbeat: rebuild skeleton + re-index all Java files + warm cache."""
+    """Startup and heartbeat: rebuild skeleton + re-index all source files + warm cache."""
     print("[System] Full refresh...")
     _update_skeleton()
     index_files()
@@ -471,11 +528,15 @@ _file_timers: dict = {}   # {filepath: Timer} — ensures only one pending reind
 class SourceHandler(FileSystemEventHandler):
     def on_modified(self, event):
         src = event.src_path
-        if src.endswith((".java", ".md")):
-            if src in _file_timers:
-                _file_timers[src].cancel()
-            fn = (lambda s=src: reindex_file(s)) if src.endswith(".java") else refresh_skeleton_only
-            t  = threading.Timer(1.5, fn)
+        ext = Path(src).suffix.lower()
+        if src in _file_timers:
+            _file_timers[src].cancel()
+        if ext == ".md":
+            t = threading.Timer(1.5, refresh_skeleton_only)
+            _file_timers[src] = t
+            t.start()
+        elif ext in INDEXABLE_EXTENSIONS:
+            t = threading.Timer(1.5, lambda s=src: reindex_file(s))
             _file_timers[src] = t
             t.start()
 

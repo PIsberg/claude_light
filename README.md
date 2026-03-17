@@ -11,4 +11,66 @@ This tool is aggressively designed to prevent you from paying full price for tok
 *   **The "Heartbeat" Auto-Warmer:** A background daemon checks the session every 30 seconds. If you are idle for more than 4 minutes, it sends a tiny background ping to keep your ephemeral cache alive.
 *   **Method-Level Chunking:** Instead of stuffing entire 1,500-line files into the context window, a brace-depth scanner splits `.java` files into one chunk per method or constructor. Each chunk retains its package, imports, and class header to remain self-contained. This provides a massive 5–10× reduction in retrieved tokens.
 *   **Sliding Window History:** To prevent conversation history from growing unboundedly and costing you on every turn, the tool caps memory at the last 6 turns via the `MAX_HISTORY_TURNS` setting.
-*   **Strict Scoring Threshold:** The
+*   **Strict Scoring Threshold:** The script drops irrelevant chunks below a cosine similarity score of 0.45 (`MIN_SCORE`) before sending them to Claude. 
+
+## 🚀 Getting Started
+
+### Dependencies
+
+Install the required Python packages and system tools:
+```bash
+pip install sentence-transformers numpy
+apt install python3-watchdog python3-anthropic
+
+# Running the Tool
+
+> **Note:** `sentence-transformers` will pull in PyTorch, which is approximately **1.5 GB** on the first install.
+
+Run the script from the root of your Java project. It will immediately build the skeleton, chunk your files, and auto-tune the embedding model.
+
+### 🔑 Prerequisites
+You must set your Anthropic API key before running:
+
+`export ANTHROPIC_API_KEY=sk-ant-your-key-here`
+
+---
+
+## 🚀 Usage
+
+### 1. Interactive Loop (Default)
+`python3 claude_light.py`
+
+### 2. One-Shot Mode
+`python3 claude_light.py "What does OrderService do?"`
+
+### 3. Piped Input
+`echo "List all REST endpoints" | python3 claude_light.py`
+
+---
+
+## ⌨️ Interactive Commands
+While in the interactive chat loop, you can use the following commands:
+
+| Command | Description |
+| :--- | :--- |
+| `/edit <prompt>` | Instructs Claude to return complete files with your requested changes. The script will automatically generate a colored diff and ask for your confirmation before writing the files to disk. |
+| `/clear` | Resets the conversation history. |
+| `/cost` | Shows the total session spend so far. |
+| `/help` | Displays the help menu. |
+| `exit` / `quit` | Exits the application. |
+
+---
+
+## 🧠 Architecture & Auto-Tuning
+The script runs three concurrent threads to keep your workflow seamless:
+
+* **Main Thread:** Handles the input loop, retrieves relevant chunks per query, and manages the conversation history.
+* **Watchdog:** Monitors your directory for file saves. If a `.java` file changes, it automatically re-chunks and re-embeds it; if a `.md` file changes, it rebuilds the skeleton cache.
+* **Heartbeat Daemon:** Keeps the Anthropic prompt cache warm while you step away.
+
+### Auto-Tuned Embedding Models
+The script automatically selects the most efficient embedding model based on the size of your repository:
+
+* **< 50 files:** `all-MiniLM-L6-v2` (22 MB) for fast startup.
+* **50–199 files:** `all-mpnet-base-v2` (420 MB) for better semantic depth.
+* **200+ files:** `nomic-ai/nomic-embed-text-v1.5` for optimal recall on large codebases..
