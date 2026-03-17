@@ -20,7 +20,10 @@ This tool is aggressively designed to prevent you from paying full price for tok
 Install the required Python packages and system tools:
 ```bash
 pip install sentence-transformers numpy
-apt install python3-watchdog python3-anthropic
+pip install python3-watchdog python3-anthropic
+pip install numpy
+pip install sentence-transformers
+```
 
 # Running the Tool
 
