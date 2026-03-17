@@ -196,6 +196,7 @@ chunk_store          = {}   # {chunk_id → {"text": str, "emb": np.ndarray}}
                              # chunk_id = "filepath" (whole-file) or "filepath::method"
 conversation_history = []   # clean turns; retrieved context is NOT stored here
 session_cost         = 0.0
+session_tokens       = {"input": 0, "cache_write": 0, "cache_read": 0, "output": 0}
 last_interaction     = time.time()
 lock                 = threading.Lock()
 stop_event           = threading.Event()
@@ -239,6 +240,55 @@ def print_stats(usage, label="Stats", file=sys.stdout):
         f"session ${session_cost:.4f}",
         file=file,
     )
+
+
+def _accumulate_usage(usage):
+    """Add per-call token counts to session totals (call under no lock needed — GIL is enough)."""
+    session_tokens["input"]       += usage.input_tokens
+    session_tokens["cache_write"] += getattr(usage, "cache_creation_input_tokens", 0)
+    session_tokens["cache_read"]  += getattr(usage, "cache_read_input_tokens", 0)
+    session_tokens["output"]      += usage.output_tokens
+
+
+def print_session_summary():
+    inp   = session_tokens["input"]
+    cw    = session_tokens["cache_write"]
+    cr    = session_tokens["cache_read"]
+    out   = session_tokens["output"]
+    total = inp + cw + cr + out
+
+    cost_inp = (inp / 1_000_000) * PRICE_INPUT
+    cost_cw  = (cw  / 1_000_000) * PRICE_WRITE
+    cost_cr  = (cr  / 1_000_000) * PRICE_READ
+    cost_out = (out / 1_000_000) * PRICE_OUTPUT
+    cost_tot = cost_inp + cost_cw + cost_cr + cost_out
+
+    def pct(n):
+        return f"{n / total * 100:.1f}%" if total else "—"
+
+    col_w = [22, 12, 8, 9]   # label | tokens | % | cost
+
+    def row(label, tokens, cost):
+        return (f"│ {label:<{col_w[0]}} │ {tokens:>{col_w[1]},} │"
+                f" {pct(tokens):>{col_w[2]}} │ ${cost:>{col_w[3]-1}.4f} │")
+
+    turns      = len(conversation_history) // 2
+    input_base = inp + cw + cr
+    hit_str    = f"{cr / input_base * 100:.1f}%" if input_base else "—"
+
+    print(f"\n┌{'─'*62}┐")
+    print(f"│{'Session Token Summary':^62}│")
+    print(f"├{'─'*24}┬{'─'*14}┬{'─'*10}┬{'─'*11}┤")
+    print(f"│ {'Type':<{col_w[0]}} │ {'Tokens':>{col_w[1]}} │ {'%':>{col_w[2]}} │ {'Cost':>{col_w[3]}} │")
+    print(f"├{'─'*24}┼{'─'*14}┼{'─'*10}┼{'─'*11}┤")
+    print(row("Input (uncached)",  inp, cost_inp))
+    print(row("Cache write",       cw,  cost_cw))
+    print(row("Cache read",        cr,  cost_cr))
+    print(row("Output",            out, cost_out))
+    print(f"├{'─'*24}┼{'─'*14}┼{'─'*10}┼{'─'*11}┤")
+    print(row("TOTAL",             total, cost_tot))
+    print(f"└{'─'*24}┴{'─'*14}┴{'─'*10}┴{'─'*11}┘")
+    print(f"  Turns: {turns}  |  Cache hit rate: {hit_str}")
 
 
 # ---------------------------------------------------------------------------
@@ -633,6 +683,7 @@ def warm_cache():
             messages=[{"role": "user", "content": "ok"}],
         )
         cost = calculate_cost(response.usage)
+        _accumulate_usage(response.usage)
         with lock:
             session_cost += cost
 
@@ -900,6 +951,7 @@ def chat(query):
         conversation_history.append({"role": "assistant", "content": clean_reply})
 
         cost = calculate_cost(response.usage)
+        _accumulate_usage(response.usage)
         with lock:
             last_interaction = time.time()
             session_cost += cost
@@ -955,6 +1007,7 @@ def one_shot(prompt):
             apply_edits(edits)
 
         cost = calculate_cost(response.usage)
+        _accumulate_usage(response.usage)
         with lock:
             session_cost += cost
         print_stats(response.usage, label="Stats", file=sys.stderr)
@@ -1011,7 +1064,7 @@ def start_chat():
             print("[System] Conversation history cleared.\n")
             continue
         if query == "/cost":
-            print(f"[Cost] Session total: ${session_cost:.4f}  |  Turns: {len(conversation_history) // 2}\n")
+            print_session_summary()
             continue
         if query == "/help":
             print(
@@ -1026,7 +1079,7 @@ def start_chat():
     stop_event.set()
     observer.stop()
     observer.join()
-    print(f"\n[Session] Total cost: ${session_cost:.4f}  |  Turns: {len(conversation_history) // 2}")
+    print_session_summary()
 
 
 # ---------------------------------------------------------------------------
