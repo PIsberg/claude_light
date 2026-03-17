@@ -55,3 +55,17 @@ The system implements a strict 5,000-character truncation ceiling for any `.md` 
 ### Estimated Token Savings
 - **Variable (10,000 – 200,000+ tokens) depending strictly on repository hygiene**
 - **Example:** A project pulling down an extensive React framework might have 100,000 tokens worth of `.md` documentation within un-skipped subdirectories. This bounds that potential leak instantly to ~5,000 chars (approx. 1,000 tokens max per file).
+
+---
+
+## 5. "Heartbeat" Auto-Warmer
+**Significance:** Prevents expensive "cold-start" query penalties when working intermittently.
+
+### Mechanism
+Anthropic's token caching system retains context ephemerally for approximately 5 minutes after the last query. If a developer stepped away to read code or fetch coffee and exceeded this 5-minute window, the very next query would be treated as a cold-start, billing the entire `skeleton` and `conversation_history` at the full (10x higher) input token price. 
+
+`claude_light` runs a background thread `heartbeat()` daemon that ticks every 30 seconds. If it detects the system has been idle for 240 seconds (4 minutes), it quietly dispatches a microscopic lightweight HTTP API call (`warm_cache()`) containing the target blocks. This successfully resets Anthropic's 5-minute TTL timer before it expires, keeping the base context globally warmed and discounted.
+
+### Estimated Token Savings
+- **90% discount retained continuously between idle periods**
+- **Example:** Returning to your desk after 15 minutes to ask a single question natively forces a re-read of the 50,000 token skeleton ($0.15). The heartbeat prevents this expiration entirely, allowing the subsequent interaction to remain at the cached price ($0.015).
