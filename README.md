@@ -1,6 +1,6 @@
 # Claude Light: Auto-Warmer & Hybrid RAG Chat CLI
 
-`claude_light.py` is an interactive CLI chat tool for querying and editing a Java codebase using Claude. By combining Anthropic's prompt caching with a highly optimized hybrid RAG (Retrieval-Augmented Generation) pipeline, it drastically reduces API costs while maintaining full context of your project.
+`claude_light.py` is an interactive CLI chat tool for querying and editing a codebase using Claude. By combining Anthropic's prompt caching with a highly optimized hybrid RAG (Retrieval-Augmented Generation) pipeline, it drastically reduces API costs while maintaining full context of your project.
 
 ## 📉 How It Optimizes Token Usage
 
@@ -57,7 +57,7 @@ While in the interactive chat loop, you can use the following commands:
 
 | Command | Description |
 | :--- | :--- |
-| `/edit <prompt>` | Instructs Claude to return complete files with your requested changes. The script will automatically generate a colored diff and ask for your confirmation before writing the files to disk. |
+| `<prompt>` | Instructs Claude to return complete files with your requested changes. The script will automatically generate a colored diff and ask for your confirmation before writing the files to disk. |
 | `/clear` | Resets the conversation history. |
 | `/cost` | Shows the total session spend so far. |
 | `/help` | Displays the help menu. |
@@ -81,6 +81,6 @@ The script automatically selects the most efficient embedding model based on the
 
 
 ### Tests
-python claude_light.py --test-mode small "How do I do task 5?"
+python claude_light.py --test-mode small
 
 python claude_light.py --test-mode large
