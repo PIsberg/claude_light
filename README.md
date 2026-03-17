@@ -21,8 +21,6 @@ Install the required Python packages and system tools:
 ```bash
 pip install sentence-transformers numpy
 pip install python3-watchdog python3-anthropic
-pip install numpy
-pip install sentence-transformers
 ```
 
 # Running the Tool

@@ -32,6 +32,24 @@ except ImportError:
         "tree-sitter-go tree-sitter-rust tree-sitter-javascript tree-sitter-typescript"
     )
 
+try:
+    from rich.console import Console as _RichConsole
+    from rich.markdown import Markdown as _RichMarkdown
+    _RICH_AVAILABLE = True
+except ImportError:
+    _RICH_AVAILABLE = False
+    print("[Warning] rich not installed. Claude responses won't be formatted.\n  pip install rich")
+
+try:
+    from prompt_toolkit import PromptSession as _PromptSession
+    from prompt_toolkit.history import FileHistory as _FileHistory
+    from prompt_toolkit.auto_suggest import AutoSuggestFromHistory as _AutoSuggest
+    from prompt_toolkit.completion import WordCompleter as _WordCompleter
+    _PROMPTTK_AVAILABLE = True
+except ImportError:
+    _PROMPTTK_AVAILABLE = False
+    print("[Warning] prompt_toolkit not installed. No command history/completion.\n  pip install prompt_toolkit")
+
 # Prerequisites:
 #   pip install sentence-transformers numpy
 #   pip install tree-sitter tree-sitter-java tree-sitter-python \
@@ -44,7 +62,7 @@ API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 if not API_KEY:
     raise SystemExit("[Error] Set the ANTHROPIC_API_KEY environment variable.")
 
-MODEL                   = "claude-sonnet-4-6"
+MODEL                   = "claude-sonnet-4-5"
 HEARTBEAT_SECS          = 30
 CACHE_TTL_SECS          = 240
 TARGET_RETRIEVED_TOKENS = 6_000   # desired context size per query in tokens
@@ -144,6 +162,7 @@ _EDIT_BLOCK = re.compile(r"```[a-zA-Z]*:([^\n`]+)\n(.*?)```", re.DOTALL)
 
 client   = anthropic.Anthropic(api_key=API_KEY)
 embedder = None   # initialised by auto_tune() before first use
+console  = _RichConsole() if _RICH_AVAILABLE else None
 
 # nomic-embed requires explicit prefixes for docs vs queries; MiniLM does not
 _DOC_PREFIX   = {"nomic-ai/nomic-embed-text-v1.5": "search_document: "}
@@ -801,6 +820,16 @@ def apply_edits(edits):
 # Chat — multi-turn with per-turn RAG injection
 # ---------------------------------------------------------------------------
 
+def _print_reply(text):
+    """Render Claude's reply — rich Markdown when available, plain text otherwise."""
+    if _RICH_AVAILABLE:
+        console.print()
+        console.print(_RichMarkdown(text))
+        console.print()
+    else:
+        print(f"\nClaude: {text}\n")
+
+
 def chat(query, edit_mode=False):
     global last_interaction, session_cost
 
@@ -851,10 +880,10 @@ def chat(query, edit_mode=False):
             # Print Claude's explanation (text outside the code blocks)
             explanation = _EDIT_BLOCK.sub("", reply).strip()
             if explanation:
-                print(f"\nClaude: {explanation}\n")
+                _print_reply(explanation)
             apply_edits(parse_edit_blocks(reply))
         else:
-            print(f"\nClaude: {reply}\n")
+            _print_reply(reply)
 
         print_stats(response.usage, label=f"Turn {turns}")
 
@@ -914,9 +943,27 @@ def start_chat():
     print(f"Ready. (Claude: {MODEL}  |  RAG top-{TOP_K}  |  Embed: {EMBED_MODEL})")
     print("Commands: /clear  /cost  /help  exit\n")
 
+    if _PROMPTTK_AVAILABLE:
+        CACHE_DIR.mkdir(exist_ok=True)
+        _slash_completer = _WordCompleter(
+            ["/edit", "/clear", "/cost", "/help", "exit", "quit"],
+            sentence=True,
+        )
+        _session = _PromptSession(
+            history=_FileHistory(str(CACHE_DIR / "history.txt")),
+            auto_suggest=_AutoSuggest(),
+            completer=_slash_completer,
+            complete_while_typing=False,
+        )
+        def _get_input():
+            return _session.prompt("You: ").strip()
+    else:
+        def _get_input():
+            return input("You: ").strip()
+
     while True:
         try:
-            query = input("You: ").strip()
+            query = _get_input()
         except (KeyboardInterrupt, EOFError):
             break
 
