@@ -157,17 +157,10 @@ def _load_languages():
 _load_languages()
 
 
-SYSTEM_PROMPT = (
-    "You are an expert code assistant. "
-    "Answer questions about the codebase provided below. "
-    "Be concise and precise."
-)
+SYSTEM_PROMPT = """\
+You are an expert code assistant. Answer questions about the codebase provided below. Be concise and precise.
 
-EDIT_INSTRUCTION = """\
-You are being asked to make code changes.
-
-For every file you create or modify output the COMPLETE file content in a \
-fenced code block tagged with the relative file path:
+When making code changes, output the COMPLETE file content for every file you create or modify in a fenced code block tagged with the relative file path:
 
 ```java:src/main/java/com/example/Foo.java
 // full file content here
@@ -857,7 +850,7 @@ def _print_reply(text):
         print(f"\nClaude: {text}\n")
 
 
-def chat(query, edit_mode=False):
+def chat(query):
     global last_interaction, session_cost
 
     retrieved_ctx, hits = retrieve(query)
@@ -873,7 +866,7 @@ def chat(query, edit_mode=False):
 
     # Sliding window: keep only the most recent MAX_HISTORY_TURNS turns so
     # history tokens don't grow unboundedly.
-    trimmed    = conversation_history[-(MAX_HISTORY_TURNS * 2):]
+    trimmed = conversation_history[-(MAX_HISTORY_TURNS * 2):]
 
     # Add an ephemeral cache breakpoint at the end of the history
     if trimmed:
@@ -884,28 +877,26 @@ def chat(query, edit_mode=False):
                 "content": [{"type": "text", "text": last_msg["content"], "cache_control": {"type": "ephemeral"}}]
             }
 
-    # In edit mode, prepend the formatting instruction to the user content.
-    # Store only the clean query in history so future turns stay lean.
-    prefix  = f"{EDIT_INSTRUCTION}\n\n" if edit_mode else ""
     ctx_prefix = f"Retrieved Codebase Context:\n{retrieved_ctx}\n\n" if retrieved_ctx else ""
-    content = f"{prefix}{ctx_prefix}Question:\n{query}"
-    messages   = trimmed + [{"role": "user", "content": content}]
-    max_tokens = 8192 if edit_mode else 2048   # full-file writes need more headroom
+    content  = f"{ctx_prefix}Question:\n{query}"
+    messages = trimmed + [{"role": "user", "content": content}]
 
     system = _build_system_blocks(skeleton)
 
     try:
         response = client.messages.create(
             model=MODEL,
-            max_tokens=max_tokens,
+            max_tokens=8192,
             system=system,
             messages=messages,
         )
 
         reply = response.content[0].text
-        conversation_history.append({"role": "user",      "content": query})
-        
-        clean_reply = _EDIT_BLOCK.sub(r" [File updated: \1] ", reply).strip() if edit_mode else reply
+        conversation_history.append({"role": "user", "content": query})
+
+        edits = parse_edit_blocks(reply)
+        # Store a compact version in history so future turns stay lean
+        clean_reply = _EDIT_BLOCK.sub(r" [File updated: \1] ", reply).strip() if edits else reply
         conversation_history.append({"role": "assistant", "content": clean_reply})
 
         cost = calculate_cost(response.usage)
@@ -915,14 +906,12 @@ def chat(query, edit_mode=False):
 
         turns = len(conversation_history) // 2
 
-        if edit_mode:
-            # Print Claude's explanation (text outside the code blocks)
-            explanation = _EDIT_BLOCK.sub("", reply).strip()
-            if explanation:
-                _print_reply(explanation)
-            apply_edits(parse_edit_blocks(reply))
-        else:
-            _print_reply(reply)
+        # Always print explanation text; apply any file blocks that were returned
+        explanation = _EDIT_BLOCK.sub("", reply).strip() if edits else reply
+        if explanation:
+            _print_reply(explanation)
+        if edits:
+            apply_edits(edits)
 
         print_stats(response.usage, label=f"Turn {turns}")
 
@@ -953,11 +942,17 @@ def one_shot(prompt):
     try:
         response = client.messages.create(
             model=MODEL,
-            max_tokens=2048,
+            max_tokens=8192,
             system=_build_system_blocks(skeleton),
             messages=[{"role": "user", "content": f"{ctx_prefix}Question:\n{prompt}"}],
         )
-        print(response.content[0].text)
+        reply = response.content[0].text
+        edits = parse_edit_blocks(reply)
+        explanation = _EDIT_BLOCK.sub("", reply).strip() if edits else reply
+        if explanation:
+            print(explanation)
+        if edits:
+            apply_edits(edits)
 
         cost = calculate_cost(response.usage)
         with lock:
@@ -986,7 +981,7 @@ def start_chat():
     if _PROMPTTK_AVAILABLE:
         CACHE_DIR.mkdir(exist_ok=True)
         _slash_completer = _WordCompleter(
-            ["/edit", "/clear", "/cost", "/help", "exit", "quit"],
+            ["/clear", "/cost", "/help", "exit", "quit"],
             sentence=True,
         )
         _session = _PromptSession(
@@ -1020,15 +1015,10 @@ def start_chat():
             continue
         if query == "/help":
             print(
-                "  /edit <prompt>  — ask Claude to write changes, review diff, confirm write\n"
-                "  /clear          — reset conversation history\n"
-                "  /cost           — show session spend so far\n"
-                "  exit            — quit\n"
+                "  /clear  — reset conversation history\n"
+                "  /cost   — show session spend so far\n"
+                "  exit    — quit\n"
             )
-            continue
-
-        if query.startswith("/edit "):
-            chat(query[6:].strip(), edit_mode=True)
             continue
 
         chat(query)
