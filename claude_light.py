@@ -624,20 +624,73 @@ def refresh_skeleton_only():
 
 _file_timers: dict = {}   # {filepath: Timer} — ensures only one pending reindex per file
 
+
+def _debounce(src: str, fn, delay: float = 1.5) -> None:
+    """Cancel any pending timer for src and schedule fn after delay seconds."""
+    if src in _file_timers:
+        _file_timers[src].cancel()
+    t = threading.Timer(delay, fn)
+    _file_timers[src] = t
+    t.start()
+
+
+def _remove_file_from_index(path: str) -> None:
+    """Drop all chunks for path from chunk_store + _file_hashes and persist the cache."""
+    with lock:
+        for k in _chunks_for_file(path):
+            del chunk_store[k]
+    _file_hashes.pop(path, None)
+    if EMBED_MODEL:
+        _save_cache(EMBED_MODEL)
+
+
 class SourceHandler(FileSystemEventHandler):
     def on_modified(self, event):
+        if event.is_directory:
+            return
+        src = event.src_path
+        ext = Path(src).suffix.lower()
+        if ext == ".md":
+            _debounce(src, refresh_skeleton_only)
+        elif ext in INDEXABLE_EXTENSIONS:
+            _debounce(src, lambda s=src: reindex_file(s))
+
+    def on_created(self, event):
+        if event.is_directory:
+            return
+        src = event.src_path
+        ext = Path(src).suffix.lower()
+        if ext == ".md":
+            _debounce(src, refresh_skeleton_only)
+        elif ext in INDEXABLE_EXTENSIONS:
+            _debounce(src, lambda s=src: reindex_file(s))
+            refresh_skeleton_only()   # new file changes the directory tree
+
+    def on_deleted(self, event):
+        if event.is_directory:
+            return
         src = event.src_path
         ext = Path(src).suffix.lower()
         if src in _file_timers:
-            _file_timers[src].cancel()
-        if ext == ".md":
-            t = threading.Timer(1.5, refresh_skeleton_only)
-            _file_timers[src] = t
-            t.start()
-        elif ext in INDEXABLE_EXTENSIONS:
-            t = threading.Timer(1.5, lambda s=src: reindex_file(s))
-            _file_timers[src] = t
-            t.start()
+            _file_timers.pop(src).cancel()
+        if ext in INDEXABLE_EXTENSIONS:
+            _remove_file_from_index(src)
+        refresh_skeleton_only()
+
+    def on_moved(self, event):
+        if event.is_directory:
+            return
+        src, dest   = event.src_path, event.dest_path
+        src_ext     = Path(src).suffix.lower()
+        dest_ext    = Path(dest).suffix.lower()
+        for p in (src, dest):
+            if p in _file_timers:
+                _file_timers.pop(p).cancel()
+        if src_ext in INDEXABLE_EXTENSIONS:
+            _remove_file_from_index(src)
+        if dest_ext in INDEXABLE_EXTENSIONS:
+            _debounce(dest, lambda d=dest: reindex_file(d))
+        refresh_skeleton_only()
 
 
 # ---------------------------------------------------------------------------
