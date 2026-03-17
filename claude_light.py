@@ -2,6 +2,9 @@ import os
 import re
 import sys
 import time
+import json
+import pickle
+import hashlib
 import difflib
 import threading
 from pathlib import Path
@@ -55,6 +58,11 @@ SKIP_DIRS      = {
     ".git", "target", "build", "node_modules",
     ".idea", "__pycache__", ".mvn", ".gradle",
 }
+
+# Disk cache — stored in a hidden dir so _is_skipped() ignores it automatically
+CACHE_DIR      = Path(".claude_light_cache")
+CACHE_INDEX    = CACHE_DIR / "index.pkl"
+CACHE_MANIFEST = CACHE_DIR / "manifest.json"
 
 # ---------------------------------------------------------------------------
 # Tree-sitter language configuration
@@ -156,6 +164,8 @@ session_cost         = 0.0
 last_interaction     = time.time()
 lock                 = threading.Lock()
 stop_event           = threading.Event()
+_source_files: list  = []   # set by index_files(); used by _save_cache()
+_file_hashes: dict   = {}   # {str(path): md5_hex} — kept in sync by index_files + reindex_file
 
 
 # ---------------------------------------------------------------------------
@@ -353,8 +363,74 @@ def auto_tune(source_files, chunks=None):
     )
 
 
+def _file_hash(path: Path) -> str:
+    """MD5 of file bytes — fast change detection, not cryptographic."""
+    return hashlib.md5(path.read_bytes()).hexdigest()
+
+
+def _load_cache(source_files: list, embed_model: str) -> tuple:
+    """
+    Load cached embeddings from disk.
+
+    Returns (cached_store, stale_files):
+      cached_store — chunk_id → {text, emb} for files whose hash matches the manifest
+      stale_files  — list of Path objects that need re-chunking + re-embedding
+    """
+    try:
+        manifest      = json.loads(CACHE_MANIFEST.read_text(encoding="utf-8"))
+        if manifest.get("embed_model") != embed_model:
+            raise ValueError("embed model changed — full re-index required")
+        old_hashes    = manifest["files"]
+        cached_index  = pickle.loads(CACHE_INDEX.read_bytes())
+    except Exception as exc:
+        if CACHE_MANIFEST.exists() or CACHE_INDEX.exists():
+            print(f"[Cache] Miss ({exc}); re-indexing everything.")
+        return {}, list(source_files)
+
+    cached_store: dict = {}
+    stale: list        = []
+    for f in source_files:
+        key    = str(f)
+        f_hash = _file_hash(f)
+        if f_hash == old_hashes.get(key):
+            # Copy this file's chunks straight from the disk cache
+            prefix = key + "::"
+            for cid, val in cached_index.items():
+                if cid == key or cid.startswith(prefix):
+                    cached_store[cid] = val
+        else:
+            stale.append(f)
+
+    hit  = len(source_files) - len(stale)
+    miss = len(stale)
+    print(f"[Cache] {hit} files hit, {miss} files stale/new.")
+    return cached_store, stale
+
+
+def _save_cache(embed_model: str) -> None:
+    """Persist chunk_store and file-hash manifest to CACHE_DIR."""
+    try:
+        CACHE_DIR.mkdir(exist_ok=True)
+        manifest = {
+            "embed_model": embed_model,
+            "files": dict(_file_hashes),
+        }
+        with lock:
+            store_snapshot = dict(chunk_store)
+        CACHE_INDEX.write_bytes(pickle.dumps(store_snapshot, protocol=pickle.HIGHEST_PROTOCOL))
+        CACHE_MANIFEST.write_text(json.dumps(manifest), encoding="utf-8")
+    except Exception as e:
+        print(f"[Cache] Failed to save: {e}")
+
+
 def index_files():
-    """Chunk all supported source files into symbols, auto-tune, then batch-embed."""
+    """
+    Chunk all supported source files, auto-tune, then embed.
+    Files whose MD5 matches the on-disk manifest are loaded from the pickle cache;
+    only changed or new files are re-chunked and re-embedded.
+    """
+    global _source_files, _file_hashes
+
     source_files = [
         p for p in Path(".").rglob("*")
         if not _is_skipped(p) and p.is_file() and p.suffix.lower() in INDEXABLE_EXTENSIONS
@@ -363,42 +439,63 @@ def index_files():
         print("[RAG] No supported source files found.")
         return
 
-    auto_tune(source_files)          # load model first
+    _source_files = source_files
+    _file_hashes  = {str(f): _file_hash(f) for f in source_files}
 
-    print(f"[RAG] Chunking {len(source_files)} files...")
-    all_chunks = []
-    for f in source_files:
+    auto_tune(source_files)   # selects + loads embed model before cache check
+
+    cached_store, stale_files = _load_cache(source_files, EMBED_MODEL)
+
+    # Chunk + embed only the stale/new files
+    new_chunks: list = []
+    for f in stale_files:
         try:
             text = f.read_text(encoding="utf-8", errors="ignore")
-            all_chunks.extend(chunk_file(str(f), text))
+            new_chunks.extend(chunk_file(str(f), text))
         except OSError:
             pass
 
-    auto_tune(source_files, chunks=all_chunks)   # refine TOP_K now we know chunk sizes
+    if new_chunks:
+        doc_prefix = _DOC_PREFIX.get(EMBED_MODEL, "")
+        embeddings = embedder.encode(
+            [doc_prefix + c["text"] for c in new_chunks],
+            normalize_embeddings=True,
+            show_progress_bar=len(new_chunks) > 100,
+        )
+        new_store = {
+            c["id"]: {"text": c["text"], "emb": emb}
+            for c, emb in zip(new_chunks, embeddings)
+        }
+    else:
+        new_store = {}
 
-    doc_prefix = _DOC_PREFIX.get(EMBED_MODEL, "")
-    to_embed   = [doc_prefix + c["text"] for c in all_chunks]
-    embeddings = embedder.encode(
-        to_embed, normalize_embeddings=True,
-        show_progress_bar=len(all_chunks) > 100,
-    )
+    merged = {**cached_store, **new_store}
 
-    new_store = {
-        c["id"]: {"text": c["text"], "emb": emb}
-        for c, emb in zip(all_chunks, embeddings)
-    }
+    # Refine TOP_K using all chunks (cached + new)
+    all_chunk_texts = [{"text": v["text"]} for v in merged.values()]
+    auto_tune(source_files, chunks=all_chunk_texts)
+
     with lock:
         chunk_store.clear()
-        chunk_store.update(new_store)
-    print(f"[RAG] Index ready — {len(source_files)} files → {len(new_store)} chunks")
+        chunk_store.update(merged)
+
+    if new_store:
+        _save_cache(EMBED_MODEL)
+
+    cached_n = len(source_files) - len(stale_files)
+    print(
+        f"[RAG] Index ready — {len(source_files)} files → {len(merged)} chunks "
+        f"({cached_n} cached, {len(stale_files)} re-embedded)"
+    )
 
 
 def reindex_file(path):
-    """Re-chunk and re-embed a single changed source file."""
+    """Re-chunk and re-embed a single changed source file, then update the disk cache."""
     if embedder is None:
         return
     try:
-        text   = Path(path).read_text(encoding="utf-8", errors="ignore")
+        p      = Path(path)
+        text   = p.read_text(encoding="utf-8", errors="ignore")
         chunks = chunk_file(path, text)
 
         doc_prefix = _DOC_PREFIX.get(EMBED_MODEL, "")
@@ -413,6 +510,8 @@ def reindex_file(path):
             for chunk, emb in zip(chunks, embeddings):
                 chunk_store[chunk["id"]] = {"text": chunk["text"], "emb": emb}
 
+        _file_hashes[path] = _file_hash(p)
+        _save_cache(EMBED_MODEL)
         print(f"[RAG] Re-indexed {path} ({len(chunks)} chunks)")
     except Exception as e:
         print(f"[RAG] Failed to re-index {path}: {e}")
