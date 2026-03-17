@@ -82,4 +82,5 @@ The script automatically selects the most efficient embedding model based on the
 
 ### Tests
 python claude_light.py --test-mode small "How do I do task 5?"
+
 python claude_light.py --test-mode large

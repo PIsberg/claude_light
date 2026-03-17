@@ -7,6 +7,7 @@ import pickle
 import hashlib
 import difflib
 import threading
+import concurrent.futures
 from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -268,6 +269,8 @@ def build_skeleton():
         if path.suffix == ".md" and path.is_file():
             try:
                 text = path.read_text(encoding="utf-8", errors="ignore").strip()
+                if len(text) > 5000 and path.name.lower() not in ("claude.md", "agents.md"):
+                    text = text[:5000] + "\n\n... [TRUNCATED due to length]"
                 if text:
                     md_parts.append(f"<!-- {path} -->\n{text}")
             except OSError:
@@ -489,12 +492,17 @@ def index_files():
 
     # Chunk + embed only the stale/new files
     new_chunks: list = []
-    for f in stale_files:
+    
+    def process_file_chunks(f):
         try:
             text = f.read_text(encoding="utf-8", errors="ignore")
-            new_chunks.extend(chunk_file(str(f), text))
+            return chunk_file(str(f), text)
         except OSError:
-            pass
+            return []
+
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        for chunks in executor.map(process_file_chunks, stale_files):
+            new_chunks.extend(chunks)
 
     if new_chunks:
         doc_prefix = _DOC_PREFIX.get(EMBED_MODEL, "")
@@ -602,15 +610,12 @@ def retrieve(query, k=None):
 # Cache warming
 # ---------------------------------------------------------------------------
 
-def _build_system_blocks(skeleton, retrieved_ctx=None):
+def _build_system_blocks(skeleton):
     """Shared system-block builder used by warm_cache, chat, and one_shot."""
     blocks = [
         {"type": "text", "text": SYSTEM_PROMPT},
         {"type": "text", "text": skeleton, "cache_control": {"type": "ephemeral"}},
     ]
-    if retrieved_ctx:
-        blocks.append({"type": "text", "text": retrieved_ctx,
-                        "cache_control": {"type": "ephemeral"}})
     return blocks
 
 
@@ -870,14 +875,24 @@ def chat(query, edit_mode=False):
     # history tokens don't grow unboundedly.
     trimmed    = conversation_history[-(MAX_HISTORY_TURNS * 2):]
 
+    # Add an ephemeral cache breakpoint at the end of the history
+    if trimmed:
+        last_msg = trimmed[-1]
+        if isinstance(last_msg["content"], str):
+            trimmed[-1] = {
+                "role": last_msg["role"],
+                "content": [{"type": "text", "text": last_msg["content"], "cache_control": {"type": "ephemeral"}}]
+            }
+
     # In edit mode, prepend the formatting instruction to the user content.
     # Store only the clean query in history so future turns stay lean.
     prefix  = f"{EDIT_INSTRUCTION}\n\n" if edit_mode else ""
-    content = f"{prefix}{query}"
+    ctx_prefix = f"Retrieved Codebase Context:\n{retrieved_ctx}\n\n" if retrieved_ctx else ""
+    content = f"{prefix}{ctx_prefix}Question:\n{query}"
     messages   = trimmed + [{"role": "user", "content": content}]
     max_tokens = 8192 if edit_mode else 2048   # full-file writes need more headroom
 
-    system = _build_system_blocks(skeleton, retrieved_ctx)
+    system = _build_system_blocks(skeleton)
 
     try:
         response = client.messages.create(
@@ -889,7 +904,9 @@ def chat(query, edit_mode=False):
 
         reply = response.content[0].text
         conversation_history.append({"role": "user",      "content": query})
-        conversation_history.append({"role": "assistant", "content": reply})
+        
+        clean_reply = _EDIT_BLOCK.sub(r" [File updated: \1] ", reply).strip() if edit_mode else reply
+        conversation_history.append({"role": "assistant", "content": clean_reply})
 
         cost = calculate_cost(response.usage)
         with lock:
@@ -932,12 +949,13 @@ def one_shot(prompt):
     with lock:
         skeleton = skeleton_context
 
+    ctx_prefix = f"Retrieved Codebase Context:\n{retrieved_ctx}\n\n" if retrieved_ctx else ""
     try:
         response = client.messages.create(
             model=MODEL,
             max_tokens=2048,
-            system=_build_system_blocks(skeleton, retrieved_ctx),
-            messages=[{"role": "user", "content": prompt}],
+            system=_build_system_blocks(skeleton),
+            messages=[{"role": "user", "content": f"{ctx_prefix}Question:\n{prompt}"}],
         )
         print(response.content[0].text)
 
@@ -1080,6 +1098,10 @@ public class Service{i} {{
         self.stats_patcher = patch.object(__main__, "print_stats", side_effect=self._mock_print_stats)
         self.stats_patcher.start()
         
+        # Patch Embedder
+        self.embedder_patcher = patch.object(__main__, "SentenceTransformer", new=self._mock_embedder_class)
+        self.embedder_patcher.start()
+        
         print(f"[Test Mode] Initialized '{self.preset}' preset with {len(self.files)} files (~{self.total_tokens:,} tokens).")
         
     def _mock_path_class(self):
@@ -1148,12 +1170,26 @@ public class Service{i} {{
 
     def _mock_create_message(self, **kwargs):
         system_blocks = kwargs.get("system", [])
+        messages = kwargs.get("messages", [])
         retrieved_ctx = ""
+        
         for b in system_blocks:
             if isinstance(b, dict) and b.get("type") == "text":
                 text = b.get("text", "")
                 if "// src/" in text or "package com." in text:
                     retrieved_ctx += text
+        
+        for m in messages:
+            content = m.get("content", "")
+            if isinstance(content, str):
+                if "// src/" in content or "package com." in content:
+                    retrieved_ctx += content
+            elif isinstance(content, list):
+                for b in content:
+                    if isinstance(b, dict) and b.get("type") == "text":
+                        text = b.get("text", "")
+                        if "// src/" in text or "package com." in text:
+                            retrieved_ctx += text
                     
         injected_tokens = len(retrieved_ctx) // 4
         full_tokens = self.total_tokens
@@ -1185,6 +1221,16 @@ public class Service{i} {{
                 self.usage = usage
                 
         return MockMessage(response_text, MockUsage(full_tokens, injected_tokens))
+        
+    def _mock_embedder_class(self, model_name, **kwargs):
+        class MockEmbedder:
+            def encode(self, sentences, **kwargs):
+                import numpy as np
+                dim = 768 if "nomic" in model_name else 384
+                if isinstance(sentences, str):
+                    return np.random.rand(dim).astype(np.float32)
+                return np.random.rand(len(sentences), dim).astype(np.float32)
+        return MockEmbedder()
         
     def _mock_print_stats(self, usage, label="Stats", file=sys.stdout):
         # Call the original print_stats
