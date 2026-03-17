@@ -21,6 +21,9 @@ Install the required Python packages and system tools:
 ```bash
 pip install sentence-transformers numpy
 pip install python3-watchdog python3-anthropic
+pip install prompt_toolkit
+pip install einops
+
 ```
 
 # Running the Tool
@@ -75,3 +78,8 @@ The script automatically selects the most efficient embedding model based on the
 * **< 50 files:** `all-MiniLM-L6-v2` (22 MB) for fast startup.
 * **50–199 files:** `all-mpnet-base-v2` (420 MB) for better semantic depth.
 * **200+ files:** `nomic-ai/nomic-embed-text-v1.5` for optimal recall on large codebases..
+
+
+### Tests
+python claude_light.py --test-mode small "How do I do task 5?"
+python claude_light.py --test-mode large

@@ -58,9 +58,31 @@ except ImportError:
 #   Note: sentence-transformers pulls in PyTorch (~1.5 GB on first install)
 
 # --- CONFIG ---
-API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-if not API_KEY:
-    raise SystemExit("[Error] Set the ANTHROPIC_API_KEY environment variable.")
+is_test_mode = "--test-mode" in sys.argv
+
+def _resolve_api_key() -> str:
+    """Return the API key from env, then ~/.anthropic, then .env in cwd."""
+    if is_test_mode:
+        return "sk-ant-test-mock-key"
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if key:
+        return key
+    for dotfile in (Path.home() / ".anthropic", Path(".env")):
+        try:
+            for line in dotfile.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line.startswith("ANTHROPIC_API_KEY=") and not line.startswith("#"):
+                    return line.split("=", 1)[1].strip().strip('"').strip("'")
+        except OSError:
+            pass
+    return ""
+
+API_KEY = _resolve_api_key()
+if not API_KEY and not is_test_mode:
+    raise SystemExit(
+        "[Error] No API key found. Set ANTHROPIC_API_KEY in your environment,\n"
+        "        or add ANTHROPIC_API_KEY=sk-ant-... to ~/.anthropic or ./.env"
+    )
 
 MODEL                   = "claude-sonnet-4-5"
 HEARTBEAT_SECS          = 30
@@ -363,7 +385,7 @@ def auto_tune(source_files, chunks=None):
     if chosen_model != EMBED_MODEL or embedder is None:
         print(f"[RAG] Loading {chosen_model}...")
         EMBED_MODEL = chosen_model
-        embedder    = SentenceTransformer(EMBED_MODEL)
+        embedder    = SentenceTransformer(EMBED_MODEL, trust_remote_code=True)
 
     if chunks:
         n_units     = len(chunks)
@@ -999,12 +1021,207 @@ def start_chat():
     print(f"\n[Session] Total cost: ${session_cost:.4f}  |  Turns: {len(conversation_history) // 2}")
 
 
+# ---------------------------------------------------------------------------
+# Test Mode
+# ---------------------------------------------------------------------------
+
+class MockManager:
+    def __init__(self, preset):
+        self.preset = preset
+        self.files = {}
+        self.total_tokens = 0
+        self._generate_synthetic_files()
+        
+    def _generate_synthetic_files(self):
+        configs = {
+            "small": (5, 10),
+            "medium": (50, 15),
+            "large": (200, 20),
+            "extra-large": (1000, 20)
+        }
+        num_files, num_methods = configs.get(self.preset, (5, 10))
+        for i in range(num_files):
+            file_name = f"src/main/java/com/synthetic/Service{i}.java"
+            methods = []
+            for m in range(num_methods):
+                methods.append(f"""
+    public void doTask{m}() {{
+        System.out.println("Task {m} in Service {i}");
+        for(int j=0; j<10; j++) {{
+            // realistic logic simulated here
+        }}
+    }}""")
+            content = f"""package com.synthetic;
+
+import java.util.*;
+
+public class Service{i} {{
+    private String name = "Service{i}";
+    {"".join(methods)}
+}}
+"""
+            self.files[file_name] = content
+            self.total_tokens += len(content) // 4
+            
+    def start(self):
+        from unittest.mock import patch
+        import __main__
+        
+        # Patch Path
+        self.path_patcher = patch.object(__main__, "Path", new=self._mock_path_class())
+        self.path_patcher.start()
+        
+        # Patch API
+        self.api_patcher = patch.object(__main__.client.messages, "create", side_effect=self._mock_create_message)
+        self.api_patcher.start()
+        
+        # Patch print_stats
+        self.orig_print_stats = __main__.print_stats
+        self.stats_patcher = patch.object(__main__, "print_stats", side_effect=self._mock_print_stats)
+        self.stats_patcher.start()
+        
+        print(f"[Test Mode] Initialized '{self.preset}' preset with {len(self.files)} files (~{self.total_tokens:,} tokens).")
+        
+    def _mock_path_class(self):
+        files = self.files
+        
+        class MockPath:
+            def __init__(self, *args):
+                self.path = "/".join(str(p) for p in args).replace("\\", "/")
+                self.name = self.path.split("/")[-1]
+                self.suffix = "." + self.name.split(".")[-1] if "." in self.name else ""
+                self.parts = tuple(self.path.split("/"))
+            
+            def __str__(self):
+                return self.path
+                
+            def __lt__(self, other):
+                return self.path < getattr(other, "path", str(other))
+                
+            def __eq__(self, other):
+                return self.path == getattr(other, "path", str(other))
+                
+            def __hash__(self):
+                return hash(self.path)
+                
+            def rglob(self, pattern):
+                for f in files:
+                    yield MockPath(f)
+                    
+            def read_text(self, *args, **kwargs):
+                if self.path in files:
+                    return files[self.path]
+                if self.name.endswith(".md"):
+                    return ""
+                raise OSError(f"File not found: {self.path}")
+                
+            def read_bytes(self):
+                return self.read_text().encode("utf-8")
+                
+            def is_file(self):
+                return self.path in files or self.name.endswith(".md")
+                
+            def is_dir(self):
+                return not self.is_file()
+                
+            def exists(self):
+                return self.path in files or self.path in (".", ".claude_light_cache") or self.path.startswith("src")
+                
+            def stat(self):
+                class Stat:
+                    st_size = len(files.get(self.path, ""))
+                return Stat()
+                
+            def relative_to(self, other):
+                return MockPath(self.path)
+                
+            def mkdir(self, *args, **kwargs):
+                pass
+                
+            def write_text(self, *args, **kwargs):
+                pass
+                
+            def write_bytes(self, *args, **kwargs):
+                pass
+                
+        return MockPath
+
+    def _mock_create_message(self, **kwargs):
+        system_blocks = kwargs.get("system", [])
+        retrieved_ctx = ""
+        for b in system_blocks:
+            if isinstance(b, dict) and b.get("type") == "text":
+                text = b.get("text", "")
+                if "// src/" in text or "package com." in text:
+                    retrieved_ctx += text
+                    
+        injected_tokens = len(retrieved_ctx) // 4
+        full_tokens = self.total_tokens
+        
+        methods_mentioned = []
+        if retrieved_ctx:
+            import re
+            matches = re.findall(r"public void (doTask\d+)", retrieved_ctx)
+            if matches:
+                methods_mentioned = list(set(matches[:3]))
+                
+        response_text = f"Simulated test response. Mentioning retrieved methods: {', '.join(methods_mentioned) if methods_mentioned else 'none'}."
+        
+        class MockUsage:
+            def __init__(self, full, injected):
+                self.input_tokens = injected
+                self.cache_read_input_tokens = injected
+                self.cache_creation_input_tokens = 0
+                self.output_tokens = 50
+                self._full_codebase_tokens = full
+                self._injected_tokens = injected
+                
+        class MockMessage:
+            def __init__(self, text, usage):
+                class Content:
+                    def __init__(self, t):
+                        self.text = t
+                self.content = [Content(text)]
+                self.usage = usage
+                
+        return MockMessage(response_text, MockUsage(full_tokens, injected_tokens))
+        
+    def _mock_print_stats(self, usage, label="Stats", file=sys.stdout):
+        # Call the original print_stats
+        self.orig_print_stats(usage, label, file)
+        
+        full_tokens = getattr(usage, "_full_codebase_tokens", self.total_tokens)
+        injected = getattr(usage, "_injected_tokens", getattr(usage, "input_tokens", 0) + getattr(usage, "cache_read_input_tokens", 0))
+        
+        PRICE_INPUT  = 3.00
+        PRICE_READ   = 0.30
+        
+        full_cost = (full_tokens / 1_000_000) * PRICE_INPUT
+        rag_cost = (injected / 1_000_000) * PRICE_READ
+        savings = full_cost - rag_cost
+        savings_pct = (savings / full_cost * 100) if full_cost > 0 else 0.0
+        
+        print(f"\n[{label}] Token Savings Report:")
+        print(f"  If full codebase was sent: {full_tokens:,} tokens (${full_cost:.4f})")
+        print(f"  With Claude Light RAG + Cache: {injected:,} tokens (${rag_cost:.4f})")
+        print(f"  Total Savings: {savings_pct:.1f}%\n", file=file)
+
+
 if __name__ == "__main__":
-    # One-shot:    python3 script.py "your question"
-    # Pipe:        echo "your question" | python3 script.py
-    # Interactive: python3 script.py
-    if len(sys.argv) > 1:
-        one_shot(" ".join(sys.argv[1:]))
+    import argparse
+    parser = argparse.ArgumentParser(description="Claude Light RAG Chat")
+    parser.add_argument("--test-mode", choices=["small", "medium", "large", "extra-large"],
+                        help="Run in test mode with a synthetic codebase and mocked API.")
+    parser.add_argument("query", nargs="*", help="Optional query for one-shot mode.")
+    args, unknown = parser.parse_known_args()
+
+    if args.test_mode:
+        manager = MockManager(args.test_mode)
+        manager.start()
+
+    query_str = " ".join(args.query).strip()
+    if query_str:
+        one_shot(query_str)
     elif not sys.stdin.isatty():
         one_shot(sys.stdin.read().strip())
     else:
