@@ -203,7 +203,10 @@ PRICE_READ   = PRICE_INPUT * 0.10   # $0.30
 PRICE_OUTPUT = 15.00
 
 # Shared state
-skeleton_context     = ""   # cached: dir tree + .md files
+skeleton_context     = ""   # cached: dir tree + .md files (assembled from parts below)
+_skeleton_tree       = ""   # directory tree portion — rebuilt on structural changes
+_skeleton_md_hashes: dict = {}  # {path_str: md5_hex} — skip re-read when unchanged
+_skeleton_md_parts:  dict = {}  # {path_str: rendered_str} — one entry per .md file
 chunk_store          = {}   # {chunk_id → {"text": str, "emb": np.ndarray}}
                              # chunk_id = "filepath" (whole-file) or "filepath::method"
 conversation_history = []   # clean turns; retrieved context is NOT stored here
@@ -439,25 +442,75 @@ def _render_compressed_node(node, lines, indent):
             lines.append(f"{indent}{{{','.join(stems)}}}{ext}")
 
 
-def build_skeleton():
-    """Single rglob pass: builds compressed directory tree + collects .md content."""
-    all_paths, md_parts = [], []
+def _render_md_file(path: Path) -> str:
+    """Read and render a single .md file for the skeleton. Returns '' on error/empty."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore").strip()
+        if len(text) > 5000 and path.name.lower() not in ("claude.md", "agents.md"):
+            text = text[:5000] + "\n\n... [TRUNCATED due to length]"
+        return f"<!-- {path} -->\n{text}" if text else ""
+    except OSError:
+        return ""
+
+
+def _assemble_skeleton() -> str:
+    """Combine cached tree + md parts into the skeleton string."""
+    docs = "\n\n".join(v for v in _skeleton_md_parts.values() if v)
+    return _skeleton_tree + ("\n\n" + docs if docs else "")
+
+
+def _refresh_single_md(path_str: str) -> bool:
+    """Re-read one .md file if its hash changed. Returns True if content changed."""
+    global _skeleton_md_hashes, _skeleton_md_parts
+    p = Path(path_str)
+    if not p.exists():
+        changed = path_str in _skeleton_md_parts
+        _skeleton_md_hashes.pop(path_str, None)
+        _skeleton_md_parts.pop(path_str, None)
+        return changed
+    h = _file_hash(p)
+    if _skeleton_md_hashes.get(path_str) == h:
+        return False  # content unchanged — nothing to do
+    _skeleton_md_hashes[path_str] = h
+    _skeleton_md_parts[path_str] = _render_md_file(p)
+    return True
+
+
+def _refresh_tree_only() -> str:
+    """Rebuild only the directory tree, reuse cached .md parts."""
+    global _skeleton_tree
+    all_paths = [p for p in sorted(Path(".").rglob("*")) if not _is_skipped(p)]
+    _skeleton_tree = _build_compressed_tree(all_paths)
+    return _assemble_skeleton()
+
+
+def build_skeleton() -> str:
+    """Full rglob pass: rebuild tree + hash-check every .md file (reuses cache on match)."""
+    global _skeleton_tree, _skeleton_md_hashes, _skeleton_md_parts
+    all_paths, md_files = [], []
     for path in sorted(Path(".").rglob("*")):
         if _is_skipped(path):
             continue
         all_paths.append(path)
         if path.suffix == ".md" and path.is_file():
-            try:
-                text = path.read_text(encoding="utf-8", errors="ignore").strip()
-                if len(text) > 5000 and path.name.lower() not in ("claude.md", "agents.md"):
-                    text = text[:5000] + "\n\n... [TRUNCATED due to length]"
-                if text:
-                    md_parts.append(f"<!-- {path} -->\n{text}")
-            except OSError:
-                pass
-    tree = _build_compressed_tree(all_paths)
-    docs = "\n\n".join(md_parts)
-    return tree + ("\n\n" + docs if docs else "")
+            md_files.append(path)
+
+    _skeleton_tree = _build_compressed_tree(all_paths)
+
+    new_hashes, new_parts = {}, {}
+    for path in md_files:
+        path_str = str(path)
+        h = _file_hash(path)
+        new_hashes[path_str] = h
+        # Reuse cached rendered string when the file hasn't changed
+        if _skeleton_md_hashes.get(path_str) == h and path_str in _skeleton_md_parts:
+            new_parts[path_str] = _skeleton_md_parts[path_str]
+        else:
+            new_parts[path_str] = _render_md_file(path)
+    _skeleton_md_hashes = new_hashes
+    _skeleton_md_parts  = new_parts
+
+    return _assemble_skeleton()
 
 
 # ---------------------------------------------------------------------------
@@ -864,13 +917,17 @@ def _build_system_blocks(skeleton):
     return blocks
 
 
-def _update_skeleton():
-    """Rebuild skeleton and update shared state under lock."""
+def _apply_skeleton(new_skeleton: str):
+    """Store assembled skeleton into shared state under lock."""
     global skeleton_context, last_interaction
-    new_skeleton = build_skeleton()
     with lock:
         skeleton_context = new_skeleton
         last_interaction = time.time()
+
+
+def _update_skeleton():
+    """Full skeleton rebuild (startup / forced). Updates shared state under lock."""
+    _apply_skeleton(build_skeleton())
 
 
 def warm_cache():
@@ -907,9 +964,16 @@ def full_refresh():
 
 
 def refresh_skeleton_only():
-    """Called when a .md file changes: rebuild skeleton + re-warm cache."""
-    _update_skeleton()
+    """Called on structural changes (new/deleted/moved file): rebuild tree, keep .md cache."""
+    _apply_skeleton(_refresh_tree_only())
     warm_cache()
+
+
+def refresh_md_file(path_str: str):
+    """Called when a single .md file changes: re-read only that file if hash changed."""
+    if _refresh_single_md(path_str):
+        _apply_skeleton(_assemble_skeleton())
+        warm_cache()
 
 
 # ---------------------------------------------------------------------------
@@ -945,7 +1009,7 @@ class SourceHandler(FileSystemEventHandler):
         src = event.src_path
         ext = Path(src).suffix.lower()
         if ext == ".md":
-            _debounce(src, refresh_skeleton_only)
+            _debounce(src, lambda s=src: refresh_md_file(s))
         elif ext in INDEXABLE_EXTENSIONS:
             _debounce(src, lambda s=src: reindex_file(s))
 
@@ -955,10 +1019,10 @@ class SourceHandler(FileSystemEventHandler):
         src = event.src_path
         ext = Path(src).suffix.lower()
         if ext == ".md":
-            _debounce(src, refresh_skeleton_only)
+            _debounce(src, lambda s=src: refresh_md_file(s))
         elif ext in INDEXABLE_EXTENSIONS:
             _debounce(src, lambda s=src: reindex_file(s))
-            refresh_skeleton_only()   # new file changes the directory tree
+            refresh_skeleton_only()   # new source file changes the directory tree
 
     def on_deleted(self, event):
         if event.is_directory:
@@ -969,7 +1033,10 @@ class SourceHandler(FileSystemEventHandler):
             _file_timers.pop(src).cancel()
         if ext in INDEXABLE_EXTENSIONS:
             _remove_file_from_index(src)
-        refresh_skeleton_only()
+        if ext == ".md":
+            refresh_md_file(src)   # cleans up the md cache entry + rebuilds
+        else:
+            refresh_skeleton_only()
 
     def on_moved(self, event):
         if event.is_directory:
@@ -984,7 +1051,15 @@ class SourceHandler(FileSystemEventHandler):
             _remove_file_from_index(src)
         if dest_ext in INDEXABLE_EXTENSIONS:
             _debounce(dest, lambda d=dest: reindex_file(d))
-        refresh_skeleton_only()
+        # Clean up any stale .md cache entry for the old path
+        if src_ext == ".md":
+            _skeleton_md_hashes.pop(src, None)
+            _skeleton_md_parts.pop(src, None)
+        # If either end is .md, update just that file; otherwise just rebuild tree
+        if dest_ext == ".md":
+            _debounce(dest, lambda d=dest: refresh_md_file(d))
+        else:
+            refresh_skeleton_only()
 
 
 # ---------------------------------------------------------------------------
