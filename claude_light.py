@@ -86,11 +86,13 @@ if not API_KEY and not is_test_mode:
     )
 
 MODEL                   = "claude-sonnet-4-5"
+SUMMARY_MODEL           = "claude-haiku-4-5-20251001"  # cheap model for history compression
 HEARTBEAT_SECS          = 30
 CACHE_TTL_SECS          = 240
 TARGET_RETRIEVED_TOKENS = 6_000   # desired context size per query in tokens
 MIN_SCORE               = 0.45    # discard retrieved files below this similarity
-MAX_HISTORY_TURNS       = 6       # sliding window — older turns are dropped
+MAX_HISTORY_TURNS       = 6       # compress+cap when stored turns exceed this
+SUMMARIZE_BATCH         = 3       # how many old turns to collapse into a summary at once
 
 # Auto-tuned at runtime — do not set manually
 EMBED_MODEL = None
@@ -1217,6 +1219,62 @@ def apply_edits(edits):
 
 
 # ---------------------------------------------------------------------------
+# History compression — summarize old turns via Haiku instead of dropping them
+# ---------------------------------------------------------------------------
+
+def _summarize_turns(messages: list) -> tuple:
+    """Call SUMMARY_MODEL to compress a list of turn messages into a short summary."""
+    lines = []
+    for msg in messages:
+        role = msg["role"].capitalize()
+        content = msg["content"]
+        if isinstance(content, list):
+            content = " ".join(b.get("text", "") for b in content if b.get("type") == "text")
+        lines.append(f"{role}: {content}")
+    dialogue = "\n\n".join(lines)
+    response = client.messages.create(
+        model=SUMMARY_MODEL,
+        max_tokens=400,
+        messages=[{
+            "role": "user",
+            "content": (
+                "Summarize the following conversation turns concisely (under 300 words).\n"
+                "Capture: what was asked, decisions reached, files edited and what changed, "
+                "key facts established about the codebase.\n"
+                "Output only the summary — no preamble.\n\n"
+                f"<turns>\n{dialogue}\n</turns>"
+            ),
+        }],
+    )
+    return response.content[0].text.strip(), response.usage
+
+
+def _maybe_compress_history():
+    """Summarize the oldest SUMMARIZE_BATCH turns when history exceeds MAX_HISTORY_TURNS."""
+    global conversation_history, session_cost
+    if len(conversation_history) <= MAX_HISTORY_TURNS * 2:
+        return
+    batch_msgs   = SUMMARIZE_BATCH * 2
+    to_summarize = conversation_history[:batch_msgs]
+    remaining    = conversation_history[batch_msgs:]
+    try:
+        print(f"{_T_SYS} Compressing {SUMMARIZE_BATCH} old turns...", end="", flush=True)
+        summary_text, usage = _summarize_turns(to_summarize)
+        _accumulate_usage(usage)
+        with lock:
+            session_cost += calculate_cost(usage)
+        summary_pair = [
+            {"role": "user",      "content": f"[Summary of earlier conversation]\n{summary_text}"},
+            {"role": "assistant", "content": "Understood, I have context from our earlier discussion."},
+        ]
+        conversation_history = summary_pair + remaining
+        print(f" done ({usage.input_tokens}→{usage.output_tokens} tok)")
+    except Exception as e:
+        print(f"\n{_T_ERR} History compression failed ({e}) — truncating instead.")
+        conversation_history = conversation_history[-(MAX_HISTORY_TURNS * 2):]
+
+
+# ---------------------------------------------------------------------------
 # Chat — multi-turn with per-turn RAG injection
 # ---------------------------------------------------------------------------
 
@@ -1244,8 +1302,9 @@ def chat(query):
     with lock:
         skeleton = skeleton_context
 
-    # Sliding window: keep only the most recent MAX_HISTORY_TURNS turns so
-    # history tokens don't grow unboundedly.
+    # Compress old turns into a summary when history grows too long, then apply
+    # a hard sliding-window cap as a fallback safety net.
+    _maybe_compress_history()
     trimmed = conversation_history[-(MAX_HISTORY_TURNS * 2):]
 
     # Add an ephemeral cache breakpoint at the end of the history
