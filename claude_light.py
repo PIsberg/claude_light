@@ -833,6 +833,25 @@ def _chunks_for_file(filepath):
     return [k for k in chunk_store if k == filepath or k.startswith(prefix)]
 
 
+_COMMENT_EXTS_C = frozenset({".java", ".js", ".ts", ".tsx", ".go", ".rs"})
+
+
+def _strip_comments(text: str, ext: str) -> str:
+    """Remove comments from a code chunk to cut retrieved-context token usage.
+
+    Strips only code comments — not the file-path header line or preamble —
+    so the structural context (package, imports, class declaration) is preserved.
+    """
+    if ext in _COMMENT_EXTS_C:
+        text = re.sub(r'/\*.*?\*/', '', text, flags=re.DOTALL)   # /* block */
+        text = re.sub(r'//[^\n]*',  '', text)                    # // line
+    elif ext == ".py":
+        text = re.sub(r'#[^\n]*', '', text)                      # # line
+    # Collapse runs of 3+ blank lines left behind by removal
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text
+
+
 def _dedup_retrieved_context(top_pairs):
     """
     Build retrieved context string, deduplicating the per-file preamble.
@@ -846,6 +865,7 @@ def _dedup_retrieved_context(top_pairs):
         // {filepath}\\n{preamble}\\n    // ...\\n{method_body}\\n
 
     Whole-file fallback chunks (no '::' in their ID) are included as-is.
+    Comments are stripped from method bodies and whole-file text before assembly.
     """
     _SEP = "\n    // ...\n"
 
@@ -860,9 +880,11 @@ def _dedup_retrieved_context(top_pairs):
                 continue
             text = chunk_store[chunk_id]["text"]
             if "::" not in chunk_id:
-                whole_files.append(text)
+                ext = Path(chunk_id).suffix.lower()
+                whole_files.append(_strip_comments(text, ext))
                 continue
             filepath, method_name = chunk_id.rsplit("::", 1)
+            ext = Path(filepath).suffix.lower()
             if _SEP in text:
                 header, body = text.split(_SEP, 1)
             else:
@@ -870,7 +892,10 @@ def _dedup_retrieved_context(top_pairs):
             if filepath not in file_data:
                 file_order.append(filepath)
                 file_data[filepath] = {"header": header, "methods": []}
-            file_data[filepath]["methods"].append((method_name, body.strip()))
+            # Strip comments from the method body only — header holds the preamble
+            file_data[filepath]["methods"].append(
+                (method_name, _strip_comments(body, ext).strip())
+            )
 
     parts = whole_files[:]
     for filepath in file_order:
