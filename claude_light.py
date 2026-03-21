@@ -160,21 +160,33 @@ _load_languages()
 SYSTEM_PROMPT = """\
 You are an expert code assistant. Answer questions about the codebase provided below. Be concise and precise.
 
-When making code changes, output the COMPLETE file content for every file you create or modify in a fenced code block tagged with the relative file path:
+To edit an existing file, use one or more SEARCH/REPLACE blocks — one per contiguous change:
 
-```java:src/main/java/com/example/Foo.java
-// full file content here
+```python:path/to/file.py
+<<<<<<< SEARCH
+exact lines to replace (must match the file verbatim, including indentation)
+=======
+replacement lines
+>>>>>>> REPLACE
+```
+
+To create a new file, use a plain block with no SEARCH/REPLACE markers:
+
+```python:path/to/newfile.py
+full file content here
 ```
 
 Rules:
-- Always output the COMPLETE file — never partial snippets or diffs.
+- SEARCH must match the file exactly (whitespace, indentation, blank lines).
+- Use multiple blocks for multiple changes, even within the same file.
 - Use the correct path relative to the project root.
-- You may output multiple blocks for multiple files.
-- After all code blocks, write a short plain-English summary of what changed.
+- After all blocks, write a short plain-English summary of what changed.
 """
 
-# Matches  ```[lang]:path/to/File.java\n...content...\n```
-_EDIT_BLOCK = re.compile(r"```[a-zA-Z]*:([^\n`]+)\n(.*?)```", re.DOTALL)
+# Matches any fenced block with a path tag:  ```[lang]:path\n...\n```
+_ANY_BLOCK = re.compile(r"```[a-zA-Z]*:([^\n`]+)\n(.*?)```", re.DOTALL)
+# Kept for stripping edit blocks from history (matches both formats)
+_EDIT_BLOCK = _ANY_BLOCK
 
 client   = anthropic.Anthropic(api_key=API_KEY)
 embedder = None   # initialised by auto_tune() before first use
@@ -1006,15 +1018,53 @@ def _colorize_diff(lines):
     return result
 
 
+_SR_PATTERN = re.compile(
+    r"^<<<<<<< SEARCH\n(.*?)=======\n(.*?)>>>>>>> REPLACE\n?$",
+    re.DOTALL,
+)
+
+
 def parse_edit_blocks(text):
-    """Return list of (filepath, content) from Claude's fenced code blocks."""
-    return [(m.group(1).strip(), m.group(2)) for m in _EDIT_BLOCK.finditer(text)]
+    """Return list of edit dicts parsed from Claude's fenced code blocks.
+
+    Each dict has:
+      {"type": "edit", "path": str, "search": str, "replace": str}  — SEARCH/REPLACE
+      {"type": "new",  "path": str, "content": str}                 — new / full-file
+    """
+    edits = []
+    for m in _ANY_BLOCK.finditer(text):
+        path = m.group(1).strip()
+        body = m.group(2)
+        sr = _SR_PATTERN.match(body)
+        if sr:
+            edits.append({"type": "edit", "path": path,
+                          "search": sr.group(1), "replace": sr.group(2)})
+        else:
+            edits.append({"type": "new", "path": path, "content": body})
+    return edits
 
 
-def show_diff(path, new_content):
+def _resolve_new_content(edit):
+    """Return (old_content, new_content) for an edit dict, or raise on failure."""
+    p = Path(edit["path"])
+    if edit["type"] == "new":
+        old = p.read_text(encoding="utf-8", errors="ignore") if p.exists() else ""
+        return old, edit["content"]
+    # SEARCH/REPLACE
+    if not p.exists():
+        raise FileNotFoundError(f"File not found: {edit['path']}")
+    old = p.read_text(encoding="utf-8", errors="ignore")
+    if edit["search"] not in old:
+        raise ValueError(f"SEARCH block not found in {edit['path']}")
+    return old, old.replace(edit["search"], edit["replace"], 1)
+
+
+def show_diff(path, new_content, old_content=None):
     p = Path(path)
-    if p.exists():
-        old_lines = p.read_text(encoding="utf-8", errors="ignore").splitlines(keepends=True)
+    if old_content is None:
+        old_content = p.read_text(encoding="utf-8", errors="ignore") if p.exists() else ""
+    if old_content:
+        old_lines = old_content.splitlines(keepends=True)
         new_lines = new_content.splitlines(keepends=True)
         diff = list(difflib.unified_diff(
             old_lines, new_lines,
@@ -1030,26 +1080,44 @@ def show_diff(path, new_content):
 
 
 def apply_edits(edits):
-    """Show diffs, ask confirmation, write files."""
+    """Show diffs, ask confirmation, apply SEARCH/REPLACE and new-file edits."""
     if not edits:
         print(f"{_T_EDIT} No file blocks found in response.")
         return
 
+    # Pre-resolve: compute old+new content, mark failures
+    resolved = []
+    for e in edits:
+        try:
+            old, new = _resolve_new_content(e)
+            resolved.append({**e, "_old": old, "_new": new})
+        except Exception as ex:
+            print(f"{_T_ERR} {ex}")
+            resolved.append({**e, "_skip": True})
+
+    applicable = [r for r in resolved if not r.get("_skip")]
+    if not applicable:
+        print(f"{_T_EDIT} No applicable changes.\n")
+        return
+
     print(f"\n{_ANSI_BOLD}{'═'*56}{_ANSI_RESET}")
-    for path, _ in edits:
-        tag = f"{_ANSI_GREEN}NEW{_ANSI_RESET}" if not Path(path).exists() else f"{_ANSI_CYAN}MOD{_ANSI_RESET}"
-        print(f"  [{tag}] {path}")
+    for r in applicable:
+        is_new = r["type"] == "new" and not Path(r["path"]).exists()
+        tag = f"{_ANSI_GREEN}NEW{_ANSI_RESET}" if is_new else f"{_ANSI_CYAN}EDIT{_ANSI_RESET}"
+        print(f"  [{tag}] {r['path']}")
     print(f"{_ANSI_BOLD}{'═'*56}{_ANSI_RESET}\n")
 
-    for path, content in edits:
+    for r in applicable:
+        path = r["path"]
         print(f"{_ANSI_CYAN}── {path} {_ANSI_RESET}" + "─" * max(0, 50 - len(path)))
-        show_diff(path, content)
+        show_diff(path, r["_new"], old_content=r["_old"])
 
     # Non-interactive (piped) → auto-apply
     if not sys.stdin.isatty():
         auto = True
     else:
-        print(f"Apply {_ANSI_BOLD}{len(edits)}{_ANSI_RESET} change(s)? [{_ANSI_GREEN}y{_ANSI_RESET}/{_ANSI_RED}n{_ANSI_RESET}] ", end="", flush=True)
+        print(f"Apply {_ANSI_BOLD}{len(applicable)}{_ANSI_RESET} change(s)? "
+              f"[{_ANSI_GREEN}y{_ANSI_RESET}/{_ANSI_RED}n{_ANSI_RESET}] ", end="", flush=True)
         try:
             auto = input().strip().lower() in ("y", "yes")
         except (KeyboardInterrupt, EOFError):
@@ -1060,17 +1128,17 @@ def apply_edits(edits):
         return
 
     written = 0
-    for path, content in edits:
+    for r in applicable:
         try:
-            p = Path(path)
+            p = Path(r["path"])
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(content, encoding="utf-8")
-            print(f"{_T_EDIT} Wrote {_ANSI_CYAN}{path}{_ANSI_RESET}")
+            p.write_text(r["_new"], encoding="utf-8")
+            print(f"{_T_EDIT} Wrote {_ANSI_CYAN}{r['path']}{_ANSI_RESET}")
             written += 1
-        except Exception as e:
-            print(f"{_T_ERR} Failed to write {path}: {e}")
+        except Exception as ex:
+            print(f"{_T_ERR} Failed to write {r['path']}: {ex}")
 
-    print(f"{_T_EDIT} {_ANSI_GREEN}{written}/{len(edits)}{_ANSI_RESET} file(s) written.\n")
+    print(f"{_T_EDIT} {_ANSI_GREEN}{written}/{len(applicable)}{_ANSI_RESET} change(s) applied.\n")
 
 
 # ---------------------------------------------------------------------------
@@ -1133,7 +1201,12 @@ def chat(query):
 
         edits = parse_edit_blocks(reply)
         # Store a compact version in history so future turns stay lean
-        clean_reply = _EDIT_BLOCK.sub(r" [File updated: \1] ", reply).strip() if edits else reply
+        if edits:
+            labels = ", ".join(e["path"] for e in edits)
+            clean_reply = _ANY_BLOCK.sub("", reply).strip()
+            clean_reply = (clean_reply + f"\n[Files edited: {labels}]").strip()
+        else:
+            clean_reply = reply
         conversation_history.append({"role": "assistant", "content": clean_reply})
 
         cost = calculate_cost(response.usage)
@@ -1145,7 +1218,7 @@ def chat(query):
         turns = len(conversation_history) // 2
 
         # Always print explanation text; apply any file blocks that were returned
-        explanation = _EDIT_BLOCK.sub("", reply).strip() if edits else reply
+        explanation = _ANY_BLOCK.sub("", reply).strip() if edits else reply
         if explanation:
             _print_reply(explanation)
         if edits:
@@ -1188,7 +1261,7 @@ def one_shot(prompt):
         )
         reply = response.content[0].text
         edits = parse_edit_blocks(reply)
-        explanation = _EDIT_BLOCK.sub("", reply).strip() if edits else reply
+        explanation = _ANY_BLOCK.sub("", reply).strip() if edits else reply
         if explanation:
             print(explanation)
         if edits:
