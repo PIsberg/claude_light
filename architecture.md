@@ -69,3 +69,59 @@ Anthropic's token caching system retains context ephemerally for approximately 5
 ### Estimated Token Savings
 - **90% discount retained continuously between idle periods**
 - **Example:** Returning to your desk after 15 minutes to ask a single question natively forces a re-read of the 50,000 token skeleton ($0.15). The heartbeat prevents this expiration entirely, allowing the subsequent interaction to remain at the cached price ($0.015).
+
+---
+
+## 6. Smart Skeleton Compression
+**Significance:** High — reduces the skeleton itself before it ever reaches the cache.
+
+### Mechanism
+The directory tree emitted into the skeleton system prompt was previously one line per file/directory, with naïve indentation. Two lossless compressions are now applied by `_build_compressed_tree()`:
+
+**Chain collapse:** Any directory whose sole child is another directory is merged into a single path segment on one line:
+```
+main/java/com/example/
+```
+instead of four separate indented lines for `main/`, `java/`, `com/`, `example/`.
+
+**Brace grouping:** Sibling files that share the same extension are folded into a single brace expression:
+```
+{OrderService,PaymentService,UserService}.java
+```
+instead of three separate lines.
+
+Both transforms are purely cosmetic to the tree — no information is lost and Claude reads brace/path notation fluently.
+
+### Estimated Token Savings
+- **30–50% reduction in skeleton tree tokens**
+- **Example:** A typical Java microservice with 5 deeply-nested packages and 40 source files might produce a 600-token tree naively. After compression the same tree fits in ~300 tokens, saving ~$0.00009 per warm-cache call but compounding significantly over hundreds of turns and across many skeleton rebuilds.
+
+---
+
+## 7. Retrieved-Chunk Deduplication
+**Significance:** Medium-High — eliminates repeated preamble when multiple methods from the same file rank highly.
+
+### Mechanism
+Each method-level chunk stored by `_chunk_with_treesitter()` embeds a full file preamble (path comment + package declaration + imports + class header) to keep it self-contained for embedding quality. When `retrieve()` returns the top-K chunks and several happen to come from the same file, the old approach naïvely concatenated all of them — repeating the identical preamble for every method.
+
+`_dedup_retrieved_context()` groups the ranked chunks by source file. For each file it emits the preamble exactly once, then appends each retrieved method body beneath a `// methodName` comment:
+
+```java
+// src/main/java/com/example/OrderService.java
+package com.example;
+import ...;
+
+public class OrderService {
+    // processOrder
+    public void processOrder() { ... }
+
+    // cancelOrder
+    public void cancelOrder() { ... }
+}
+```
+
+Whole-file fallback chunks (no `::` separator in their ID) are included verbatim and unaffected.
+
+### Estimated Token Savings
+- **5–20% reduction in retrieved-context tokens per query**
+- **Example:** If three methods from a 30-line preamble file each score above `MIN_SCORE`, the old approach sent the preamble three times (~90 tokens wasted). Deduplication sends it once, freeing those tokens for additional method context within the same `TARGET_RETRIEVED_TOKENS` budget.

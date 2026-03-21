@@ -81,13 +81,16 @@ Without tree-sitter, chunking falls back to whole-file mode. Without rich/prompt
 **Token optimisations:**
 - Skeleton cached; retrieved chunks also cached (second `cache_control` block) — repeated queries over the same code pay $0.30/M instead of $3.00/M
 - Conversation history capped at `MAX_HISTORY_TURNS` (6) via sliding window
-- `build_skeleton()` does a single `rglob("*")` pass to build both the directory tree and collect `.md` content (`.md` files > 5 000 chars are truncated except `CLAUDE.md` / `agents.md`)
+- `build_skeleton()` does a single `rglob("*")` pass to collect paths and `.md` content (`.md` files > 5 000 chars are truncated except `CLAUDE.md` / `agents.md`), then calls `_build_compressed_tree()` to render the directory tree with two compressions: (1) single-child directory chains collapsed into one line (`main/java/com/example/`), (2) sibling files sharing an extension grouped with brace notation (`{OrderService,UserService}.java`). Typical savings: 30–50 % of skeleton tokens.
 
 **Key helpers:**
 - `_build_system_blocks(skeleton, retrieved_ctx=None)` — constructs the system prompt list for all API calls
 - `_update_skeleton()` — rebuilds skeleton and updates shared state under lock
 - `_chunks_for_file(filepath)` — returns all chunk IDs for a file (used by `reindex_file`)
 - `_print_reply(text)` — renders Claude's response as rich markdown when available, plain text otherwise
+- `_build_compressed_tree(paths)` — builds the skeleton directory tree with single-child chain collapse and sibling brace grouping
+- `_render_compressed_node(node, lines, indent)` — recursive renderer for the compressed tree
+- `_dedup_retrieved_context(top_pairs)` — assembles retrieved context, emitting the per-file preamble once when multiple chunks from the same file are retrieved
 
 **Interactive commands**: `/clear`, `/cost`, `/help`, `exit`/`quit`, `Ctrl+C`.
 

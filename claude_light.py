@@ -205,6 +205,55 @@ _file_hashes: dict   = {}   # {str(path): md5_hex} — kept in sync by index_fil
 
 
 # ---------------------------------------------------------------------------
+# UI helpers — ANSI colours, spinner
+# ---------------------------------------------------------------------------
+
+_ANSI_RED     = "\033[31m"
+_ANSI_GREEN   = "\033[32m"
+_ANSI_YELLOW  = "\033[33m"
+_ANSI_BLUE    = "\033[34m"
+_ANSI_MAGENTA = "\033[35m"
+_ANSI_CYAN    = "\033[36m"
+_ANSI_BOLD    = "\033[1m"
+_ANSI_DIM     = "\033[2m"
+_ANSI_RESET   = "\033[0m"
+
+_T_RAG    = f"{_ANSI_CYAN}[RAG]{_ANSI_RESET}"
+_T_CACHE  = f"{_ANSI_YELLOW}[Cache]{_ANSI_RESET}"
+_T_SYS    = f"{_ANSI_MAGENTA}[System]{_ANSI_RESET}"
+_T_EDIT   = f"{_ANSI_CYAN}[Edit]{_ANSI_RESET}"
+_T_ERR    = f"{_ANSI_RED}[Error]{_ANSI_RESET}"
+_T_TEST   = f"{_ANSI_BLUE}[Test Mode]{_ANSI_RESET}"
+
+
+class _Spinner:
+    """Animated braille spinner for long-running operations."""
+    _FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+    def __init__(self, label: str):
+        self.label = label
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._spin, daemon=True)
+
+    def _spin(self):
+        i = 0
+        while not self._stop.is_set():
+            frame = self._FRAMES[i % len(self._FRAMES)]
+            print(f"\r{_ANSI_CYAN}{frame}{_ANSI_RESET} {self.label}...", end="", flush=True)
+            i += 1
+            time.sleep(0.1)
+        print(f"\r{' ' * (len(self.label) + 6)}\r", end="", flush=True)
+
+    def __enter__(self):
+        self._thread.start()
+        return self
+
+    def __exit__(self, *args):
+        self._stop.set()
+        self._thread.join()
+
+
+# ---------------------------------------------------------------------------
 # Cost / stats
 # ---------------------------------------------------------------------------
 
@@ -230,14 +279,16 @@ def print_stats(usage, label="Stats", file=sys.stdout):
     hit_pct     = (read_tokens / total_input * 100) if total_input > 0 else 0.0
 
     print(
-        f"[{label}]  {total_input:,} tokens  |  "
-        f"cached {read_tokens:,} ({hit_pct:.1f}%)  |  new {write_tokens:,}",
+        f"{_ANSI_DIM}[{label}]{_ANSI_RESET}  {total_input:,} tokens  |  "
+        f"cached {_ANSI_GREEN}{read_tokens:,}{_ANSI_RESET} ({hit_pct:.1f}%)  |  "
+        f"new {write_tokens:,}",
         file=file,
     )
     print(
-        f"[Cost]   ${actual_cost:.4f}  |  "
-        f"saved ${savings:.4f} ({savings_pct:.1f}% vs no-cache)  |  "
-        f"session ${session_cost:.4f}",
+        f"{_ANSI_DIM}[Cost]{_ANSI_RESET}   "
+        f"{_ANSI_YELLOW}${actual_cost:.4f}{_ANSI_RESET}  |  "
+        f"saved {_ANSI_GREEN}${savings:.4f}{_ANSI_RESET} ({savings_pct:.1f}% vs no-cache)  |  "
+        f"session {_ANSI_YELLOW}${session_cost:.4f}{_ANSI_RESET}",
         file=file,
     )
 
@@ -268,27 +319,32 @@ def print_session_summary():
 
     col_w = [22, 12, 8, 9]   # label | tokens | % | cost
 
-    def row(label, tokens, cost):
-        return (f"│ {label:<{col_w[0]}} │ {tokens:>{col_w[1]},} │"
-                f" {pct(tokens):>{col_w[2]}} │ ${cost:>{col_w[3]-1}.4f} │")
+    _B = _ANSI_CYAN
+    _R = _ANSI_RESET
+    _H = _ANSI_BOLD
+
+    def row(label, tokens, cost, color=""):
+        cost_str = f"${cost:.4f}"
+        return (f"│ {color}{label:<{col_w[0]}}{_R} │ {tokens:>{col_w[1]},} │"
+                f" {pct(tokens):>{col_w[2]}} │ {_ANSI_YELLOW}{cost_str:>{col_w[3]}}{_R} │")
 
     turns      = len(conversation_history) // 2
     input_base = inp + cw + cr
-    hit_str    = f"{cr / input_base * 100:.1f}%" if input_base else "—"
+    hit_str    = f"{_ANSI_GREEN}{cr / input_base * 100:.1f}%{_R}" if input_base else "—"
 
-    print(f"\n┌{'─'*62}┐")
-    print(f"│{'Session Token Summary':^62}│")
-    print(f"├{'─'*24}┬{'─'*14}┬{'─'*10}┬{'─'*11}┤")
-    print(f"│ {'Type':<{col_w[0]}} │ {'Tokens':>{col_w[1]}} │ {'%':>{col_w[2]}} │ {'Cost':>{col_w[3]}} │")
-    print(f"├{'─'*24}┼{'─'*14}┼{'─'*10}┼{'─'*11}┤")
-    print(row("Input (uncached)",  inp, cost_inp))
-    print(row("Cache write",       cw,  cost_cw))
-    print(row("Cache read",        cr,  cost_cr))
-    print(row("Output",            out, cost_out))
-    print(f"├{'─'*24}┼{'─'*14}┼{'─'*10}┼{'─'*11}┤")
-    print(row("TOTAL",             total, cost_tot))
-    print(f"└{'─'*24}┴{'─'*14}┴{'─'*10}┴{'─'*11}┘")
-    print(f"  Turns: {turns}  |  Cache hit rate: {hit_str}")
+    print(f"\n{_B}┌{'─'*62}┐{_R}")
+    print(f"{_B}│{_R}{_H}{'Session Token Summary':^62}{_R}{_B}│{_R}")
+    print(f"{_B}├{'─'*24}┬{'─'*14}┬{'─'*10}┬{'─'*11}┤{_R}")
+    print(f"{_B}│{_R} {'Type':<{col_w[0]}} {_B}│{_R} {'Tokens':>{col_w[1]}} {_B}│{_R} {'%':>{col_w[2]}} {_B}│{_R} {'Cost':>{col_w[3]}} {_B}│{_R}")
+    print(f"{_B}├{'─'*24}┼{'─'*14}┼{'─'*10}┼{'─'*11}┤{_R}")
+    print(row("Input (uncached)",  inp,  cost_inp))
+    print(row("Cache write",       cw,   cost_cw))
+    print(row("Cache read",        cr,   cost_cr,  _ANSI_GREEN))
+    print(row("Output",            out,  cost_out))
+    print(f"{_B}├{'─'*24}┼{'─'*14}┼{'─'*10}┼{'─'*11}┤{_R}")
+    print(row("TOTAL",             total, cost_tot, _ANSI_BOLD))
+    print(f"{_B}└{'─'*24}┴{'─'*14}┴{'─'*10}┴{'─'*11}┘{_R}")
+    print(f"  Turns: {_ANSI_BOLD}{turns}{_R}  |  Cache hit rate: {hit_str}")
 
 
 # ---------------------------------------------------------------------------
@@ -299,16 +355,85 @@ def _is_skipped(path):
     return any(p in SKIP_DIRS or p.startswith(".") for p in path.parts)
 
 
+def _build_compressed_tree(paths):
+    """
+    Build a compressed directory tree from an already-filtered list of Paths.
+
+    Two compressions applied:
+    1. Single-child directory chains are collapsed into one line:
+           main/java/com/example/
+       instead of four separate indented lines.
+    2. Sibling files sharing an extension are grouped with brace notation:
+           {OrderService,UserService,PaymentService}.java
+
+    Returns the full "Directory structure:\\n..." string.
+    """
+    # Build nested dict: name → {} (directory) or None (file)
+    root_node = {}
+    root = Path(".")
+    for path in paths:
+        parts = path.relative_to(root).parts
+        node  = root_node
+        for part in parts[:-1]:
+            node = node.setdefault(part, {})
+        last = parts[-1]
+        if path.is_dir():
+            node.setdefault(last, {})
+        else:
+            node.setdefault(last, None)
+
+    lines = []
+    _render_compressed_node(root_node, lines, "")
+    return "Directory structure:\n" + "\n".join(lines)
+
+
+def _render_compressed_node(node, lines, indent):
+    """Recursively render a tree node with chain-collapse and brace grouping."""
+    dirs  = {k: v for k, v in node.items() if isinstance(v, dict)}
+    files = [k for k, v in node.items() if v is None]
+
+    # Render directories — collapse single-child pure-dir chains
+    for dirname in sorted(dirs):
+        children   = dirs[dirname]
+        compressed = dirname
+        current    = children
+        while len(current) == 1:
+            only_key, only_val = next(iter(current.items()))
+            if isinstance(only_val, dict):
+                compressed += "/" + only_key
+                current = only_val
+            else:
+                break
+        lines.append(f"{indent}{compressed}/")
+        _render_compressed_node(current, lines, indent + "  ")
+
+    # Group sibling files by extension, brace-expand when > 1 stem
+    by_ext = {}
+    no_ext = []
+    for fname in files:
+        ext = Path(fname).suffix
+        if ext:
+            by_ext.setdefault(ext, []).append(Path(fname).stem)
+        else:
+            no_ext.append(fname)
+
+    for fname in sorted(no_ext):
+        lines.append(f"{indent}{fname}")
+    for ext in sorted(by_ext):
+        stems = sorted(by_ext[ext])
+        if len(stems) == 1:
+            lines.append(f"{indent}{stems[0]}{ext}")
+        else:
+            lines.append(f"{indent}{{{','.join(stems)}}}{ext}")
+
+
 def build_skeleton():
-    """Single rglob pass: builds directory tree + collects .md content."""
-    tree_lines, md_parts = [], []
+    """Single rglob pass: builds compressed directory tree + collects .md content."""
+    all_paths, md_parts = [], []
     for path in sorted(Path(".").rglob("*")):
         if _is_skipped(path):
             continue
-        depth  = len(path.relative_to(".").parts) - 1
-        indent = "  " * depth
-        suffix = "/" if path.is_dir() else ""
-        tree_lines.append(f"{indent}{path.name}{suffix}")
+        all_paths.append(path)
         if path.suffix == ".md" and path.is_file():
             try:
                 text = path.read_text(encoding="utf-8", errors="ignore").strip()
@@ -318,7 +443,7 @@ def build_skeleton():
                     md_parts.append(f"<!-- {path} -->\n{text}")
             except OSError:
                 pass
-    tree = "Directory structure:\n" + "\n".join(tree_lines)
+    tree = _build_compressed_tree(all_paths)
     docs = "\n\n".join(md_parts)
     return tree + ("\n\n" + docs if docs else "")
 
@@ -429,9 +554,10 @@ def auto_tune(source_files, chunks=None):
         chosen_model = "nomic-ai/nomic-embed-text-v1.5"
 
     if chosen_model != EMBED_MODEL or embedder is None:
-        print(f"[RAG] Loading {chosen_model}...")
         EMBED_MODEL = chosen_model
-        embedder    = SentenceTransformer(EMBED_MODEL, trust_remote_code=True)
+        with _Spinner(f"{_T_RAG} Loading {_ANSI_BOLD}{chosen_model}{_ANSI_RESET}"):
+            embedder = SentenceTransformer(EMBED_MODEL, trust_remote_code=True)
+        print(f"{_T_RAG} {_ANSI_GREEN}Loaded{_ANSI_RESET} {chosen_model}")
 
     if chunks:
         n_units     = len(chunks)
@@ -445,8 +571,8 @@ def auto_tune(source_files, chunks=None):
 
     unit_label = f"{n_units} chunks" if chunks else f"{n} files"
     print(
-        f"[RAG] Auto-tune → {n} files → {unit_label} | "
-        f"~{avg_tokens} tokens/chunk | TOP_K={TOP_K} | model={EMBED_MODEL}"
+        f"{_T_RAG} Auto-tune → {_ANSI_BOLD}{n} files{_ANSI_RESET} → {unit_label} | "
+        f"~{avg_tokens} tok/chunk | TOP_K={_ANSI_BOLD}{TOP_K}{_ANSI_RESET} | model={EMBED_MODEL}"
     )
 
 
@@ -471,7 +597,7 @@ def _load_cache(source_files: list, embed_model: str) -> tuple:
         cached_index  = pickle.loads(CACHE_INDEX.read_bytes())
     except Exception as exc:
         if CACHE_MANIFEST.exists() or CACHE_INDEX.exists():
-            print(f"[Cache] Miss ({exc}); re-indexing everything.")
+            print(f"{_T_CACHE} Miss ({exc}); re-indexing everything.")
         return {}, list(source_files)
 
     cached_store: dict = {}
@@ -490,7 +616,8 @@ def _load_cache(source_files: list, embed_model: str) -> tuple:
 
     hit  = len(source_files) - len(stale)
     miss = len(stale)
-    print(f"[Cache] {hit} files hit, {miss} files stale/new.")
+    print(f"{_T_CACHE} {_ANSI_GREEN}{hit}{_ANSI_RESET} files hit, "
+          f"{_ANSI_YELLOW}{miss}{_ANSI_RESET} stale/new.")
     return cached_store, stale
 
 
@@ -518,13 +645,15 @@ def index_files():
     """
     global _source_files, _file_hashes
 
+    print(f"{_T_RAG} Scanning project files...", end="", flush=True)
     source_files = [
         p for p in Path(".").rglob("*")
         if not _is_skipped(p) and p.is_file() and p.suffix.lower() in INDEXABLE_EXTENSIONS
     ]
     if not source_files:
-        print("[RAG] No supported source files found.")
+        print(f"\r{_T_RAG} No supported source files found.")
         return
+    print(f"\r{_T_RAG} Found {_ANSI_BOLD}{len(source_files)}{_ANSI_RESET} source files.")
 
     _source_files = source_files
     _file_hashes  = {str(f): _file_hash(f) for f in source_files}
@@ -535,7 +664,7 @@ def index_files():
 
     # Chunk + embed only the stale/new files
     new_chunks: list = []
-    
+
     def process_file_chunks(f):
         try:
             text = f.read_text(encoding="utf-8", errors="ignore")
@@ -543,17 +672,29 @@ def index_files():
         except OSError:
             return []
 
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        for chunks in executor.map(process_file_chunks, stale_files):
-            new_chunks.extend(chunks)
+    if stale_files:
+        print(f"{_T_RAG} Chunking {len(stale_files)} file(s)...", end="", flush=True)
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            for chunks in executor.map(process_file_chunks, stale_files):
+                new_chunks.extend(chunks)
+        print(f"\r{_T_RAG} Chunked → {len(new_chunks)} chunks.")
+    else:
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            for chunks in executor.map(process_file_chunks, stale_files):
+                new_chunks.extend(chunks)
 
     if new_chunks:
         doc_prefix = _DOC_PREFIX.get(EMBED_MODEL, "")
+        show_bar   = len(new_chunks) > 100
+        if not show_bar:
+            print(f"{_T_RAG} Embedding {len(new_chunks)} chunk(s)...", end="", flush=True)
         embeddings = embedder.encode(
             [doc_prefix + c["text"] for c in new_chunks],
             normalize_embeddings=True,
-            show_progress_bar=len(new_chunks) > 100,
+            show_progress_bar=show_bar,
         )
+        if not show_bar:
+            print(f"\r{_T_RAG} Embedded  {len(new_chunks)} chunk(s).  ")
         new_store = {
             c["id"]: {"text": c["text"], "emb": emb}
             for c, emb in zip(new_chunks, embeddings)
@@ -576,8 +717,10 @@ def index_files():
 
     cached_n = len(source_files) - len(stale_files)
     print(
-        f"[RAG] Index ready — {len(source_files)} files → {len(merged)} chunks "
-        f"({cached_n} cached, {len(stale_files)} re-embedded)"
+        f"{_T_RAG} {_ANSI_GREEN}Index ready{_ANSI_RESET} — "
+        f"{_ANSI_BOLD}{len(source_files)}{_ANSI_RESET} files → "
+        f"{_ANSI_BOLD}{len(merged)}{_ANSI_RESET} chunks "
+        f"({_ANSI_GREEN}{cached_n} cached{_ANSI_RESET}, {len(stale_files)} re-embedded)"
     )
 
 
@@ -604,9 +747,9 @@ def reindex_file(path):
 
         _file_hashes[path] = _file_hash(p)
         _save_cache(EMBED_MODEL)
-        print(f"[RAG] Re-indexed {path} ({len(chunks)} chunks)")
+        print(f"{_T_RAG} Re-indexed {_ANSI_CYAN}{path}{_ANSI_RESET} ({len(chunks)} chunks)")
     except Exception as e:
-        print(f"[RAG] Failed to re-index {path}: {e}")
+        print(f"{_T_ERR} Failed to re-index {path}: {e}")
 
 
 def _chunk_label(chunk_id):
@@ -621,6 +764,54 @@ def _chunks_for_file(filepath):
     """Return all chunk IDs belonging to a given file (whole-file + method chunks)."""
     prefix = filepath + "::"
     return [k for k in chunk_store if k == filepath or k.startswith(prefix)]
+
+
+def _dedup_retrieved_context(top_pairs):
+    """
+    Build retrieved context string, deduplicating the per-file preamble.
+
+    Chunks from the same file share an identical preamble (package + imports +
+    class header).  Instead of repeating it for every method, we emit it once
+    and list all retrieved methods underneath — saving 5-20 % of retrieved
+    context tokens when multiple methods from the same file rank highly.
+
+    Chunk text format (set by _chunk_with_treesitter):
+        // {filepath}\\n{preamble}\\n    // ...\\n{method_body}\\n
+
+    Whole-file fallback chunks (no '::' in their ID) are included as-is.
+    """
+    _SEP = "\n    // ...\n"
+
+    # Preserve retrieval order: first chunk seen for each file wins for header.
+    file_order  = []                           # filepaths in retrieval order
+    file_data   = {}                           # filepath → {header, methods[]}
+    whole_files = []
+
+    with lock:
+        for chunk_id, _score in top_pairs:
+            if chunk_id not in chunk_store:
+                continue
+            text = chunk_store[chunk_id]["text"]
+            if "::" not in chunk_id:
+                whole_files.append(text)
+                continue
+            filepath, method_name = chunk_id.rsplit("::", 1)
+            if _SEP in text:
+                header, body = text.split(_SEP, 1)
+            else:
+                header, body = f"// {filepath}", text
+            if filepath not in file_data:
+                file_order.append(filepath)
+                file_data[filepath] = {"header": header, "methods": []}
+            file_data[filepath]["methods"].append((method_name, body.strip()))
+
+    parts = whole_files[:]
+    for filepath in file_order:
+        d = file_data[filepath]
+        method_blocks = [f"    // {name}\n{body}" for name, body in d["methods"]]
+        parts.append(d["header"] + "\n" + "\n\n".join(method_blocks))
+
+    return "\n\n".join(parts)
 
 
 def retrieve(query, k=None):
@@ -644,8 +835,7 @@ def retrieve(query, k=None):
                  for i in np.argsort(-scores)
                  if scores[i] >= MIN_SCORE][:k]
 
-    with lock:
-        ctx = "\n\n".join(chunk_store[p]["text"] for p, _ in top_pairs if p in chunk_store)
+    ctx = _dedup_retrieved_context(top_pairs)
     return ctx, top_pairs
 
 
@@ -687,18 +877,20 @@ def warm_cache():
         with lock:
             session_cost += cost
 
-        print(f"\n{'═'*56}")
+        print(f"\n{_ANSI_DIM}{'═'*56}{_ANSI_RESET}")
         print_stats(response.usage, label="Cache")
-        print(f"{'═'*56}\n")
+        print(f"{_ANSI_DIM}{'═'*56}{_ANSI_RESET}\n")
     except Exception as e:
-        print(f"[System] Cache warm failed: {e}")
+        print(f"{_T_ERR} Cache warm failed: {e}")
 
 
 def full_refresh():
     """Startup and heartbeat: rebuild skeleton + re-index all source files + warm cache."""
-    print("[System] Full refresh...")
+    print(f"{_T_SYS} {_ANSI_BOLD}Starting up{_ANSI_RESET} — building skeleton...")
     _update_skeleton()
+    print(f"{_T_SYS} Indexing source files...")
     index_files()
+    print(f"{_T_SYS} Warming cache...")
     warm_cache()
 
 
@@ -800,12 +992,6 @@ def heartbeat():
 # Edit helpers — parse, diff, confirm, write
 # ---------------------------------------------------------------------------
 
-_ANSI_RED   = "\033[31m"
-_ANSI_GREEN = "\033[32m"
-_ANSI_CYAN  = "\033[36m"
-_ANSI_RESET = "\033[0m"
-
-
 def _colorize_diff(lines):
     result = []
     for line in lines:
@@ -837,7 +1023,7 @@ def show_diff(path, new_content):
         if diff:
             print("".join(_colorize_diff(line + "\n" for line in diff)))
         else:
-            print(f"  (no changes detected in {path})\n")
+            print(f"  {_ANSI_DIM}(no changes detected in {path}){_ANSI_RESET}\n")
     else:
         preview = new_content[:600] + ("…" if len(new_content) > 600 else "")
         print(f"{_ANSI_GREEN}  [NEW FILE]{_ANSI_RESET} {path}\n{preview}\n")
@@ -846,31 +1032,31 @@ def show_diff(path, new_content):
 def apply_edits(edits):
     """Show diffs, ask confirmation, write files."""
     if not edits:
-        print("[Edit] No file blocks found in response.")
+        print(f"{_T_EDIT} No file blocks found in response.")
         return
 
-    print(f"\n{'═'*56}")
+    print(f"\n{_ANSI_BOLD}{'═'*56}{_ANSI_RESET}")
     for path, _ in edits:
         tag = f"{_ANSI_GREEN}NEW{_ANSI_RESET}" if not Path(path).exists() else f"{_ANSI_CYAN}MOD{_ANSI_RESET}"
         print(f"  [{tag}] {path}")
-    print(f"{'═'*56}\n")
+    print(f"{_ANSI_BOLD}{'═'*56}{_ANSI_RESET}\n")
 
     for path, content in edits:
-        print(f"── {path} " + "─" * max(0, 50 - len(path)))
+        print(f"{_ANSI_CYAN}── {path} {_ANSI_RESET}" + "─" * max(0, 50 - len(path)))
         show_diff(path, content)
 
     # Non-interactive (piped) → auto-apply
     if not sys.stdin.isatty():
         auto = True
     else:
-        print(f"Apply {len(edits)} change(s)? [y/n] ", end="", flush=True)
+        print(f"Apply {_ANSI_BOLD}{len(edits)}{_ANSI_RESET} change(s)? [{_ANSI_GREEN}y{_ANSI_RESET}/{_ANSI_RED}n{_ANSI_RESET}] ", end="", flush=True)
         try:
             auto = input().strip().lower() in ("y", "yes")
         except (KeyboardInterrupt, EOFError):
             auto = False
 
     if not auto:
-        print("[Edit] Cancelled.\n")
+        print(f"{_T_EDIT} Cancelled.\n")
         return
 
     written = 0
@@ -879,12 +1065,12 @@ def apply_edits(edits):
             p = Path(path)
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(content, encoding="utf-8")
-            print(f"[Edit] Wrote {path}")
+            print(f"{_T_EDIT} Wrote {_ANSI_CYAN}{path}{_ANSI_RESET}")
             written += 1
         except Exception as e:
-            print(f"[Edit] Failed to write {path}: {e}")
+            print(f"{_T_ERR} Failed to write {path}: {e}")
 
-    print(f"[Edit] {written}/{len(edits)} file(s) written.\n")
+    print(f"{_T_EDIT} {_ANSI_GREEN}{written}/{len(edits)}{_ANSI_RESET} file(s) written.\n")
 
 
 # ---------------------------------------------------------------------------
@@ -909,8 +1095,8 @@ def chat(query):
     if hits:
         names      = ", ".join(_chunk_label(p) for p, _ in hits)
         scores_str = "  ".join(f"{_chunk_label(p)} {s:.2f}" for p, s in hits)
-        print(f"[RAG] {names}")
-        print(f"      {scores_str}")
+        print(f"{_T_RAG} {_ANSI_CYAN}{names}{_ANSI_RESET}")
+        print(f"      {_ANSI_DIM}{scores_str}{_ANSI_RESET}")
 
     with lock:
         skeleton = skeleton_context
@@ -967,6 +1153,8 @@ def chat(query):
 
         print_stats(response.usage, label=f"Turn {turns}")
 
+    except KeyboardInterrupt:
+        print("\n[Interrupted]")
     except Exception as e:
         print(f"\n[Error] API call failed: {e}")
 
@@ -978,14 +1166,14 @@ def chat(query):
 def one_shot(prompt):
     global session_cost
 
-    print("[System] Building context...", file=sys.stderr)
+    print(f"{_T_SYS} Building context...", file=sys.stderr)
     _update_skeleton()
     index_files()
 
     retrieved_ctx, hits = retrieve(prompt)
     if hits:
         names = ", ".join(_chunk_label(p) for p, _ in hits)
-        print(f"[RAG] {names}", file=sys.stderr)
+        print(f"{_T_RAG} {_ANSI_CYAN}{names}{_ANSI_RESET}", file=sys.stderr)
 
     with lock:
         skeleton = skeleton_context
@@ -1013,7 +1201,7 @@ def one_shot(prompt):
         print_stats(response.usage, label="Stats", file=sys.stderr)
 
     except Exception as e:
-        raise SystemExit(f"[Error] API call failed: {e}")
+        raise SystemExit(f"{_T_ERR} API call failed: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -1028,8 +1216,11 @@ def start_chat():
     observer.start()
     threading.Thread(target=heartbeat, daemon=True).start()
 
-    print(f"Ready. (Claude: {MODEL}  |  RAG top-{TOP_K}  |  Embed: {EMBED_MODEL})")
-    print("Commands: /clear  /cost  /help  exit\n")
+    print(f"\n{_ANSI_BOLD}{_ANSI_GREEN}Ready.{_ANSI_RESET}  "
+          f"Claude: {_ANSI_CYAN}{MODEL}{_ANSI_RESET}  |  "
+          f"RAG top-{_ANSI_BOLD}{TOP_K}{_ANSI_RESET}  |  "
+          f"Embed: {EMBED_MODEL}")
+    print(f"{_ANSI_DIM}Commands: /clear  /cost  /help  exit{_ANSI_RESET}\n")
 
     if _PROMPTTK_AVAILABLE:
         CACHE_DIR.mkdir(exist_ok=True)
@@ -1049,37 +1240,40 @@ def start_chat():
         def _get_input():
             return input("You: ").strip()
 
-    while True:
-        try:
-            query = _get_input()
-        except (KeyboardInterrupt, EOFError):
-            break
+    try:
+        while True:
+            try:
+                query = _get_input()
+            except (KeyboardInterrupt, EOFError):
+                break
 
-        if not query:
-            continue
-        if query.lower() in ("exit", "quit"):
-            break
-        if query == "/clear":
-            conversation_history.clear()
-            print("[System] Conversation history cleared.\n")
-            continue
-        if query == "/cost":
-            print_session_summary()
-            continue
-        if query == "/help":
-            print(
-                "  /clear  — reset conversation history\n"
-                "  /cost   — show session spend so far\n"
-                "  exit    — quit\n"
-            )
-            continue
+            if not query:
+                continue
+            if query.lower() in ("exit", "quit"):
+                break
+            if query == "/clear":
+                conversation_history.clear()
+                print(f"{_T_SYS} Conversation history cleared.\n")
+                continue
+            if query == "/cost":
+                print_session_summary()
+                continue
+            if query == "/help":
+                print(
+                    "  /clear  — reset conversation history\n"
+                    "  /cost   — show session spend so far\n"
+                    "  exit    — quit\n"
+                )
+                continue
 
-        chat(query)
-
-    stop_event.set()
-    observer.stop()
-    observer.join()
-    print_session_summary()
+            chat(query)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stop_event.set()
+        observer.stop()
+        observer.join()
+        print_session_summary()
 
 
 # ---------------------------------------------------------------------------
@@ -1145,7 +1339,7 @@ public class Service{i} {{
         self.embedder_patcher = patch.object(__main__, "SentenceTransformer", new=self._mock_embedder_class)
         self.embedder_patcher.start()
         
-        print(f"[Test Mode] Initialized '{self.preset}' preset with {len(self.files)} files (~{self.total_tokens:,} tokens).")
+        print(f"{_T_TEST} Initialized '{self.preset}' preset with {len(self.files)} files (~{self.total_tokens:,} tokens).")
         
     def _mock_path_class(self):
         files = self.files
