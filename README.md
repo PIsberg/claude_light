@@ -54,6 +54,27 @@ You must set your Anthropic API key before running:
 
 ---
 
+## 🔀 Dynamic Model & Effort Routing
+
+Before every query, a lightweight router classifies the prompt and selects the most cost-efficient model and effort level automatically:
+
+| Effort | Model | Typical use case |
+| :--- | :--- | :--- |
+| `low` | Claude Haiku | Simple lookups, listings, "where is X", "how many Y" |
+| `medium` | Claude Sonnet | Explanations, summaries, moderate analysis |
+| `high` | Claude Sonnet | Code generation, multi-step changes, refactoring |
+| `max` | Claude Opus (+ extended thinking) | Architecture, deep cross-cutting analysis, trade-offs |
+
+The router prints its decision before each call:
+
+```
+[Router] effort=high  model=sonnet
+```
+
+Routing is heuristic-based (keyword signals + prompt length). The router is deliberately conservative — it defaults to `high/sonnet` when uncertain, favouring quality over micro-savings. `max/opus` is reserved for prompts that contain at least two strong architectural signals (e.g. "evaluate the scalability trade-offs of…").
+
+---
+
 ## ⌨️ Interactive Commands
 While in the interactive chat loop, you can use the following commands:
 

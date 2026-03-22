@@ -91,6 +91,8 @@ Without tree-sitter, chunking falls back to whole-file mode. Without rich/prompt
 - `_build_compressed_tree(paths)` — builds the skeleton directory tree with single-child chain collapse and sibling brace grouping
 - `_render_compressed_node(node, lines, indent)` — recursive renderer for the compressed tree
 - `_dedup_retrieved_context(top_pairs)` — assembles retrieved context, emitting the per-file preamble once when multiple chunks from the same file are retrieved
+- `route_query(query)` — heuristic classifier; returns `(model_id, effort_label, max_tokens)` and prints routing decision to stderr
+- `_extract_text(content_blocks)` — joins text blocks from API response, skipping thinking blocks (used when `effort="max"` triggers extended thinking)
 
 **Interactive commands**: `/clear`, `/cost`, `/help`, `exit`/`quit`, `Ctrl+C`.
 
@@ -106,7 +108,8 @@ Every prompt is handled the same way — Claude decides whether to answer in pro
 | `MAX_HISTORY_TURNS` | Sliding-window size for conversation history (default 6) |
 | `HEARTBEAT_SECS` | How often the heartbeat thread wakes (default 30) |
 | `CACHE_TTL_SECS` | Idle seconds before heartbeat warms the cache (default 240) |
-| `MODEL` | Claude model ID (default `claude-sonnet-4-5`) |
+| `MODEL_HAIKU` / `MODEL_SONNET` / `MODEL_OPUS` | Model ID constants used by the router |
+| `MODEL` | Default model (set to `MODEL_SONNET`); overridden per-turn by `route_query()` |
 | `PRICE_INPUT` / `PRICE_WRITE` / `PRICE_READ` / `PRICE_OUTPUT` | Token pricing constants ($3.00 / $3.75 / $0.30 / $15.00 per M) |
 | `SKIP_DIRS` | Directory names excluded from indexing (e.g. `.git`, `node_modules`) |
 | `EMBED_MODEL`, `TOP_K` | Set at runtime by `auto_tune()` — do not set manually |

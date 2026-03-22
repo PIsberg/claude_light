@@ -85,8 +85,11 @@ if not API_KEY and not is_test_mode:
         "        or add ANTHROPIC_API_KEY=sk-ant-... to ~/.anthropic or ./.env"
     )
 
-MODEL                   = "claude-sonnet-4-5"
-SUMMARY_MODEL           = "claude-haiku-4-5-20251001"  # cheap model for history compression
+MODEL_HAIKU             = "claude-haiku-4-5-20251001"
+MODEL_SONNET            = "claude-sonnet-4-6"
+MODEL_OPUS              = "claude-opus-4-6"
+MODEL                   = MODEL_SONNET              # default; overridden per-turn by router
+SUMMARY_MODEL           = MODEL_HAIKU               # cheap model for history compression
 HEARTBEAT_SECS          = 30
 CACHE_TTL_SECS          = 240
 TARGET_RETRIEVED_TOKENS = 6_000   # desired context size per query in tokens
@@ -241,6 +244,7 @@ _T_SYS    = f"{_ANSI_MAGENTA}[System]{_ANSI_RESET}"
 _T_EDIT   = f"{_ANSI_CYAN}[Edit]{_ANSI_RESET}"
 _T_ERR    = f"{_ANSI_RED}[Error]{_ANSI_RESET}"
 _T_TEST   = f"{_ANSI_BLUE}[Test Mode]{_ANSI_RESET}"
+_T_ROUTE  = f"{_ANSI_MAGENTA}[Router]{_ANSI_RESET}"
 
 
 class _Spinner:
@@ -307,6 +311,77 @@ def print_stats(usage, label="Stats", file=sys.stdout):
         f"saved {_ANSI_GREEN}${savings:.4f}{_ANSI_RESET} ({savings_pct:.1f}% vs no-cache)  |  "
         f"session {_ANSI_YELLOW}${session_cost:.4f}{_ANSI_RESET}",
         file=file,
+    )
+
+
+def route_query(query: str) -> tuple[str, str, int]:
+    """Classify a query and return (model_id, effort_label, max_tokens).
+
+    Effort levels:
+      low    → Haiku   — simple lookups, listings, one-liners
+      medium → Sonnet  — explanations, moderate analysis
+      high   → Sonnet  — code generation, multi-step tasks (default)
+      max    → Opus    — deep architecture, cross-cutting analysis, extended thinking
+
+    Prints the routing decision to stderr before returning.
+    """
+    q = query.lower()
+    words = q.split()
+    word_count = len(words)
+
+    # --- signal sets ---
+    _LOW_SIGNALS = {
+        "list", "show", "where", "what is", "what are", "how many",
+        "print", "display", "tell me", "which file", "which files",
+        "find", "locate", "count",
+    }
+    _HIGH_SIGNALS = {
+        "implement", "write", "create", "add", "refactor", "fix", "debug",
+        "build", "develop", "generate", "update", "change", "modify",
+        "migrate", "convert", "extend", "integrate",
+    }
+    _MAX_SIGNALS = {
+        "architect", "architecture", "design system", "deeply", "deep analysis",
+        "performance", "optimize", "security", "scalability", "trade-off",
+        "trade off", "tradeoff", "cross-cutting", "evaluate", "compare",
+        "strategy", "reasoning", "step by step", "comprehensive",
+    }
+
+    # Score each tier
+    low_hits  = sum(1 for s in _LOW_SIGNALS  if s in q)
+    high_hits = sum(1 for s in _HIGH_SIGNALS if s in q)
+    max_hits  = sum(1 for s in _MAX_SIGNALS  if s in q)
+
+    # Determine effort
+    if max_hits >= 2 or (max_hits >= 1 and word_count > 35):
+        effort, model, max_tokens = "max",    MODEL_OPUS,   16_000
+    elif high_hits >= 1 or word_count > 30:
+        effort, model, max_tokens = "high",   MODEL_SONNET,  8_192
+    elif low_hits >= 1 and high_hits == 0 and word_count <= 20:
+        effort, model, max_tokens = "low",    MODEL_HAIKU,   2_048
+    else:
+        effort, model, max_tokens = "medium", MODEL_SONNET,  4_096
+
+    _effort_color = {
+        "low":    _ANSI_GREEN,
+        "medium": _ANSI_CYAN,
+        "high":   _ANSI_YELLOW,
+        "max":    _ANSI_MAGENTA,
+    }
+    color = _effort_color[effort]
+    model_short = model.split("-")[1]   # "haiku" / "sonnet" / "opus"
+    print(
+        f"{_T_ROUTE} effort={color}{effort}{_ANSI_RESET}  "
+        f"model={_ANSI_BOLD}{model_short}{_ANSI_RESET}",
+        file=sys.stderr,
+    )
+    return model, effort, max_tokens
+
+
+def _extract_text(content_blocks) -> str:
+    """Return joined text from content blocks, skipping thinking blocks."""
+    return "".join(
+        b.text for b in content_blocks if getattr(b, "type", None) == "text"
     )
 
 
@@ -1347,15 +1422,20 @@ def chat(query):
 
     system = _build_system_blocks(skeleton)
 
-    try:
-        response = client.messages.create(
-            model=MODEL,
-            max_tokens=8192,
-            system=system,
-            messages=messages,
-        )
+    routed_model, effort, max_tok = route_query(query)
+    create_kwargs: dict = dict(
+        model=routed_model,
+        max_tokens=max_tok,
+        system=system,
+        messages=messages,
+    )
+    if effort == "max":
+        create_kwargs["thinking"] = {"type": "enabled", "budget_tokens": 10_000}
 
-        reply = response.content[0].text
+    try:
+        response = client.messages.create(**create_kwargs)
+
+        reply = _extract_text(response.content)
         conversation_history.append({"role": "user", "content": query})
 
         edits = parse_edit_blocks(reply)
@@ -1411,14 +1491,18 @@ def one_shot(prompt):
         skeleton = skeleton_context
 
     ctx_prefix = f"Retrieved Codebase Context:\n{retrieved_ctx}\n\n" if retrieved_ctx else ""
+    routed_model, effort, max_tok = route_query(prompt)
+    create_kwargs: dict = dict(
+        model=routed_model,
+        max_tokens=max_tok,
+        system=_build_system_blocks(skeleton),
+        messages=[{"role": "user", "content": f"{ctx_prefix}Question:\n{prompt}"}],
+    )
+    if effort == "max":
+        create_kwargs["thinking"] = {"type": "enabled", "budget_tokens": 10_000}
     try:
-        response = client.messages.create(
-            model=MODEL,
-            max_tokens=8192,
-            system=_build_system_blocks(skeleton),
-            messages=[{"role": "user", "content": f"{ctx_prefix}Question:\n{prompt}"}],
-        )
-        reply = response.content[0].text
+        response = client.messages.create(**create_kwargs)
+        reply = _extract_text(response.content)
         edits = parse_edit_blocks(reply)
         explanation = _ANY_BLOCK.sub("", reply).strip() if edits else reply
         if explanation:

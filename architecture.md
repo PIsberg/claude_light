@@ -125,3 +125,39 @@ Whole-file fallback chunks (no `::` separator in their ID) are included verbatim
 ### Estimated Token Savings
 - **5–20% reduction in retrieved-context tokens per query**
 - **Example:** If three methods from a 30-line preamble file each score above `MIN_SCORE`, the old approach sent the preamble three times (~90 tokens wasted). Deduplication sends it once, freeing those tokens for additional method context within the same `TARGET_RETRIEVED_TOKENS` budget.
+
+---
+
+## 8. Dynamic Model & Effort Routing
+**Significance:** High — prevents paying Sonnet/Opus rates for trivial lookups, and unlocks Opus extended thinking only when it genuinely helps.
+
+### Mechanism
+`route_query(query)` runs a zero-API-cost heuristic classifier before every user turn. It counts keyword signals across three tiers (low / high / max) and combines them with raw prompt word-count to select a `(model, effort, max_tokens)` triple:
+
+| Effort | Model | `max_tokens` | Thinking |
+|---|---|---|---|
+| `low` | `claude-haiku-4-5` | 2 048 | off |
+| `medium` | `claude-sonnet-4-6` | 4 096 | off |
+| `high` | `claude-sonnet-4-6` | 8 192 | off |
+| `max` | `claude-opus-4-6` | 16 000 | on (`budget_tokens=10 000`) |
+
+**Low signals** (listing, lookup): `list`, `show`, `where`, `what is`, `how many`, …
+**High signals** (generation, mutation): `implement`, `write`, `create`, `refactor`, `fix`, …
+**Max signals** (deep reasoning): `architect`, `optimize`, `trade-off`, `evaluate`, `comprehensive`, …
+
+Decision rules (evaluated top-down):
+1. `max_hits ≥ 2` OR (`max_hits ≥ 1` AND `word_count > 35`) → **max**
+2. `high_hits ≥ 1` OR `word_count > 30` → **high**
+3. `low_hits ≥ 1` AND `high_hits = 0` AND `word_count ≤ 20` → **low**
+4. Otherwise → **medium**
+
+The routing decision is printed to stderr before the API call:
+```
+[Router] effort=high  model=sonnet
+```
+
+When `effort=max`, the `thinking` parameter (`{"type": "enabled", "budget_tokens": 10_000}`) is added to the API call. Response content blocks are filtered via `_extract_text()` which skips thinking blocks, so the rest of the pipeline sees a plain string reply as before.
+
+### Estimated Token Savings
+- **Varies widely.** Routing a 10-word lookup query to Haiku instead of Sonnet cuts per-turn cost by ~8× (Haiku input: $0.80/M vs Sonnet $3.00/M). Over a session with 30% simple queries this compounds to a meaningful session saving.
+- Extended thinking on `max` turns costs more per call but can save overall by producing higher-quality answers that avoid multi-turn clarification loops.
