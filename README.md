@@ -5,6 +5,40 @@
 ![claude_light](https://github.com/user-attachments/assets/15dcb11d-c68a-4991-a5d8-adb1679e4e3b)
 
 
+## 📊 Real-World Benchmark Results
+
+Measured against 4 popular Python open-source libraries using `benchmark_cost.py`
+(35 queries spanning all effort tiers; results from a live API run on 2026-03-22).
+
+**"Native Claude"** = pasting the entire repository into every message (no RAG, no caching).
+
+### Cost per 10 queries — claude_light vs Native Claude
+
+| Repository | Repo size | Native Claude | claude_light | Savings |
+| :--- | ---: | ---: | ---: | ---: |
+| `psf/requests` v2.31.0 | 108K tokens | $3.08 | $0.21 | **93%** |
+| `pallets/flask` 3.0.0 | 144K tokens | $4.04 | $0.19 | **95%** |
+| `encode/httpx` 0.25.2 | 191K tokens | $4.15 | $0.19 | **96%** |
+| `bottlepy/bottle` 0.13.2 | 92K tokens | $2.99 | $0.26 | **91%** |
+| **Total (35 queries)** | | **$14.26** | **$0.84** | **94% / 17× cheaper** |
+
+### Savings by effort tier
+
+| Effort | Model | Queries | Native Claude | claude_light | Savings |
+| :--- | :--- | ---: | ---: | ---: | ---: |
+| `low` | Haiku | 7 | $2.66 | $0.07 | **97%** |
+| `medium` | Sonnet | 13 | $5.24 | $0.19 | **96%** |
+| `high` | Sonnet | 12 | $5.28 | $0.50 | **91%** |
+| `max` | Opus | 3 | $1.09 | $0.07 | **93%** |
+
+> The `high` tier produces longer code-generation responses (more output tokens), which narrows the
+> gap slightly since output tokens are identical in both scenarios. RAG + caching only helps
+> *input* tokens.
+
+> **How to reproduce:** `python benchmark_cost.py` — see [`BENCHMARKS.md`](BENCHMARKS.md) for full methodology.
+
+---
+
 ## 📉 How It Optimizes Token Usage
 
 This tool is aggressively designed to prevent you from paying full price for tokens. It tackles context bloat and cache expiration through several core strategies:
