@@ -1416,9 +1416,19 @@ def chat(query):
                 "content": [{"type": "text", "text": last_msg["content"], "cache_control": {"type": "ephemeral"}}]
             }
 
-    ctx_prefix = f"Retrieved Codebase Context:\n{retrieved_ctx}\n\n" if retrieved_ctx else ""
-    content  = f"{ctx_prefix}Question:\n{query}"
-    messages = trimmed + [{"role": "user", "content": content}]
+    # Build current user message as a content-block array so the retrieved
+    # chunks get their own ephemeral cache breakpoint (breakpoint ③).
+    # On follow-up questions about the same code area the chunks are identical
+    # and hit the cache; only the new question text is billed at full price.
+    current_blocks: list = []
+    if retrieved_ctx:
+        current_blocks.append({
+            "type": "text",
+            "text": f"Retrieved Codebase Context:\n{retrieved_ctx}\n\n",
+            "cache_control": {"type": "ephemeral"},
+        })
+    current_blocks.append({"type": "text", "text": f"Question:\n{query}"})
+    messages = trimmed + [{"role": "user", "content": current_blocks}]
 
     system = _build_system_blocks(skeleton)
 

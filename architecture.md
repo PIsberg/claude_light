@@ -22,7 +22,15 @@ Rather than feeding Claude an entire codebase for every question, `claude_light`
 ### Mechanism
 Anthropic's Prompt Caching reads tokens sequentially from the start of the `messages` chain and breaks the cache the moment it hits a modified sequence. Previously, `claude_light` appended the `retrieved_ctx` (the RAG output) into the `system` block prefix. Because `retrieved_ctx` inevitably changes based on the user's current question, everything following it in the array—including the entire rolling conversation history—failed to cache. 
 
-The architecture remedies this by loading the `skeleton` (the unchanged directory tree and core system rules) into the `system` block, and prepending the volatile `retrieved_ctx` directly into the *current* user query at the very end of the `messages` array. An `ephemeral` cache breakpoint is injected explicitly at the end of the `skeleton` and at the end of the `conversation_history`.
+The architecture remedies this by loading the `skeleton` (the unchanged directory tree and core system rules) into the `system` block, and prepending the volatile `retrieved_ctx` directly into the *current* user query at the very end of the `messages` array. Three `ephemeral` cache breakpoints are injected:
+
+| Breakpoint | Location | Stable across |
+|---|---|---|
+| ① | End of `skeleton` system block | Entire session |
+| ② | End of `conversation_history` (last stored turn) | All but the newest turn |
+| ③ | End of retrieved RAG chunks in the current user message | Consecutive turns retrieving the same chunks |
+
+Breakpoint ③ is placed by structuring the current user message as a two-element content-block array: one block for the retrieved chunks (with `cache_control`), one block for the bare question text. On follow-up questions about the same area of the codebase, the chunk block is identical and hits the cache; only the new question is billed at full input price.
 
 ### Estimated Token Savings
 - **50% - 95% discount per turn for historical conversation tokens**
