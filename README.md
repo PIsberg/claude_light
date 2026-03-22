@@ -56,7 +56,30 @@ This tool is aggressively designed to prevent you from paying full price for tok
 
 > **Note:** `sentence-transformers` pulls in PyTorch, which is approximately **1.5 GB** on the first install.
 
-### Linux / macOS
+### macOS
+
+```bash
+# Clone or download the repo, then:
+bash install_macos.sh
+```
+
+The macOS installer handles the details specific to macOS:
+- Detects Apple Silicon (`/opt/homebrew`) vs Intel (`/usr/local`) Homebrew paths
+- Installs Python via Homebrew if no 3.9+ interpreter is found
+- Creates a `.venv` virtual environment to avoid the PEP 668 "externally managed" error on macOS 13+
+- Generates a `run.sh` wrapper so you don't need to activate the venv manually
+- Reminds you to add the key to `~/.zshrc` (macOS default shell)
+
+```bash
+# Set API key (zsh — macOS default since Catalina)
+echo 'export ANTHROPIC_API_KEY=sk-ant-your-key-here' >> ~/.zshrc && source ~/.zshrc
+
+# Run from your project root
+cd /path/to/your/project
+/path/to/claude_light/run.sh
+```
+
+### Linux
 
 ```bash
 # Clone or download the repo, then:
@@ -70,7 +93,7 @@ The script detects your Python 3.9+ interpreter and installs all required and op
 
 ```powershell
 # Allow scripts for this session, then run the installer:
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass;
 .\install.ps1
 [System.Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY","sk-ant-your-key-here","User")
 ```

@@ -1,4 +1,4 @@
-# Claude Light installer — Windows (PowerShell 5.1+)
+# Claude Light installer -- Windows (PowerShell 5.1+)
 # Run from the claude_light directory:
 #   Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 #   .\install.ps1
@@ -10,24 +10,23 @@ function Info  { Write-Host "[install] $args" -ForegroundColor Green }
 function Warn  { Write-Host "[warn]    $args" -ForegroundColor Yellow }
 function Fail  { Write-Host "[error]   $args" -ForegroundColor Red; exit 1 }
 
-# ── Python ───────────────────────────────────────────────────────────────────
+# --- Python ------------------------------------------------------------------
 $python = $null
 foreach ($cmd in @("python", "python3", "py")) {
     try {
-        $ver = & $cmd -c "import sys; print(sys.version_info[:2])" 2>$null
-        $ok  = & $cmd -c "import sys; sys.exit(0 if sys.version_info >= (3,9) else 1)" 2>$null
+        $ok = & $cmd -c "import sys; sys.exit(0 if sys.version_info >= (3,9) else 1)" 2>$null
         if ($LASTEXITCODE -eq 0) { $python = $cmd; break }
     } catch {}
 }
 if (-not $python) { Fail "Python 3.9+ is required but was not found. Install from https://python.org" }
 Info "Using $(&$python --version)"
 
-# ── Required packages ─────────────────────────────────────────────────────────
+# --- Required packages -------------------------------------------------------
 Info "Installing required packages (sentence-transformers pulls PyTorch ~1.5 GB on first run)..."
 & $python -m pip install --upgrade sentence-transformers numpy watchdog anthropic
 if ($LASTEXITCODE -ne 0) { Fail "Failed to install required packages." }
 
-# ── Optional packages ─────────────────────────────────────────────────────────
+# --- Optional packages -------------------------------------------------------
 Info "Installing optional packages (tree-sitter, rich, prompt_toolkit, einops)..."
 $optional = @(
     "tree-sitter",
@@ -41,12 +40,12 @@ $optional = @(
     "prompt_toolkit",
     "einops"
 )
-& $python -m pip install --upgrade @optional
+& $python -m pip install --upgrade $optional
 if ($LASTEXITCODE -ne 0) {
-    Warn "Some optional packages failed — the tool will still work, with reduced functionality."
+    Warn "Some optional packages failed - the tool will still work, with reduced functionality."
 }
 
-# ── API key check ─────────────────────────────────────────────────────────────
+# --- API key check -----------------------------------------------------------
 Write-Host ""
 $key = [System.Environment]::GetEnvironmentVariable("ANTHROPIC_API_KEY", "User")
 if (-not $key) {
