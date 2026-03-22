@@ -6,6 +6,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `claude_light.py` is an interactive CLI chat tool for querying and editing a multi-language codebase using Claude. It uses a hybrid RAG + prompt caching strategy: project docs and directory structure are cached as a system prompt, while source files are split into method/function-level chunks via tree-sitter, embedded, and retrieved per-query.
 
+## Repository Layout
+
+| File | Purpose |
+|---|---|
+| `claude_light.py` | Main tool — the entire application in one file |
+| `install.sh` | Linux installer (pip, API key reminder) |
+| `install_macos.sh` | macOS installer (Homebrew, venv, zsh profile, `run.sh` wrapper) |
+| `install.ps1` | Windows PowerShell installer (pure ASCII, PS 5.1+) |
+| `benchmark.py` | Analytical token-savings benchmark — no API key, no network |
+| `benchmark_retrieval.py` | RAG retrieval quality benchmark using SWE-bench Lite |
+| `benchmark_cost.py` | Real-world cost benchmark — runs claude_light.py as subprocess against real repos |
+| `architecture.md` | In-depth implementation walkthrough with source line references |
+| `BENCHMARKS.md` | Documentation for all three benchmark scripts |
+
 ## Running
 
 ```bash
@@ -18,9 +32,9 @@ python3 claude_light.py "What does OrderService do?"
 echo "List all REST endpoints" | python3 claude_light.py
 
 # Simulation / test mode (no API key or costs required)
-python3 claude_light.py --test-mode small    # 5 files, 10 methods each
-python3 claude_light.py --test-mode medium   # 50 files, 15 methods each
-python3 claude_light.py --test-mode large    # 200 files, 20 methods each
+python3 claude_light.py --test-mode small        # 5 files, 10 methods each
+python3 claude_light.py --test-mode medium       # 50 files, 15 methods each
+python3 claude_light.py --test-mode large        # 200 files, 20 methods each
 python3 claude_light.py --test-mode extra-large  # 1000 files, 20 methods each
 ```
 
@@ -28,12 +42,29 @@ Run from the root of a project. Exits with an error if `ANTHROPIC_API_KEY` is no
 
 **API key resolution order:** environment variable → `~/.anthropic` file → `./.env` file in current directory.
 
+## Installation
+
+Use the appropriate installer for the target OS:
+
+```bash
+# Linux
+bash install.sh
+
+# macOS (creates .venv + run.sh wrapper, handles Homebrew + zsh)
+bash install_macos.sh
+
+# Windows PowerShell 5.1+
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\install.ps1
+```
+
+All installers install the same packages. The macOS installer also creates a `.venv` virtual environment and a `run.sh` convenience wrapper.
+
 ## Dependencies
 
 **Required:**
 ```bash
-pip install sentence-transformers numpy
-apt install python3-watchdog python3-anthropic
+pip install sentence-transformers numpy watchdog anthropic
 # Note: sentence-transformers pulls in PyTorch (~1.5 GB on first install)
 ```
 
@@ -41,8 +72,9 @@ apt install python3-watchdog python3-anthropic
 ```bash
 pip install tree-sitter tree-sitter-java tree-sitter-python \
     tree-sitter-go tree-sitter-rust tree-sitter-javascript tree-sitter-typescript
-pip install rich          # formatted markdown output for Claude responses
-pip install prompt_toolkit  # command history, auto-complete, auto-suggest
+pip install rich           # formatted markdown output for Claude responses
+pip install prompt_toolkit # command history, auto-complete, auto-suggest
+pip install einops         # required by nomic embedding model (200+ file repos)
 ```
 
 Without tree-sitter, chunking falls back to whole-file mode. Without rich/prompt_toolkit, the tool degrades gracefully to plain text output and basic `input()`.
@@ -74,7 +106,7 @@ Without tree-sitter, chunking falls back to whole-file mode. Without rich/prompt
 |---|---|
 | < 50 | `all-MiniLM-L6-v2` (22 MB) |
 | 50–199 | `all-mpnet-base-v2` (420 MB) |
-| 200+ | `nomic-ai/nomic-embed-text-v1.5` |
+| 200+ | `nomic-ai/nomic-embed-text-v1.5` (requires `einops`) |
 
 **Scoring**: `retrieve()` uses a single matrix multiply (`embs @ q_emb`) over all chunk embeddings — no per-chunk loop. Chunks below `MIN_SCORE` (0.45) are dropped before sending.
 
@@ -98,6 +130,7 @@ Without tree-sitter, chunking falls back to whole-file mode. Without rich/prompt
 
 Every prompt is handled the same way — Claude decides whether to answer in prose or return file edits. When the response contains ` ```lang:path ``` ` blocks, the script diffs (with ANSI colour), confirms, and writes them automatically. One-shot and piped modes auto-apply without confirmation.
 
+For a deeper dive into the implementation, see [architecture.md](architecture.md).
 
 ## Key Config (top of script)
 
@@ -113,3 +146,25 @@ Every prompt is handled the same way — Claude decides whether to answer in pro
 | `PRICE_INPUT` / `PRICE_WRITE` / `PRICE_READ` / `PRICE_OUTPUT` | Token pricing constants ($3.00 / $3.75 / $0.30 / $15.00 per M) |
 | `SKIP_DIRS` | Directory names excluded from indexing (e.g. `.git`, `node_modules`) |
 | `EMBED_MODEL`, `TOP_K` | Set at runtime by `auto_tune()` — do not set manually |
+
+## Benchmarks
+
+Three standalone benchmark scripts ship with the tool. See [BENCHMARKS.md](BENCHMARKS.md) for full methodology and how to interpret results.
+
+| Script | What it tests | API key needed |
+|---|---|---|
+| `benchmark.py` | Analytical token savings (synthetic data, no network) | No |
+| `benchmark_retrieval.py` | RAG retrieval quality — Hit@K, MRR on SWE-bench Lite | No |
+| `benchmark_cost.py` | Real-world cost vs naive baseline on 4 Python repos | Yes |
+
+```bash
+# Analytical (free)
+python benchmark.py
+
+# Retrieval quality (free, needs sentence-transformers + datasets)
+python benchmark_retrieval.py --split dev
+
+# Real-world cost (requires API key, ~$0.10-0.20 for a full run)
+python benchmark_cost.py --dry-run   # preview without API calls
+python benchmark_cost.py             # live run
+```

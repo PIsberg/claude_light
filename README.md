@@ -52,6 +52,8 @@ This tool is aggressively designed to prevent you from paying full price for tok
 *   **Compressed Skeleton Tree:** The directory tree sent in the cached system prompt is compacted in two ways: single-child directory chains are collapsed (`main/java/com/example/` on one line), and sibling files sharing an extension are brace-grouped (`{OrderService,UserService,PaymentService}.java`). This saves 30–50 % of skeleton tokens on typical Java/Go/Python projects.
 *   **Retrieved-Chunk Deduplication:** When multiple methods from the same file rank highly, the shared preamble (package, imports, class header) is emitted only once, with all retrieved methods listed underneath. This saves 5–20 % of retrieved-context tokens on class-heavy queries.
 
+For a deeper dive into the implementation, see [architecture.md](architecture.md).
+
 ## 🚀 Getting Started
 
 > **Note:** `sentence-transformers` pulls in PyTorch, which is approximately **1.5 GB** on the first install.
