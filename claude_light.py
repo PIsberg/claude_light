@@ -93,7 +93,10 @@ SUMMARY_MODEL           = MODEL_HAIKU               # cheap model for history co
 HEARTBEAT_SECS          = 30
 CACHE_TTL_SECS          = 240
 TARGET_RETRIEVED_TOKENS = 6_000   # desired context size per query in tokens
-MIN_SCORE               = 0.45    # discard retrieved files below this similarity
+MIN_SCORE               = 0.45    # discard retrieved files below this similarity (absolute floor)
+RELATIVE_SCORE_FLOOR    = 0.60    # drop chunks below this fraction of the top chunk's score
+# Per-effort retrieval token budgets (scaled from TARGET_RETRIEVED_TOKENS)
+_RETRIEVAL_BUDGET = {"low": 1_500, "medium": 3_000, "high": 6_000, "max": 9_000}
 MAX_HISTORY_TURNS       = 6       # compress+cap when stored turns exceed this
 SUMMARIZE_BATCH         = 3       # how many old turns to collapse into a summary at once
 
@@ -981,13 +984,23 @@ def _dedup_retrieved_context(top_pairs):
     return "\n\n".join(parts)
 
 
-def retrieve(query, k=None):
+def retrieve(query, token_budget=None):
     """
     Returns (context_str, hits) where hits = [(chunk_id, score), ...].
-    k defaults to the auto-tuned TOP_K.
-    Uses vectorised matrix multiply instead of per-chunk dot products.
+
+    token_budget: target retrieved-context size in tokens. Defaults to
+    TARGET_RETRIEVED_TOKENS. k is derived proportionally from TOP_K so that
+    the retrieved set fits within the budget.
+
+    Two-stage filtering:
+      1. Absolute floor: drop chunks below MIN_SCORE.
+      2. Relative floor: drop chunks below RELATIVE_SCORE_FLOOR × top_score,
+         eliminating low-relevance stragglers that would fill the budget with noise.
     """
-    k = k or TOP_K or 4
+    budget = token_budget or TARGET_RETRIEVED_TOKENS
+    base_k = TOP_K or 4
+    k = max(2, round(base_k * budget / TARGET_RETRIEVED_TOKENS))
+
     with lock:
         if not chunk_store:
             return "", []
@@ -998,9 +1011,15 @@ def retrieve(query, k=None):
     q_emb        = embedder.encode(query_prefix + query, normalize_embeddings=True)
     scores       = embs @ q_emb   # (n_chunks,) — one vectorised op
 
+    # Stage 1: absolute floor + top-k
     top_pairs = [(ids[i], float(scores[i]))
                  for i in np.argsort(-scores)
                  if scores[i] >= MIN_SCORE][:k]
+
+    # Stage 2: relative floor — drop stragglers far below the best match
+    if top_pairs:
+        threshold = top_pairs[0][1] * RELATIVE_SCORE_FLOOR
+        top_pairs = [(cid, s) for cid, s in top_pairs if s >= threshold]
 
     ctx = _dedup_retrieved_context(top_pairs)
     return ctx, top_pairs
@@ -1391,7 +1410,11 @@ def _print_reply(text):
 def chat(query):
     global last_interaction, session_cost
 
-    retrieved_ctx, hits = retrieve(query)
+    # Route first so the retrieval budget matches the model/effort selection.
+    routed_model, effort, max_tok = route_query(query)
+    token_budget = _RETRIEVAL_BUDGET[effort]
+
+    retrieved_ctx, hits = retrieve(query, token_budget=token_budget)
 
     if hits:
         names      = ", ".join(_chunk_label(p) for p, _ in hits)
@@ -1432,7 +1455,6 @@ def chat(query):
 
     system = _build_system_blocks(skeleton)
 
-    routed_model, effort, max_tok = route_query(query)
     create_kwargs: dict = dict(
         model=routed_model,
         max_tokens=max_tok,
@@ -1492,7 +1514,8 @@ def one_shot(prompt):
     _update_skeleton()
     index_files()
 
-    retrieved_ctx, hits = retrieve(prompt)
+    routed_model, effort, max_tok = route_query(prompt)
+    retrieved_ctx, hits = retrieve(prompt, token_budget=_RETRIEVAL_BUDGET[effort])
     if hits:
         names = ", ".join(_chunk_label(p) for p, _ in hits)
         print(f"{_T_RAG} {_ANSI_CYAN}{names}{_ANSI_RESET}", file=sys.stderr)
@@ -1501,7 +1524,6 @@ def one_shot(prompt):
         skeleton = skeleton_context
 
     ctx_prefix = f"Retrieved Codebase Context:\n{retrieved_ctx}\n\n" if retrieved_ctx else ""
-    routed_model, effort, max_tok = route_query(prompt)
     create_kwargs: dict = dict(
         model=routed_model,
         max_tokens=max_tok,
