@@ -37,7 +37,7 @@ Measured against 4 popular Python open-source libraries using `benchmark_cost.py
 > gap slightly since output tokens are identical in both scenarios. RAG + caching only helps
 > *input* tokens.
 
-> **How to reproduce:** `python benchmark_cost.py` — see [`BENCHMARKS.md`](BENCHMARKS.md) for full methodology.
+> **How to reproduce:** `python benchmark_cost.py` — see [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) for full methodology.
 
 ---
 
@@ -54,7 +54,7 @@ This tool is aggressively designed to prevent you from paying full price for tok
 *   **Compressed Skeleton Tree:** The directory tree sent in the cached system prompt is compacted in two ways: single-child directory chains are collapsed (`main/java/com/example/` on one line), and sibling files sharing an extension are brace-grouped (`{OrderService,UserService,PaymentService}.java`). This saves 30–50 % of skeleton tokens on typical Java/Go/Python projects.
 *   **Retrieved-Chunk Deduplication:** When multiple methods from the same file rank highly, the shared preamble (package, imports, class header) is emitted only once, with all retrieved methods listed underneath. This saves 5–20 % of retrieved-context tokens on class-heavy queries.
 
-For a deeper dive into the implementation, see [architecture.md](architecture.md).
+For a deeper dive into the implementation, see [docs/architecture.md](docs/architecture.md).
 
 ## 🚀 Getting Started
 
