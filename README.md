@@ -20,27 +20,56 @@ This tool is aggressively designed to prevent you from paying full price for tok
 
 ## 🚀 Getting Started
 
-### Dependencies
+> **Note:** `sentence-transformers` pulls in PyTorch, which is approximately **1.5 GB** on the first install.
 
-Install the required Python packages and system tools:
+### Linux / macOS
+
 ```bash
-pip install sentence-transformers numpy
-pip install python3-watchdog python3-anthropic
-pip install prompt_toolkit
-pip install einops
-
+# Clone or download the repo, then:
+bash install.sh
+export ANTHROPIC_API_KEY=sk-ant-your-key-here
 ```
 
-# Running the Tool
+The script detects your Python 3.9+ interpreter and installs all required and optional packages via `pip`.
 
-> **Note:** `sentence-transformers` will pull in PyTorch, which is approximately **1.5 GB** on the first install.
+### Windows (PowerShell)
 
-Run the script from the root of your project. It will immediately build the skeleton, chunk your files, and auto-tune the embedding model.
+```powershell
+# Allow scripts for this session, then run the installer:
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\install.ps1
+[System.Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY","sk-ant-your-key-here","User")
+```
 
-### 🔑 Prerequisites
-You must set your Anthropic API key before running:
+### Manual installation
 
-`export ANTHROPIC_API_KEY=sk-ant-your-key-here`
+If you prefer to install packages yourself:
+
+```bash
+# Required
+pip install sentence-transformers numpy watchdog anthropic
+
+# Optional — strongly recommended
+pip install tree-sitter tree-sitter-java tree-sitter-python \
+    tree-sitter-go tree-sitter-rust tree-sitter-javascript tree-sitter-typescript \
+    rich prompt_toolkit einops
+```
+
+Without tree-sitter, chunking falls back to whole-file mode. Without `rich`/`prompt_toolkit`, output degrades gracefully to plain text and basic `input()`.
+
+### 🔑 API key
+
+The key is resolved in this order: environment variable → `~/.anthropic` file → `.env` in the current directory.
+
+```bash
+# Linux / macOS
+export ANTHROPIC_API_KEY=sk-ant-your-key-here
+
+# Windows PowerShell (persistent)
+[System.Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY","sk-ant-your-key-here","User")
+```
+
+Run the script from the root of your project — it will immediately build the skeleton, chunk your files, and auto-tune the embedding model.
 
 ---
 
