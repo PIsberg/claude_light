@@ -88,6 +88,30 @@ def util():
         self.assertEqual(edits[0]["path"], "src/utils.py")
         self.assertEqual(edits[0]["content"].strip(), "def util():\n    pass")
 
+    def test_parse_edit_blocks_missing_tag(self):
+        text = '''Here is the new file:
+```python
+# src/feature.py
+def feature(): pass
+```'''
+        edits = parse_edit_blocks(text)
+        self.assertEqual(len(edits), 1)
+        self.assertEqual(edits[0]["type"], "new")
+        self.assertEqual(edits[0]["path"], "src/feature.py")
+        
+    def test_parse_edit_blocks_conversational(self):
+        text = '''You can just call it like this:
+```python
+feature()
+```'''
+        edits = parse_edit_blocks(text)
+        self.assertEqual(len(edits), 0)
+        
+    def test_parse_edit_blocks_absolute_normalized(self):
+        text = '''```python:/home/user/workspace/src/test.py\ndef feature(): pass\n```'''
+        edits = parse_edit_blocks(text)
+        self.assertEqual(edits[0]["path"], "home/user/workspace/src/test.py")
+
     def test_build_compressed_tree(self):
         paths = [
             Path("src/main/java/com/example/UserService.java"),
@@ -101,6 +125,41 @@ def util():
         self.assertIn("{OrderService,UserService}.java", tree)
         self.assertIn("util/", tree)
         self.assertIn("Helper.java", tree)
+
+class TestResolveNewContent(unittest.TestCase):
+    
+    def setUp(self):
+        self.original_code = "def foo():\n    try:\n        a = 1\n        b = 2\n    except:\n        pass\n"
+        Path("dummy.py").write_text(self.original_code, encoding="utf-8")
+
+    def tearDown(self):
+        Path("dummy.py").unlink(missing_ok=True)
+
+    def test_resolve_exact(self):
+        # Exact match
+        from claude_light import _resolve_new_content
+        search = "        a = 1\n        b = 2"
+        replace = "        a = 3\n        b = 4"
+        _, result = _resolve_new_content({"path": "dummy.py", "type": "edit", "search": search, "replace": replace})
+        self.assertIn("a = 3", result)
+        
+    def test_resolve_fuzzy_indentation(self):
+        # LLM forgets the 8 leading spaces!
+        from claude_light import _resolve_new_content
+        search = "a = 1\nb = 2\n"
+        replace = "a = 5\nb = 5\n"
+        _, result = _resolve_new_content({"path": "dummy.py", "type": "edit", "search": search, "replace": replace})
+        self.assertIn("        a = 5", result)
+        self.assertIn("        b = 5", result)
+
+    def test_resolve_fuzzy_hallucination(self):
+        # LLM hallucinates a typo combining two lines!
+        from claude_light import _resolve_new_content
+        search = "    try:\n        a = 1, b = 2"
+        replace = "    try:\n        a = 9\n        b = 9"
+        # Should catch the sequence block due to high string similarity
+        _, result = _resolve_new_content({"path": "dummy.py", "type": "edit", "search": search, "replace": replace})
+        self.assertIn("        a = 9", result)
 
 if __name__ == "__main__":
     unittest.main()

@@ -206,9 +206,9 @@ Rules:
 5. After all blocks, write a short plain-English summary of what changed.
 """
 
-# Matches any fenced block with a path tag:  ```[lang]:path\n...\n```
-_ANY_BLOCK = re.compile(r"```[a-zA-Z]*:([^\n`]+)\n(.*?)```", re.DOTALL)
-# Kept for stripping edit blocks from history (matches both formats)
+# Matches ANY fenced code block. Group 1 is the optional path tag, Group 2 is body.
+_ANY_BLOCK = re.compile(r"```[a-zA-Z0-9_+-]*(?::([^\n`]+))?[ \t]*\n(.*?)```", re.DOTALL)
+# Used for stripping irrelevant code blocks from history to save tokens
 _EDIT_BLOCK = _ANY_BLOCK
 
 client   = anthropic.Anthropic(api_key=API_KEY)
@@ -1251,16 +1251,33 @@ _SR_PATTERN = re.compile(
 
 
 def parse_edit_blocks(text):
-    """Return list of edit dicts parsed from Claude's fenced code blocks.
-
-    Each dict has:
-      {"type": "edit", "path": str, "search": str, "replace": str}  — SEARCH/REPLACE
-      {"type": "new",  "path": str, "content": str}                 — new / full-file
-    """
+    """Return list of edit dicts parsed from Claude's fenced code blocks."""
     edits = []
     for m in _ANY_BLOCK.finditer(text):
-        path = m.group(1).strip()
+        raw_path = m.group(1)
+        path = raw_path.strip() if raw_path else ""
         body = m.group(2)
+        
+        # If no path tag is provided, search the first few lines of the code block for a comment
+        if not path:
+            lines = body.lstrip().splitlines()
+            for line in lines[:3]:
+                import re
+                # Matches inline pseudo-paths like:  # src/file.py, // path/foo.js, /* main.cpp */, <!-- index.html -->
+                mt = re.match(r"^(?:#|//|/\*+|<!--)\s*([\w./\\-]+\.\w+)\s*(?:\*/|-->)?\s*$", line.strip())
+                if mt:
+                    path = mt.group(1)
+                    break
+                    
+        # If it's a conversational snippet with absolutely no path info, ignore it
+        if not path:
+            continue
+            
+        # Defensively normalize paths (prevent absolute '/foo' escaping project root)
+        path = path.lstrip("/\\")
+        while path.startswith("./") or path.startswith(".\\"):
+            path = path[2:]
+            
         sr = _SR_PATTERN.match(body)
         if sr:
             edits.append({"type": "edit", "path": path,
