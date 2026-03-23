@@ -465,7 +465,7 @@ def index_repo(repo_path: Path, lang_config: dict, model_name: str,
         texts,
         normalize_embeddings=True,
         show_progress_bar=len(texts) > 200,
-        batch_size=2,
+        batch_size=16,
     )
     ids = [c["id"] for c in all_chunks]
     return ids, np.array(embeddings, dtype=np.float32)

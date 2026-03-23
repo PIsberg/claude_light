@@ -39,6 +39,6 @@ jobs:
         
     - name: Run retrieval benchmark (subset)
       run: |
-        # Limiting to 5 instances so the pipeline completes efficiently
-        python tests/benchmark_retrieval.py --n 5 --json > tests/baseline_retrieval_stats_new.json
+        # Limiting to a small repo (marshmallow) so the pipeline uses MiniLM and completes rapidly
+        python tests/benchmark_retrieval.py --repo marshmallow-code/marshmallow --json > tests/baseline_retrieval_stats_new.json
         python tests/check_regression.py retrieval tests/baseline_retrieval_stats.json tests/baseline_retrieval_stats_new.json
