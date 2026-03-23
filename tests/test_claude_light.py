@@ -204,6 +204,24 @@ class TestResolveNewContent(unittest.TestCase):
         self.assertIsNotNone(err)
         self.assertIn("SyntaxError", err)
 
+    def test_autonomous_linting_javascript(self):
+        from claude_light import _lint_content
+        import claude_light as cl
+        if not cl._TREESITTER_AVAILABLE:
+            self.skipTest("tree-sitter not installed")
+        try:
+            import tree_sitter_javascript  # noqa: F401
+        except ImportError:
+            self.skipTest("tree-sitter-javascript not installed")
+
+        valid_js = "function greet(name) {\n  return 'Hello, ' + name;\n}\n"
+        self.assertIsNone(_lint_content("app.js", valid_js))
+
+        broken_js = "function greet(name {\n  return 'Hello';\n}\n"  # missing )
+        err = _lint_content("app.js", broken_js)
+        self.assertIsNotNone(err)
+        self.assertIn("SyntaxError", err)
+
     def test_lint_content_skips_unknown_extensions(self):
         from claude_light import _lint_content
         # Non-.py / non-.java files should return None (no linter registered)
