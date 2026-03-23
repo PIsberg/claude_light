@@ -17,6 +17,7 @@ import anthropic
 try:
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     os.environ["TRANSFORMERS_VERBOSITY"] = "error"
+    os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
     from sentence_transformers import SentenceTransformer
 except ImportError:
     raise SystemExit(
@@ -1263,13 +1264,39 @@ def _resolve_new_content(edit):
     if edit["type"] == "new":
         old = p.read_text(encoding="utf-8", errors="ignore") if p.exists() else ""
         return old, edit["content"]
+
     # SEARCH/REPLACE
     if not p.exists():
         raise FileNotFoundError(f"File not found: {edit['path']}")
+    
     old = p.read_text(encoding="utf-8", errors="ignore")
-    if edit["search"] not in old:
-        raise ValueError(f"SEARCH block not found in {edit['path']}")
-    return old, old.replace(edit["search"], edit["replace"], 1)
+    search = edit["search"]
+    replace = edit["replace"]
+    
+    # 1. Fast exact match
+    if search in old:
+        return old, old.replace(search, replace, 1)
+        
+    # 2. Try ignoring leading/trailing blank lines
+    s_strip = search.strip("\r\n")
+    r_strip = replace.strip("\r\n")
+    if s_strip and s_strip in old:
+        return old, old.replace(s_strip, r_strip, 1)
+        
+    # 3. Try normalizing line endings (Windows \r\n vs AI's \n)
+    norm_old = old.replace("\r\n", "\n")
+    norm_search = search.replace("\r\n", "\n")
+    norm_replace = replace.replace("\r\n", "\n")
+    
+    if norm_search in norm_old:
+        return old, norm_old.replace(norm_search, norm_replace, 1)
+        
+    norm_s_strip = norm_search.strip("\n")
+    norm_r_strip = norm_replace.strip("\n")
+    if norm_s_strip and norm_s_strip in norm_old:
+        return old, norm_old.replace(norm_s_strip, norm_r_strip, 1)
+        
+    raise ValueError(f"SEARCH block not found in {edit['path']}")
 
 
 def show_diff(path, new_content, old_content=None):

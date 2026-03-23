@@ -48,10 +48,15 @@ if __name__ == "__main__":
         
     check_type, base_file, curr_file = sys.argv[1:4]
     
-    with open(base_file, "r") as f:
-        baseline = json.load(f)
-    with open(curr_file, "r") as f:
-        current = json.load(f)
+    def load_json_forgiving(filepath):
+        with open(filepath, "rb") as f:
+            raw = f.read()
+        if raw.startswith(b'\xff\xfe') or raw.startswith(b'\xfe\xff'):
+            return json.loads(raw.decode("utf-16"))
+        return json.loads(raw.decode("utf-8"))
+        
+    baseline = load_json_forgiving(base_file)
+    current = load_json_forgiving(curr_file)
         
     if check_type == "tokens":
         check_tokens(baseline, current)
