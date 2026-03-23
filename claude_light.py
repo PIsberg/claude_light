@@ -15,6 +15,8 @@ import numpy as np
 import anthropic
 
 try:
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    os.environ["TRANSFORMERS_VERBOSITY"] = "error"
     from sentence_transformers import SentenceTransformer
 except ImportError:
     raise SystemExit(
