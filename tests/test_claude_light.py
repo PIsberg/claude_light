@@ -161,5 +161,17 @@ class TestResolveNewContent(unittest.TestCase):
         _, result = _resolve_new_content({"path": "dummy.py", "type": "edit", "search": search, "replace": replace})
         self.assertIn("        a = 9", result)
 
+    def test_autonomous_linting(self):
+        # LLM generated a totally busted syntax
+        from claude_light import apply_edits
+        search = "        a = 1\n        b = 2"
+        replace = "        a = 3\n        print('missing parenthesis"
+        
+        # Test that check_only=True silently evaluates and returns the SyntaxError
+        errs = apply_edits([{"path": "dummy.py", "type": "edit", "search": search, "replace": replace}], check_only=True)
+        self.assertEqual(len(errs), 1)
+        self.assertIn("SyntaxError", errs[0])
+        self.assertIn("dummy.py", errs[0])
+
 if __name__ == "__main__":
     unittest.main()

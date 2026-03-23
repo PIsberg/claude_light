@@ -1412,6 +1412,17 @@ def _resolve_new_content(edit):
 
     raise ValueError(f"SEARCH block not found in {edit['path']} (even with fuzzy sequence matching)")
 
+def _lint_python_content(filepath: str, new_content: str) -> str | None:
+    if not filepath.endswith(".py"):
+        return None
+    try:
+        import ast
+        ast.parse(new_content, filename=filepath)
+        return None
+    except SyntaxError as e:
+        import traceback
+        return "".join(traceback.format_exception_only(type(e), e)).strip()
+
 
 def show_diff(path, new_content, old_content=None):
     p = Path(path)
@@ -1433,26 +1444,39 @@ def show_diff(path, new_content, old_content=None):
         print(f"{_ANSI_GREEN}  [NEW FILE]{_ANSI_RESET} {path}\n{preview}\n")
 
 
-def apply_edits(edits):
-    """Show diffs, ask confirmation, apply SEARCH/REPLACE and new-file edits."""
+def apply_edits(edits, check_only=False):
+    """Show diffs, ask confirmation, apply SEARCH/REPLACE and new-file edits.
+    If check_only is True, lint in memory and return a list of error strings."""
     if not edits:
-        print(f"{_T_EDIT} No file blocks found in response.")
-        return
+        if not check_only:
+            print(f"{_T_EDIT} No file blocks found in response.")
+        return [] if check_only else None
 
     # Pre-resolve: compute old+new content, mark failures
     resolved = []
+    lint_errors = []
     for e in edits:
         try:
             old, new = _resolve_new_content(e)
+            if check_only:
+                err = _lint_python_content(e["path"], new)
+                if err:
+                    lint_errors.append(f"SyntaxError in {e['path']}:\n{err}")
             resolved.append({**e, "_old": old, "_new": new})
         except Exception as ex:
-            print(f"{_T_ERR} {ex}")
+            if check_only:
+                lint_errors.append(f"Edit failed for {e['path']}: {ex}")
+            else:
+                print(f"{_T_ERR} {ex}")
             resolved.append({**e, "_skip": True})
+
+    if check_only:
+        return lint_errors
 
     applicable = [r for r in resolved if not r.get("_skip")]
     if not applicable:
         print(f"{_T_EDIT} No applicable changes.\n")
-        return
+        return None
 
     print(f"\n{_ANSI_BOLD}{'═'*56}{_ANSI_RESET}")
     for r in applicable:
@@ -1623,37 +1647,66 @@ def chat(query):
         create_kwargs["thinking"] = {"type": "enabled", "budget_tokens": 10_000}
 
     try:
-        response = client.messages.create(**create_kwargs)
+        # Autonomous retry loop for syntax and search-block checking
+        for attempt in range(3):
+            response = client.messages.create(**create_kwargs)
+            reply = _extract_text(response.content)
+            edits = parse_edit_blocks(reply)
+            
+            # Syntax validation pass
+            if edits:
+                lint_errs = apply_edits(edits, check_only=True)
+                if lint_errs:
+                    cost = calculate_cost(response.usage)
+                    _accumulate_usage(response.usage)
+                    with lock:
+                        session_cost += cost
 
-        reply = _extract_text(response.content)
-        conversation_history.append({"role": "user", "content": query})
+                    print(f"\n{_T_ERR} {_ANSI_RED}Auto-detected errors in AI's code:{_ANSI_RESET}")
+                    for err in lint_errs:
+                        err_clean = err.strip().replace('\n', ' ')
+                        print(f"  {err_clean}")
+                    print(f"[{_ANSI_CYAN}Auto-correction{_ANSI_RESET}] Requesting fix from Claude (attempt {attempt+1}/3)...")
+                    
+                    err_msg = "[Error] The code you provided failed with the following errors:\n" + "\n".join(lint_errs) + "\nPlease provide corrected SEARCH/REPLACE blocks."
+                    
+                    # Append failed interaction to prompt array
+                    create_kwargs["messages"].append({"role": "assistant", "content": reply})
+                    create_kwargs["messages"].append({"role": "user", "content": [{"type": "text", "text": err_msg}]})
+                    
+                    # Strip ephemeral cache from older messages
+                    for m in create_kwargs["messages"][:-1]:
+                        if isinstance(m["content"], list):
+                            for b in m["content"]: b.pop("cache_control", None)
+                    continue
 
-        edits = parse_edit_blocks(reply)
-        # Store a compact version in history so future turns stay lean
-        if edits:
-            labels = ", ".join(e["path"] for e in edits)
-            clean_reply = _ANY_BLOCK.sub("", reply).strip()
-            clean_reply = (clean_reply + f"\n[Files edited: {labels}]").strip()
-        else:
-            clean_reply = reply
-        conversation_history.append({"role": "assistant", "content": clean_reply})
+            # Success (or no edits)
+            conversation_history.append({"role": "user", "content": query})
 
-        cost = calculate_cost(response.usage)
-        _accumulate_usage(response.usage)
-        with lock:
-            last_interaction = time.time()
-            session_cost += cost
+            if edits:
+                labels = ", ".join(e["path"] for e in edits)
+                clean_reply = _ANY_BLOCK.sub("", reply).strip()
+                clean_reply = (clean_reply + f"\n[Files edited: {labels}]").strip()
+            else:
+                clean_reply = reply
+            conversation_history.append({"role": "assistant", "content": clean_reply})
 
-        turns = len(conversation_history) // 2
+            cost = calculate_cost(response.usage)
+            _accumulate_usage(response.usage)
+            with lock:
+                last_interaction = time.time()
+                session_cost += cost
 
-        # Always print explanation text; apply any file blocks that were returned
-        explanation = _ANY_BLOCK.sub("", reply).strip() if edits else reply
-        if explanation:
-            _print_reply(explanation)
-        if edits:
-            apply_edits(edits)
+            turns = len(conversation_history) // 2
 
-        print_stats(response.usage, label=f"Turn {turns}")
+            explanation = _ANY_BLOCK.sub("", reply).strip() if edits else reply
+            if explanation:
+                _print_reply(explanation)
+            if edits:
+                apply_edits(edits)
+
+            print_stats(response.usage, label=f"Turn {turns}")
+            break
 
     except KeyboardInterrupt:
         print("\n[Interrupted]")
@@ -1691,20 +1744,46 @@ def one_shot(prompt):
     if effort == "max":
         create_kwargs["thinking"] = {"type": "enabled", "budget_tokens": 10_000}
     try:
-        response = client.messages.create(**create_kwargs)
-        reply = _extract_text(response.content)
-        edits = parse_edit_blocks(reply)
-        explanation = _ANY_BLOCK.sub("", reply).strip() if edits else reply
-        if explanation:
-            print(explanation)
-        if edits:
-            apply_edits(edits)
+        for attempt in range(3):
+            response = client.messages.create(**create_kwargs)
+            reply = _extract_text(response.content)
+            edits = parse_edit_blocks(reply)
 
-        cost = calculate_cost(response.usage)
-        _accumulate_usage(response.usage)
-        with lock:
-            session_cost += cost
-        print_stats(response.usage, label="Stats", file=sys.stderr)
+            if edits:
+                lint_errs = apply_edits(edits, check_only=True)
+                if lint_errs:
+                    cost = calculate_cost(response.usage)
+                    _accumulate_usage(response.usage)
+                    with lock:
+                        session_cost += cost
+
+                    print(f"\n{_T_ERR} Auto-detected errors:", file=sys.stderr)
+                    for err in lint_errs:
+                        err_clean = err.strip().replace('\n', ' ')
+                        print(f"  {err_clean}", file=sys.stderr)
+                    print(f"[Auto-correction] Requesting fix from Claude (attempt {attempt+1}/3)...", file=sys.stderr)
+                    
+                    err_msg = "[Error] The code you provided failed with the following errors:\n" + "\n".join(lint_errs) + "\nPlease provide corrected SEARCH/REPLACE blocks."
+                    create_kwargs["messages"].append({"role": "assistant", "content": reply})
+                    create_kwargs["messages"].append({"role": "user", "content": [{"type": "text", "text": err_msg}]})
+                    
+                    for m in create_kwargs["messages"][:-1]:
+                        if isinstance(m["content"], list):
+                            for b in m["content"]: b.pop("cache_control", None)
+                    continue
+
+            explanation = _ANY_BLOCK.sub("", reply).strip() if edits else reply
+            if explanation:
+                print(explanation)
+            if edits:
+                apply_edits(edits)
+
+            cost = calculate_cost(response.usage)
+            _accumulate_usage(response.usage)
+            with lock:
+                session_cost += cost
+            print_stats(response.usage, label="Stats", file=sys.stderr)
+            break
 
     except Exception as e:
         raise SystemExit(f"{_T_ERR} API call failed: {e}")

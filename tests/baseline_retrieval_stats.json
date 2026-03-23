@@ -1,6 +1,12 @@
 [
   {
-    "instance_id": "dummy_instance",
+    "instance_id": "marshmallow-code__marshmallow-1",
+    "repo": "marshmallow-code/marshmallow",
+    "commit": "placeholder",
+    "n_gold_files": 1,
+    "n_chunks": 500,
+    "n_files": 30,
+    "embed_model": "all-MiniLM-L6-v2",
     "metrics": {
       "hit_at_k": {
         "5": true,
@@ -8,16 +14,43 @@
         "15": true
       },
       "recall_at_k": {
-        "5": 0.1,
-        "10": 0.1,
-        "15": 0.1
+        "5": 1.0,
+        "10": 1.0,
+        "15": 1.0
       },
       "precision_at_k": {
-        "5": 0.05,
-        "10": 0.05,
-        "15": 0.05
+        "5": 0.2,
+        "10": 0.1,
+        "15": 0.0667
       },
-      "mrr": 0.1
+      "mrr": 0.5
+    }
+  },
+  {
+    "instance_id": "marshmallow-code__marshmallow-2",
+    "repo": "marshmallow-code/marshmallow",
+    "commit": "placeholder",
+    "n_gold_files": 1,
+    "n_chunks": 500,
+    "n_files": 30,
+    "embed_model": "all-MiniLM-L6-v2",
+    "metrics": {
+      "hit_at_k": {
+        "5": false,
+        "10": false,
+        "15": false
+      },
+      "recall_at_k": {
+        "5": 0.0,
+        "10": 0.0,
+        "15": 0.0
+      },
+      "precision_at_k": {
+        "5": 0.0,
+        "10": 0.0,
+        "15": 0.0
+      },
+      "mrr": 0.0
     }
   }
 ]
