@@ -1413,8 +1413,6 @@ def _resolve_new_content(edit):
     raise ValueError(f"SEARCH block not found in {edit['path']} (even with fuzzy sequence matching)")
 
 def _lint_python_content(filepath: str, new_content: str) -> str | None:
-    if not filepath.endswith(".py"):
-        return None
     try:
         import ast
         ast.parse(new_content, filename=filepath)
@@ -1422,6 +1420,49 @@ def _lint_python_content(filepath: str, new_content: str) -> str | None:
     except SyntaxError as e:
         import traceback
         return "".join(traceback.format_exception_only(type(e), e)).strip()
+
+
+def _lint_java_content(filepath: str, new_content: str) -> str | None:
+    if not _TREESITTER_AVAILABLE:
+        return None
+    try:
+        import tree_sitter_java as tsjava
+        from tree_sitter import Language, Parser as TSParser
+        lang = Language(tsjava.language())
+        parser = TSParser(lang)
+        tree = parser.parse(bytes(new_content, "utf-8"))
+        if not tree.root_node.has_error:
+            return None
+        # Collect all ERROR nodes for a useful message
+        errors = []
+        stack = [tree.root_node]
+        while stack:
+            node = stack.pop()
+            if node.type == "ERROR" or node.is_missing:
+                line = node.start_point[0] + 1
+                col  = node.start_point[1] + 1
+                snippet = new_content.splitlines()[node.start_point[0]] if node.start_point[0] < len(new_content.splitlines()) else ""
+                errors.append(f"  line {line}, col {col}: syntax error near '{snippet.strip()[:60]}'")
+            else:
+                stack.extend(node.children)
+        detail = "\n".join(errors[:5]) or "  (unknown location)"
+        return f"SyntaxError:\n{detail}"
+    except Exception:
+        return None  # tree-sitter unavailable for Java — skip silently
+
+
+# Dispatch table: extension -> linter function (filepath, content) -> error str | None
+_LINTERS: dict = {
+    ".py":   _lint_python_content,
+    ".java": _lint_java_content,
+}
+
+
+def _lint_content(filepath: str, new_content: str) -> str | None:
+    """Run the appropriate syntax linter for filepath. Returns an error string or None."""
+    ext = Path(filepath).suffix.lower()
+    linter = _LINTERS.get(ext)
+    return linter(filepath, new_content) if linter else None
 
 
 def show_diff(path, new_content, old_content=None):
@@ -1459,7 +1500,7 @@ def apply_edits(edits, check_only=False):
         try:
             old, new = _resolve_new_content(e)
             if check_only:
-                err = _lint_python_content(e["path"], new)
+                err = _lint_content(e["path"], new)
                 if err:
                     lint_errors.append(f"SyntaxError in {e['path']}:\n{err}")
             resolved.append({**e, "_old": old, "_new": new})

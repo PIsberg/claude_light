@@ -166,12 +166,49 @@ class TestResolveNewContent(unittest.TestCase):
         from claude_light import apply_edits
         search = "        a = 1\n        b = 2"
         replace = "        a = 3\n        print('missing parenthesis"
-        
+
         # Test that check_only=True silently evaluates and returns the SyntaxError
         errs = apply_edits([{"path": "dummy.py", "type": "edit", "search": search, "replace": replace}], check_only=True)
         self.assertEqual(len(errs), 1)
         self.assertIn("SyntaxError", errs[0])
         self.assertIn("dummy.py", errs[0])
+
+    def test_autonomous_linting_java(self):
+        # LLM generated Java with an unbalanced brace
+        from claude_light import _lint_content
+        import claude_light as cl
+        if not cl._TREESITTER_AVAILABLE:
+            self.skipTest("tree-sitter not installed")
+        try:
+            import tree_sitter_java  # noqa: F401
+        except ImportError:
+            self.skipTest("tree-sitter-java not installed")
+
+        valid_java = (
+            "public class Foo {\n"
+            "    public void bar() {\n"
+            "        int x = 1;\n"
+            "    }\n"
+            "}\n"
+        )
+        self.assertIsNone(_lint_content("Foo.java", valid_java))
+
+        broken_java = (
+            "public class Foo {\n"
+            "    public void bar( {\n"   # missing closing paren
+            "        int x = 1;\n"
+            "    }\n"
+            "}\n"
+        )
+        err = _lint_content("Foo.java", broken_java)
+        self.assertIsNotNone(err)
+        self.assertIn("SyntaxError", err)
+
+    def test_lint_content_skips_unknown_extensions(self):
+        from claude_light import _lint_content
+        # Non-.py / non-.java files should return None (no linter registered)
+        self.assertIsNone(_lint_content("script.sh", "this is { not valid anything"))
+        self.assertIsNone(_lint_content("style.css", "color: ;{{{"))
 
 if __name__ == "__main__":
     unittest.main()
