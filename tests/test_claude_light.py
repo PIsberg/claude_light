@@ -228,5 +228,31 @@ class TestResolveNewContent(unittest.TestCase):
         self.assertIsNone(_lint_content("script.sh", "this is { not valid anything"))
         self.assertIsNone(_lint_content("style.css", "color: ;{{{"))
 
+
+class TestRunCommand(unittest.TestCase):
+
+    def test_run_success(self):
+        from claude_light import _run_command
+        result = _run_command("python -c \"print('hello')\"")
+        self.assertIn("exit 0", result)
+        self.assertIn("hello", result)
+
+    def test_run_failure_exit_code(self):
+        from claude_light import _run_command
+        result = _run_command("python -c \"raise SystemExit(1)\"")
+        self.assertIn("exit 1", result)
+
+    def test_run_truncation(self):
+        from claude_light import _run_command, _RUN_HEAD_LINES, _RUN_TAIL_LINES
+        # Generate more lines than the head+tail budget
+        total = _RUN_HEAD_LINES + _RUN_TAIL_LINES + 50
+        result = _run_command(f"python -c \"[print(i) for i in range({total})]\"")
+        self.assertIn("lines omitted", result)
+
+    def test_run_stderr_merged(self):
+        from claude_light import _run_command
+        result = _run_command("python -c \"import sys; sys.stderr.write('err_token\\n')\"")
+        self.assertIn("err_token", result)
+
 if __name__ == "__main__":
     unittest.main()

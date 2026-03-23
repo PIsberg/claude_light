@@ -1497,6 +1497,55 @@ def _lint_content(filepath: str, new_content: str) -> str | None:
     return linter(filepath, new_content) if linter else None
 
 
+_RUN_HEAD_LINES   = 20    # lines kept from the start of output
+_RUN_TAIL_LINES   = 80    # lines kept from the end of output (stack traces live here)
+_RUN_MAX_CHARS    = 8_000 # hard character cap fed to the LLM
+
+
+def _run_command(cmd: str) -> str:
+    """Run a shell command, stream output to the terminal, and return a
+    truncated transcript suitable for injecting into the LLM context."""
+    import subprocess, shlex
+    _T_RUN = f"{_ANSI_YELLOW}[Run]{_ANSI_RESET}"
+    print(f"\n{_T_RUN} {_ANSI_DIM}$ {cmd}{_ANSI_RESET}")
+    print(f"{_ANSI_DIM}{'-'*60}{_ANSI_RESET}")
+    try:
+        proc = subprocess.run(
+            cmd, shell=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace",
+        )
+    except Exception as exc:
+        msg = f"[Run] Failed to start process: {exc}"
+        print(f"{_T_ERR} {msg}")
+        return msg
+
+    raw = proc.stdout or ""
+    exit_code = proc.returncode
+
+    # Stream to terminal (no colour stripping — let the raw output show)
+    print(raw, end="")
+    status_color = _ANSI_GREEN if exit_code == 0 else _ANSI_RED
+    print(f"{_ANSI_DIM}{'-'*60}{_ANSI_RESET}")
+    print(f"{_T_RUN} Exit code: {status_color}{exit_code}{_ANSI_RESET}\n")
+
+    # Build truncated transcript for LLM context
+    lines = raw.splitlines()
+    if len(lines) <= _RUN_HEAD_LINES + _RUN_TAIL_LINES:
+        trimmed = raw
+    else:
+        head = "\n".join(lines[:_RUN_HEAD_LINES])
+        tail = "\n".join(lines[-_RUN_TAIL_LINES:])
+        omitted = len(lines) - _RUN_HEAD_LINES - _RUN_TAIL_LINES
+        trimmed = f"{head}\n\n... ({omitted} lines omitted) ...\n\n{tail}"
+
+    if len(trimmed) > _RUN_MAX_CHARS:
+        trimmed = trimmed[-_RUN_MAX_CHARS:]
+        trimmed = f"... (truncated to last {_RUN_MAX_CHARS} chars) ...\n" + trimmed
+
+    return f"$ {cmd}\n(exit {exit_code})\n{trimmed}"
+
+
 def show_diff(path, new_content, old_content=None):
     p = Path(path)
     if old_content is None:
@@ -1879,7 +1928,7 @@ def start_chat():
           f"RAG top-{_ANSI_BOLD}{TOP_K}{_ANSI_RESET}  |  "
           f"Embed: {EMBED_MODEL}")
     print(f"╰{'─'*20}╯")
-    print(f"{_ANSI_DIM}Commands: /compact  /cost  /help  exit{_ANSI_RESET}\n")
+    print(f"{_ANSI_DIM}Commands: /compact  /cost  /run <cmd>  /help  exit{_ANSI_RESET}\n")
 
     if _PROMPTTK_AVAILABLE:
         from prompt_toolkit import HTML
@@ -1901,7 +1950,7 @@ def start_chat():
 
         CACHE_DIR.mkdir(exist_ok=True)
         _slash_completer = _WordCompleter(
-            ["/compact", "/clear", "/cost", "/help", "exit", "quit"],
+            ["/compact", "/clear", "/cost", "/help", "/run", "exit", "quit"],
             sentence=True,
         )
         _session = _PromptSession(
@@ -1942,10 +1991,19 @@ def start_chat():
                 continue
             if query == "/help":
                 print(
-                    "  /compact — reset conversation history\n"
-                    "  /cost    — show session spend so far\n"
-                    "  exit     — quit\n"
+                    "  /compact      — reset conversation history\n"
+                    "  /cost         — show session spend so far\n"
+                    "  /run <cmd>    — run a shell command and feed output to Claude\n"
+                    "  exit          — quit\n"
                 )
+                continue
+            if query.startswith("/run "):
+                cmd = query[5:].strip()
+                if not cmd:
+                    print(f"{_T_ERR} Usage: /run <shell command>\n")
+                    continue
+                transcript = _run_command(cmd)
+                chat(f"I ran the following command and got this output. Please help me understand or fix any issues:\n\n```\n{transcript}\n```")
                 continue
 
             chat(query)
