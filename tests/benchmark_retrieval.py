@@ -623,27 +623,32 @@ def main() -> None:
                         help="Emit full results as JSON to stdout")
     args = parser.parse_args()
 
+    def log_progress(*a, **kw):
+        if args.json:
+            kw["file"] = sys.stderr
+        print(*a, **kw)
+
     k_values = sorted(args.k)
 
-    print(f"\nRAG Retrieval Quality Benchmark")
-    print(f"Dataset: SWE-bench Lite ({args.split} split)")
-    print(f"K values: {k_values}")
-    print(f"Repos cache: {args.repos_dir}")
-    print(f"Embed cache: {args.cache_dir}\n")
+    log_progress(f"\nRAG Retrieval Quality Benchmark")
+    log_progress(f"Dataset: SWE-bench Lite ({args.split} split)")
+    log_progress(f"K values: {k_values}")
+    log_progress(f"Repos cache: {args.repos_dir}")
+    log_progress(f"Embed cache: {args.cache_dir}\n")
 
     # Load dataset
-    print("Loading SWE-bench Lite from HuggingFace...", end="", flush=True)
+    log_progress("Loading SWE-bench Lite from HuggingFace...", end="", flush=True)
     dataset = load_dataset("princeton-nlp/SWE-bench_Lite", split=args.split)
     instances = list(dataset)
-    print(f" {len(instances)} instances loaded.")
+    log_progress(f" {len(instances)} instances loaded.")
 
     if args.repo:
         instances = [i for i in instances if i["repo"] == args.repo]
-        print(f"Filtered to repo '{args.repo}': {len(instances)} instances.")
+        log_progress(f"Filtered to repo '{args.repo}': {len(instances)} instances.")
 
     if args.n:
         instances = instances[: args.n]
-        print(f"Limited to first {args.n} instances.")
+        log_progress(f"Limited to first {args.n} instances.")
 
     # Load tree-sitter grammars once
     lang_config = load_language_config()
@@ -661,16 +666,16 @@ def main() -> None:
 
         gold_files = extract_gold_files(patch)
         if not gold_files:
-            print(f"\n[{idx}/{len(instances)}] {iid}: no retrievable gold files, skipping.")
+            log_progress(f"\n[{idx}/{len(instances)}] {iid}: no retrievable gold files, skipping.")
             continue
 
-        print(f"\n[{idx}/{len(instances)}] {iid}")
-        print(f"  Repo: {repo}@{commit[:8]}  |  Gold files: {len(gold_files)}")
+        log_progress(f"\n[{idx}/{len(instances)}] {iid}")
+        log_progress(f"  Repo: {repo}@{commit[:8]}  |  Gold files: {len(gold_files)}")
 
         # Clone / load repo
         repo_path = get_repo_path(repo, commit, args.repos_dir)
         if repo_path is None:
-            print(f"  Skipping (clone failed).")
+            log_progress(f"  Skipping (clone failed).")
             continue
 
         # Count files to select embedding model
@@ -684,7 +689,7 @@ def main() -> None:
 
         # Load or create embedder (reuse if same model)
         if model_name != current_model or embedder is None:
-            print(f"  Loading embedder: {model_name}...", end="", flush=True)
+            log_progress(f"  Loading embedder: {model_name}...", end="", flush=True)
             embedder = SentenceTransformer(model_name, trust_remote_code=True)
             
             # Prevent Nomic's 8192-token attention matrix from causing OOM on huge files
@@ -692,21 +697,21 @@ def main() -> None:
                 embedder.max_seq_length = 2048
                 
             current_model = model_name
-            print(" done")
+            log_progress(" done")
 
         # Load embedding cache or index repo
         cached = load_embedding_cache(args.cache_dir, repo, commit, model_name)
         if cached is not None:
             chunk_ids, chunk_embs = cached
-            print(f"  Embedding cache hit: {len(chunk_ids)} chunks ({n_files} files)")
+            log_progress(f"  Embedding cache hit: {len(chunk_ids)} chunks ({n_files} files)")
         else:
-            print(f"  Indexing {n_files} files...", end="", flush=True)
+            log_progress(f"  Indexing {n_files} files...", end="", flush=True)
             chunk_ids, chunk_embs = index_repo(repo_path, lang_config, model_name, embedder)
             if len(chunk_ids) == 0:
-                print(" no indexable content, skipping.")
+                log_progress(" no indexable content, skipping.")
                 continue
             save_embedding_cache(args.cache_dir, repo, commit, model_name, chunk_ids, chunk_embs)
-            print(f" {len(chunk_ids)} chunks embedded and cached.")
+            log_progress(f" {len(chunk_ids)} chunks embedded and cached.")
 
         # Embed problem statement
         query_prefix = QUERY_PREFIX.get(model_name, "")
@@ -724,14 +729,14 @@ def main() -> None:
         # Show per-instance summary
         top_files = list(dict.fromkeys(chunk_id_to_file(cid) for cid, _ in top_pairs))
         gold_list = sorted(gold_files)
-        print(f"  Gold ({len(gold_files)}): {', '.join(gold_list[:3])}"
+        log_progress(f"  Gold ({len(gold_files)}): {', '.join(gold_list[:3])}"
               + (" ..." if len(gold_list) > 3 else ""))
         hit_strs = " | ".join(
             f"Hit@{k}={'YES' if metrics['hit_at_k'][k] else 'NO'}  "
             f"Recall@{k}={metrics['recall_at_k'][k]*100:.0f}%"
             for k in k_values
         )
-        print(f"  {hit_strs}  |  MRR={metrics['mrr']:.3f}")
+        log_progress(f"  {hit_strs}  |  MRR={metrics['mrr']:.3f}")
 
         results.append({
             "instance_id":  iid,
@@ -745,7 +750,7 @@ def main() -> None:
         })
 
     if not results:
-        print("\nNo instances processed.")
+        log_progress("\nNo instances processed.")
         return
 
     if args.json:

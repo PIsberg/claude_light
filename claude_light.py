@@ -1308,7 +1308,92 @@ def _resolve_new_content(edit):
     if norm_s_strip and norm_s_strip in norm_old:
         return old, norm_old.replace(norm_s_strip, norm_r_strip, 1)
         
-    raise ValueError(f"SEARCH block not found in {edit['path']}")
+    # 4. Indentation-agnostic line matching (ignores leading spaces)
+    s_lines = norm_search.splitlines()
+    o_lines = norm_old.splitlines()
+    
+    while s_lines and not s_lines[0].strip(): s_lines.pop(0)
+    while s_lines and not s_lines[-1].strip(): s_lines.pop()
+    
+    if s_lines:
+        s_stripped = [l.strip() for l in s_lines]
+        o_stripped = [l.strip() for l in o_lines]
+        
+        slen = len(s_stripped)
+        for i in range(len(o_stripped) - slen + 1):
+            if o_stripped[i:i+slen] == s_stripped:
+                orig_lead = len(o_lines[i]) - len(o_lines[i].lstrip(" \t"))
+                search_lead = len(s_lines[0]) - len(s_lines[0].lstrip(" \t"))
+                
+                new_r_lines = []
+                for rl in norm_replace.splitlines():
+                    r_trim = rl.lstrip(" \t")
+                    if not r_trim:
+                        new_r_lines.append("")
+                        continue
+                    rel_indent = max(0, len(rl) - len(r_trim) - search_lead)
+                    new_r_lines.append(" " * (orig_lead + rel_indent) + r_trim)
+                
+                prefix = "\n".join(o_lines[:i])
+                suffix = "\n".join(o_lines[i+slen:])
+                
+                res = []
+                if prefix: res.append(prefix)
+                res.append("\n".join(new_r_lines))
+                if suffix: res.append(suffix)
+                
+                final_str = "\n".join(res)
+                if norm_old.endswith("\n") and not final_str.endswith("\n"):
+                    final_str += "\n"
+                return old, final_str
+                
+    # 5. Fuzzy string matching (for slight LLM hallucinations or typos)
+    if s_lines:
+        s_text = "\n".join(s_stripped)
+        best_ratio, best_idx, best_len = 0, -1, 0
+        
+        start_search = max(1, slen - 2)
+        end_search = min(len(o_stripped), slen + 2)
+        
+        for w_size in range(start_search, end_search + 1):
+            for i in range(len(o_stripped) - w_size + 1):
+                window = "\n".join(o_stripped[i:i+w_size])
+                # SequenceMatcher is extremely fast for small blocks
+                ratio = difflib.SequenceMatcher(None, s_text, window).ratio()
+                if ratio > best_ratio:
+                    best_ratio = ratio
+                    best_idx = i
+                    best_len = w_size
+                    
+        # Lower threshold for tiny blocks, higher for massive ones
+        threshold = 0.70 if slen <= 3 else 0.82
+        if best_ratio > threshold:
+            orig_lead = len(o_lines[best_idx]) - len(o_lines[best_idx].lstrip(" \t"))
+            search_lead = len(s_lines[0]) - len(s_lines[0].lstrip(" \t"))
+            
+            new_r_lines = []
+            for rl in norm_replace.splitlines():
+                r_trim = rl.lstrip(" \t")
+                if not r_trim:
+                    new_r_lines.append("")
+                    continue
+                rel_indent = max(0, len(rl) - len(r_trim) - search_lead)
+                new_r_lines.append(" " * (orig_lead + rel_indent) + r_trim)
+                
+            prefix = "\n".join(o_lines[:best_idx])
+            suffix = "\n".join(o_lines[best_idx+best_len:])
+            
+            res = []
+            if prefix: res.append(prefix)
+            res.append("\n".join(new_r_lines))
+            if suffix: res.append(suffix)
+            
+            final_str = "\n".join(res)
+            if norm_old.endswith("\n") and not final_str.endswith("\n"):
+                final_str += "\n"
+            return old, final_str
+
+    raise ValueError(f"SEARCH block not found in {edit['path']} (even with fuzzy sequence matching)")
 
 
 def show_diff(path, new_content, old_content=None):
