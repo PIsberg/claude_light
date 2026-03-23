@@ -378,7 +378,7 @@ def get_repo_path(repo: str, commit: str, repos_dir: Path) -> Path | None:
 
     url = f"https://github.com/{repo}.git"
     dest.parent.mkdir(parents=True, exist_ok=True)
-    print(f"    Cloning {repo}@{commit[:8]}...", end="", flush=True)
+    print(f"    Cloning {repo}@{commit[:8]}...", end="", flush=True, file=sys.stderr)
     try:
         subprocess.run(
             ["git", "clone", "--filter=blob:none", "--no-checkout", url, str(dest)],
@@ -388,10 +388,10 @@ def get_repo_path(repo: str, commit: str, repos_dir: Path) -> Path | None:
             ["git", "-C", str(dest), "checkout", commit],
             check=True, capture_output=True, timeout=180,
         )
-        print(" done")
+        print(" done", file=sys.stderr)
         return dest
     except Exception as exc:
-        print(f" FAILED ({exc.__class__.__name__})")
+        print(f" FAILED ({exc.__class__.__name__})", file=sys.stderr)
         shutil.rmtree(dest, ignore_errors=True)
         return None
 
