@@ -18,6 +18,17 @@ try:
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     os.environ["TRANSFORMERS_VERBOSITY"] = "error"
     os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
+    import warnings as _warnings
+    _warnings.filterwarnings(
+        "ignore",
+        message=".*unauthenticated requests.*HF Hub.*",
+        category=UserWarning,
+    )
+    _warnings.filterwarnings(
+        "ignore",
+        message=".*Set a HF_TOKEN.*",
+        category=UserWarning,
+    )
     from sentence_transformers import SentenceTransformer
 except ImportError:
     raise SystemExit(
@@ -175,9 +186,9 @@ To edit an existing file, use one or more SEARCH/REPLACE blocks — one per cont
 
 ```python:path/to/file.py
 <<<<<<< SEARCH
-exact lines to replace (must match the file verbatim, including indentation)
+    exact lines to replace (must match the file verbatim, including explicit indentation)
 =======
-replacement lines
+    replacement lines (must include the exact same indentation as the original)
 >>>>>>> REPLACE
 ```
 
@@ -188,10 +199,11 @@ full file content here
 ```
 
 Rules:
-- SEARCH must match the file exactly (whitespace, indentation, blank lines).
-- Use multiple blocks for multiple changes, even within the same file.
-- Use the correct path relative to the project root.
-- After all blocks, write a short plain-English summary of what changed.
+1. CRITICAL: SEARCH must match the file exactly (character for character). Include all leading whitespace, indentation, and trailing blank lines. If modifying an indented block, DO NOT strip the leading spaces!
+2. CRITICAL: REPLACE must contain the exact same leading indentation as the SEARCH block. If you output a flat REPLACE block, it will cause SyntaxErrors in Python!
+3. Use multiple blocks for multiple changes, even within the same file.
+4. Use the correct path relative to the project root.
+5. After all blocks, write a short plain-English summary of what changed.
 """
 
 # Matches any fenced block with a path tag:  ```[lang]:path\n...\n```
