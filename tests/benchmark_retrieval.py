@@ -620,8 +620,12 @@ def main() -> None:
     parser.add_argument("--cache-dir", type=Path, default=Path(".benchmark_retrieval_cache"),
                         help="Directory for caching embeddings")
     parser.add_argument("--json", action="store_true",
-                        help="Emit full results as JSON to stdout")
+                        help="Emit full results as JSON (to --output file or stdout)")
+    parser.add_argument("--output", type=Path, default=None,
+                        help="Write JSON output to this file instead of stdout (implies --json)")
     args = parser.parse_args()
+    if args.output:
+        args.json = True
 
     def log_progress(*a, **kw):
         if args.json:
@@ -764,7 +768,12 @@ def main() -> None:
                 "precision_at_k": {str(k): round(v, 4) for k, v in m["precision_at_k"].items()},
                 "mrr":            round(m["mrr"], 4),
             }})
-        print(json.dumps(out, indent=2))
+        json_str = json.dumps(out, indent=2)
+        if args.output:
+            args.output.write_text(json_str, encoding="utf-8")
+            log_progress(f"JSON results written to {args.output}")
+        else:
+            print(json_str)
         return
 
     print_aggregate(results, k_values)
