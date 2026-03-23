@@ -87,10 +87,10 @@ PIP="$VENV_DIR/bin/pip"
 
 # ── Required packages ─────────────────────────────────────────────────────────
 step "Installing required packages (sentence-transformers pulls PyTorch ~1.5 GB on first run)..."
-"$PIP" install --upgrade sentence-transformers numpy watchdog anthropic
+"$PIP" install --upgrade sentence-transformers numpy watchdog anthropic prompt_toolkit
 
 # ── Optional packages ─────────────────────────────────────────────────────────
-step "Installing optional packages (tree-sitter, rich, prompt_toolkit, einops)..."
+step "Installing optional packages (tree-sitter, rich, einops)..."
 "$PIP" install --upgrade \
     tree-sitter \
     tree-sitter-java \
@@ -100,7 +100,6 @@ step "Installing optional packages (tree-sitter, rich, prompt_toolkit, einops)..
     tree-sitter-javascript \
     tree-sitter-typescript \
     rich \
-    prompt_toolkit \
     einops \
     || warn "Some optional packages failed — the tool still works, with reduced functionality."
 

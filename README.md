@@ -9,35 +9,33 @@
 
 ## 📊 Real-World Benchmark Results
 
-Measured against 4 popular Python open-source libraries using `benchmark_cost.py`
-(35 queries spanning all effort tiers; results from a live API run on 2026-03-22).
+Measured against 4 popular Python open-source libraries, running the same 10 queries per repo with each tool (live API runs, 2026-03-23).
 
-**"Native Claude"** = pasting the entire repository into every message (no RAG, no caching).
+**Claude Code** = the Anthropic CLI (`claude --print`), each query in a fresh isolated session using its built-in tool-calling to fetch files on demand.
+**claude_light** = this project — hybrid RAG + prompt caching with automatic model routing.
 
-### Cost per 10 queries — claude_light vs Native Claude
+### Cost per 10 queries — Claude Code vs claude_light
 
-| Repository | Repo size | Native Claude | claude_light | Savings |
+| Repository | Repo size | Claude Code | claude_light | Savings |
 | :--- | ---: | ---: | ---: | ---: |
-| `psf/requests` v2.31.0 | 108K tokens | $3.08 | $0.21 | **93%** |
-| `pallets/flask` 3.0.0 | 144K tokens | $4.04 | $0.19 | **95%** |
-| `encode/httpx` 0.25.2 | 191K tokens | $4.15 | $0.19 | **96%** |
-| `bottlepy/bottle` 0.13.2 | 92K tokens | $2.99 | $0.26 | **91%** |
-| **Total (35 queries)** | | **$14.26** | **$0.84** | **94% / 17× cheaper** |
+| `psf/requests` v2.31.0 | 108K tokens | $0.91 | $0.23 | **75%** |
+| `pallets/flask` 3.0.0 | 144K tokens | $1.62 | $0.17 | **89%** |
+| `encode/httpx` 0.25.2 | 191K tokens | $1.75 | $0.45 | **74%** |
+| `bottlepy/bottle` 0.13.2 | 92K tokens | $1.52 | $0.30 | **80%** |
+| **Total (≈40 queries)** | | **$5.81** | **$1.16** | **80% / 5× cheaper** |
 
-### Savings by effort tier
+### Why Claude Code costs more
 
-| Effort | Model | Queries | Native Claude | claude_light | Savings |
-| :--- | :--- | ---: | ---: | ---: | ---: |
-| `low` | Haiku | 7 | $2.66 | $0.07 | **97%** |
-| `medium` | Sonnet | 13 | $5.24 | $0.19 | **96%** |
-| `high` | Sonnet | 12 | $5.28 | $0.50 | **91%** |
-| `max` | Opus | 3 | $1.09 | $0.07 | **93%** |
+Claude Code is a powerful general-purpose agentic tool and the cost difference reflects that:
 
-> The `high` tier produces longer code-generation responses (more output tokens), which narrows the
-> gap slightly since output tokens are identical in both scenarios. RAG + caching only helps
-> *input* tokens.
+- Its built-in system prompt and tool definitions consume ~35–40K tokens per session (cached, but cache-reads still cost $0.30/M).
+- It always uses Sonnet, even for simple lookups where Haiku would suffice.
+- Multi-turn tool calls (2–14 turns per query) accumulate cached context with each round-trip.
+- It rediscovers the codebase via tools on every session — no pre-indexing.
 
-> **How to reproduce:** `python benchmark_cost.py` — see [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) for full methodology.
+claude_light makes different trade-offs: pre-indexes the codebase offline, routes simple queries to Haiku, and injects only ~2–3K targeted tokens per query.
+
+> **How to reproduce:** `python benchmark_claude_code.py` — see [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) for full methodology.
 
 ---
 
@@ -108,15 +106,15 @@ If you prefer to install packages yourself:
 
 ```bash
 # Required
-pip install sentence-transformers numpy watchdog anthropic
+pip install sentence-transformers numpy watchdog anthropic prompt_toolkit
 
 # Optional — strongly recommended
 pip install tree-sitter tree-sitter-java tree-sitter-python \
     tree-sitter-go tree-sitter-rust tree-sitter-javascript tree-sitter-typescript \
-    rich prompt_toolkit einops
+    rich einops
 ```
 
-Without tree-sitter, chunking falls back to whole-file mode. Without `rich`/`prompt_toolkit`, output degrades gracefully to plain text and basic `input()`.
+Without tree-sitter, chunking falls back to whole-file mode. Without `rich`, output degrades gracefully to plain text formatting.
 
 ### 🔑 API key
 

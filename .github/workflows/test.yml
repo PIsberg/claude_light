@@ -1,0 +1,43 @@
+name: Test Suite
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11"]
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: 'pip'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install sentence-transformers numpy watchdog anthropic prompt_toolkit rich datasets
+        
+    - name: Run unit tests
+      run: |
+        python -m unittest discover -v tests/
+        
+    - name: Run analytical benchmark
+      run: |
+        python tests/benchmark.py --json > tests/baseline_token_stats_new.json
+        python tests/check_regression.py tokens tests/baseline_token_stats.json tests/baseline_token_stats_new.json
+        
+    - name: Run retrieval benchmark (subset)
+      run: |
+        # Limiting to 5 instances so the pipeline completes efficiently
+        python tests/benchmark_retrieval.py --n 5 --json > tests/baseline_retrieval_stats_new.json
+        python tests/check_regression.py retrieval tests/baseline_retrieval_stats.json tests/baseline_retrieval_stats_new.json

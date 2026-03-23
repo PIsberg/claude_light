@@ -1,0 +1,23 @@
+[
+  {
+    "instance_id": "dummy_instance",
+    "metrics": {
+      "hit_at_k": {
+        "5": true,
+        "10": true,
+        "15": true
+      },
+      "recall_at_k": {
+        "5": 0.1,
+        "10": 0.1,
+        "15": 0.1
+      },
+      "precision_at_k": {
+        "5": 0.05,
+        "10": 0.05,
+        "15": 0.05
+      },
+      "mrr": 0.1
+    }
+  }
+]

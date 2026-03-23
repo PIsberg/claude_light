@@ -263,10 +263,13 @@ class _Spinner:
         i = 0
         while not self._stop.is_set():
             frame = self._FRAMES[i % len(self._FRAMES)]
-            print(f"\r{_ANSI_CYAN}{frame}{_ANSI_RESET} {self.label}...", end="", flush=True)
+            print(f"\r\033[K{_ANSI_CYAN}{frame}{_ANSI_RESET} {self.label}...", end="", flush=True)
             i += 1
             time.sleep(0.1)
-        print(f"\r{' ' * (len(self.label) + 6)}\r", end="", flush=True)
+        print("\r\033[K", end="", flush=True)
+
+    def update(self, label: str):
+        self.label = label
 
     def __enter__(self):
         self._thread.start()
@@ -678,7 +681,7 @@ def chunk_file(filepath, source):
     return _chunk_with_treesitter(filepath, source, cfg["lang"], cfg["node_types"])
 
 
-def auto_tune(source_files, chunks=None):
+def auto_tune(source_files, chunks=None, quiet=False):
     """
     Model selection (file count):
       <  50 files  → all-MiniLM-L6-v2        (22 MB,  fast)
@@ -700,9 +703,12 @@ def auto_tune(source_files, chunks=None):
 
     if chosen_model != EMBED_MODEL or embedder is None:
         EMBED_MODEL = chosen_model
-        with _Spinner(f"{_T_RAG} Loading {_ANSI_BOLD}{chosen_model}{_ANSI_RESET}"):
+        if quiet:
             embedder = SentenceTransformer(EMBED_MODEL, trust_remote_code=True)
-        print(f"{_T_RAG} {_ANSI_GREEN}Loaded{_ANSI_RESET} {chosen_model}")
+        else:
+            with _Spinner(f"{_T_RAG} Loading {_ANSI_BOLD}{chosen_model}{_ANSI_RESET}"):
+                embedder = SentenceTransformer(EMBED_MODEL, trust_remote_code=True)
+            print(f"{_T_RAG} {_ANSI_GREEN}Loaded{_ANSI_RESET} {chosen_model}")
 
     if chunks:
         n_units     = len(chunks)
@@ -715,10 +721,11 @@ def auto_tune(source_files, chunks=None):
     TOP_K      = max(2, min(15, round(TARGET_RETRIEVED_TOKENS / avg_tokens)))
 
     unit_label = f"{n_units} chunks" if chunks else f"{n} files"
-    print(
-        f"{_T_RAG} Auto-tune → {_ANSI_BOLD}{n} files{_ANSI_RESET} → {unit_label} | "
-        f"~{avg_tokens} tok/chunk | TOP_K={_ANSI_BOLD}{TOP_K}{_ANSI_RESET} | model={EMBED_MODEL}"
-    )
+    if not quiet:
+        print(
+            f"{_T_RAG} Auto-tune → {_ANSI_BOLD}{n} files{_ANSI_RESET} → {unit_label} | "
+            f"~{avg_tokens} tok/chunk | TOP_K={_ANSI_BOLD}{TOP_K}{_ANSI_RESET} | model={EMBED_MODEL}"
+        )
 
 
 def _file_hash(path: Path) -> str:
@@ -726,7 +733,7 @@ def _file_hash(path: Path) -> str:
     return hashlib.md5(path.read_bytes()).hexdigest()
 
 
-def _load_cache(source_files: list, embed_model: str) -> tuple:
+def _load_cache(source_files: list, embed_model: str, quiet=False) -> tuple:
     """
     Load cached embeddings from disk.
 
@@ -741,7 +748,7 @@ def _load_cache(source_files: list, embed_model: str) -> tuple:
         old_hashes    = manifest["files"]
         cached_index  = pickle.loads(CACHE_INDEX.read_bytes())
     except Exception as exc:
-        if CACHE_MANIFEST.exists() or CACHE_INDEX.exists():
+        if (CACHE_MANIFEST.exists() or CACHE_INDEX.exists()) and not quiet:
             print(f"{_T_CACHE} Miss ({exc}); re-indexing everything.")
         return {}, list(source_files)
 
@@ -761,8 +768,9 @@ def _load_cache(source_files: list, embed_model: str) -> tuple:
 
     hit  = len(source_files) - len(stale)
     miss = len(stale)
-    print(f"{_T_CACHE} {_ANSI_GREEN}{hit}{_ANSI_RESET} files hit, "
-          f"{_ANSI_YELLOW}{miss}{_ANSI_RESET} stale/new.")
+    if not quiet:
+        print(f"{_T_CACHE} {_ANSI_GREEN}{hit}{_ANSI_RESET} files hit, "
+              f"{_ANSI_YELLOW}{miss}{_ANSI_RESET} stale/new.")
     return cached_store, stale
 
 
@@ -782,7 +790,7 @@ def _save_cache(embed_model: str) -> None:
         print(f"[Cache] Failed to save: {e}")
 
 
-def index_files():
+def index_files(quiet=False):
     """
     Chunk all supported source files, auto-tune, then embed.
     Files whose MD5 matches the on-disk manifest are loaded from the pickle cache;
@@ -790,22 +798,25 @@ def index_files():
     """
     global _source_files, _file_hashes
 
-    print(f"{_T_RAG} Scanning project files...", end="", flush=True)
+    if not quiet:
+        print(f"{_T_RAG} Scanning project files...", end="", flush=True)
     source_files = [
         p for p in Path(".").rglob("*")
         if not _is_skipped(p) and p.is_file() and p.suffix.lower() in INDEXABLE_EXTENSIONS
     ]
     if not source_files:
-        print(f"\r{_T_RAG} No supported source files found.")
+        if not quiet:
+            print(f"\r{_T_RAG} No supported source files found.")
         return
-    print(f"\r{_T_RAG} Found {_ANSI_BOLD}{len(source_files)}{_ANSI_RESET} source files.")
+    if not quiet:
+        print(f"\r{_T_RAG} Found {_ANSI_BOLD}{len(source_files)}{_ANSI_RESET} source files.")
 
     _source_files = source_files
     _file_hashes  = {str(f): _file_hash(f) for f in source_files}
 
-    auto_tune(source_files)   # selects + loads embed model before cache check
+    auto_tune(source_files, quiet=quiet)   # selects + loads embed model before cache check
 
-    cached_store, stale_files = _load_cache(source_files, EMBED_MODEL)
+    cached_store, stale_files = _load_cache(source_files, EMBED_MODEL, quiet=quiet)
 
     # Chunk + embed only the stale/new files
     new_chunks: list = []
@@ -818,11 +829,13 @@ def index_files():
             return []
 
     if stale_files:
-        print(f"{_T_RAG} Chunking {len(stale_files)} file(s)...", end="", flush=True)
+        if not quiet:
+            print(f"{_T_RAG} Chunking {len(stale_files)} file(s)...", end="", flush=True)
         with concurrent.futures.ThreadPoolExecutor() as executor:
             for chunks in executor.map(process_file_chunks, stale_files):
                 new_chunks.extend(chunks)
-        print(f"\r{_T_RAG} Chunked → {len(new_chunks)} chunks.")
+        if not quiet:
+            print(f"\r{_T_RAG} Chunked → {len(new_chunks)} chunks.")
     else:
         with concurrent.futures.ThreadPoolExecutor() as executor:
             for chunks in executor.map(process_file_chunks, stale_files):
@@ -830,15 +843,15 @@ def index_files():
 
     if new_chunks:
         doc_prefix = _DOC_PREFIX.get(EMBED_MODEL, "")
-        show_bar   = len(new_chunks) > 100
-        if not show_bar:
+        show_bar   = (len(new_chunks) > 100) and not quiet
+        if not show_bar and not quiet:
             print(f"{_T_RAG} Embedding {len(new_chunks)} chunk(s)...", end="", flush=True)
         embeddings = embedder.encode(
             [doc_prefix + c["text"] for c in new_chunks],
             normalize_embeddings=True,
             show_progress_bar=show_bar,
         )
-        if not show_bar:
+        if not show_bar and not quiet:
             print(f"\r{_T_RAG} Embedded  {len(new_chunks)} chunk(s).  ")
         new_store = {
             c["id"]: {"text": c["text"], "emb": emb}
@@ -851,7 +864,7 @@ def index_files():
 
     # Refine TOP_K using all chunks (cached + new)
     all_chunk_texts = [{"text": v["text"]} for v in merged.values()]
-    auto_tune(source_files, chunks=all_chunk_texts)
+    auto_tune(source_files, chunks=all_chunk_texts, quiet=quiet)
 
     with lock:
         chunk_store.clear()
@@ -861,12 +874,13 @@ def index_files():
         _save_cache(EMBED_MODEL)
 
     cached_n = len(source_files) - len(stale_files)
-    print(
-        f"{_T_RAG} {_ANSI_GREEN}Index ready{_ANSI_RESET} — "
-        f"{_ANSI_BOLD}{len(source_files)}{_ANSI_RESET} files → "
-        f"{_ANSI_BOLD}{len(merged)}{_ANSI_RESET} chunks "
-        f"({_ANSI_GREEN}{cached_n} cached{_ANSI_RESET}, {len(stale_files)} re-embedded)"
-    )
+    if not quiet:
+        print(
+            f"{_T_RAG} {_ANSI_GREEN}Index ready{_ANSI_RESET} — "
+            f"{_ANSI_BOLD}{len(source_files)}{_ANSI_RESET} files → "
+            f"{_ANSI_BOLD}{len(merged)}{_ANSI_RESET} chunks "
+            f"({_ANSI_GREEN}{cached_n} cached{_ANSI_RESET}, {len(stale_files)} re-embedded)"
+        )
 
 
 def reindex_file(path):
@@ -1051,7 +1065,7 @@ def _update_skeleton():
     _apply_skeleton(build_skeleton())
 
 
-def warm_cache():
+def warm_cache(quiet=False):
     global session_cost
     with lock:
         skeleton = skeleton_context
@@ -1067,21 +1081,22 @@ def warm_cache():
         with lock:
             session_cost += cost
 
-        print(f"\n{_ANSI_DIM}{'═'*56}{_ANSI_RESET}")
-        print_stats(response.usage, label="Cache")
-        print(f"{_ANSI_DIM}{'═'*56}{_ANSI_RESET}\n")
+        if not quiet:
+            print(f"\n{_ANSI_DIM}{'═'*56}{_ANSI_RESET}")
+            print_stats(response.usage, label="Cache")
+            print(f"{_ANSI_DIM}{'═'*56}{_ANSI_RESET}\n")
     except Exception as e:
         print(f"{_T_ERR} Cache warm failed: {e}")
 
 
 def full_refresh():
     """Startup and heartbeat: rebuild skeleton + re-index all source files + warm cache."""
-    print(f"{_T_SYS} {_ANSI_BOLD}Starting up{_ANSI_RESET} — building skeleton...")
-    _update_skeleton()
-    print(f"{_T_SYS} Indexing source files...")
-    index_files()
-    print(f"{_T_SYS} Warming cache...")
-    warm_cache()
+    with _Spinner("Building skeleton") as spinner:
+        _update_skeleton()
+        spinner.update("Indexing source files")
+        index_files(quiet=True)
+        spinner.update("Warming cache")
+        warm_cache(quiet=True)
 
 
 def refresh_skeleton_only():
@@ -1404,7 +1419,7 @@ def _print_reply(text):
         console.print(_RichMarkdown(text))
         console.print()
     else:
-        print(f"\nClaude: {text}\n")
+        print(f"\n{text}\n")
 
 
 def chat(query):
@@ -1564,16 +1579,34 @@ def start_chat():
     observer.start()
     threading.Thread(target=heartbeat, daemon=True).start()
 
-    print(f"\n{_ANSI_BOLD}{_ANSI_GREEN}Ready.{_ANSI_RESET}  "
-          f"Claude: {_ANSI_CYAN}{MODEL}{_ANSI_RESET}  |  "
+    print(f"\n╭── {_ANSI_BOLD}❖ Claude Light{_ANSI_RESET} ──╮")
+    print(f"│ {_ANSI_CYAN}{MODEL}{_ANSI_RESET}  |  "
           f"RAG top-{_ANSI_BOLD}{TOP_K}{_ANSI_RESET}  |  "
           f"Embed: {EMBED_MODEL}")
-    print(f"{_ANSI_DIM}Commands: /clear  /cost  /help  exit{_ANSI_RESET}\n")
+    print(f"╰{'─'*20}╯")
+    print(f"{_ANSI_DIM}Commands: /compact  /cost  /help  exit{_ANSI_RESET}\n")
 
     if _PROMPTTK_AVAILABLE:
+        from prompt_toolkit import HTML
+
+        def get_status_bar():
+            total_in = session_tokens["input"] + session_tokens["cache_write"] + session_tokens["cache_read"]
+            saved = session_tokens["cache_read"]
+            ratio = (saved / total_in * 100) if total_in > 0 else 0.0
+            cost = session_cost
+            import os
+            repo = os.path.basename(os.getcwd())
+            
+            return HTML(
+                f' <b>Repo:</b> <ansicyan>{repo}</ansicyan>  |  '
+                f'<b>Tokens:</b> {total_in:,} '
+                f'(<ansigreen>{saved:,}</ansigreen> saved, <ansigreen>{ratio:.1f}%</ansigreen>)  |  '
+                f'<b>Cost:</b> <ansiyellow>${cost:.4f}</ansiyellow>'
+            )
+
         CACHE_DIR.mkdir(exist_ok=True)
         _slash_completer = _WordCompleter(
-            ["/clear", "/cost", "/help", "exit", "quit"],
+            ["/compact", "/clear", "/cost", "/help", "exit", "quit"],
             sentence=True,
         )
         _session = _PromptSession(
@@ -1581,12 +1614,18 @@ def start_chat():
             auto_suggest=_AutoSuggest(),
             completer=_slash_completer,
             complete_while_typing=False,
+            bottom_toolbar=get_status_bar
         )
         def _get_input():
-            return _session.prompt("You: ").strip()
+            return _session.prompt("> ").strip()
     else:
         def _get_input():
-            return input("You: ").strip()
+            total_in = session_tokens["input"] + session_tokens["cache_write"] + session_tokens["cache_read"]
+            saved = session_tokens["cache_read"]
+            ratio = (saved / total_in * 100) if total_in > 0 else 0.0
+            import os
+            print(f"\n[{os.path.basename(os.getcwd())}] Tokens: {total_in:,} ({saved:,} saved, {ratio:.1f}%) | Cost: ${session_cost:.4f}")
+            return input("> ").strip()
 
     try:
         while True:
@@ -1599,18 +1638,18 @@ def start_chat():
                 continue
             if query.lower() in ("exit", "quit"):
                 break
-            if query == "/clear":
+            if query in ("/clear", "/compact"):
                 conversation_history.clear()
-                print(f"{_T_SYS} Conversation history cleared.\n")
+                print(f"{_T_SYS} Conversation history compacted.\n")
                 continue
             if query == "/cost":
                 print_session_summary()
                 continue
             if query == "/help":
                 print(
-                    "  /clear  — reset conversation history\n"
-                    "  /cost   — show session spend so far\n"
-                    "  exit    — quit\n"
+                    "  /compact — reset conversation history\n"
+                    "  /cost    — show session spend so far\n"
+                    "  exit     — quit\n"
                 )
                 continue
 
@@ -1697,6 +1736,7 @@ public class Service{i} {{
                 self.path = "/".join(str(p) for p in args).replace("\\", "/")
                 self.name = self.path.split("/")[-1]
                 self.suffix = "." + self.name.split(".")[-1] if "." in self.name else ""
+                self.stem = self.name[:-len(self.suffix)] if self.suffix else self.name
                 self.parts = tuple(self.path.split("/"))
             
             def __str__(self):

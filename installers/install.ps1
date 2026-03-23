@@ -23,11 +23,11 @@ Info "Using $(&$python --version)"
 
 # --- Required packages -------------------------------------------------------
 Info "Installing required packages (sentence-transformers pulls PyTorch ~1.5 GB on first run)..."
-& $python -m pip install --upgrade sentence-transformers numpy watchdog anthropic
+& $python -m pip install --upgrade sentence-transformers numpy watchdog anthropic prompt_toolkit
 if ($LASTEXITCODE -ne 0) { Fail "Failed to install required packages." }
 
 # --- Optional packages -------------------------------------------------------
-Info "Installing optional packages (tree-sitter, rich, prompt_toolkit, einops)..."
+Info "Installing optional packages (tree-sitter, rich, einops)..."
 $optional = @(
     "tree-sitter",
     "tree-sitter-java",
@@ -37,7 +37,6 @@ $optional = @(
     "tree-sitter-javascript",
     "tree-sitter-typescript",
     "rich",
-    "prompt_toolkit",
     "einops"
 )
 & $python -m pip install --upgrade $optional

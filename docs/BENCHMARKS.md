@@ -400,3 +400,23 @@ python benchmark_cost.py \
 
 The JSON outputs are self-contained and include all metadata needed to reproduce
 or compare results across runs.
+
+## CI Regression Testing
+
+`claude_light` includes an automated GitHub Actions pipeline that ensures token costs do not spike and retrieval accuracy does not degrade over time!
+It implements a hard block on any pull request that reduces `Hit@10` / `Recall@10` by >2% or increases analytical token costs by >1%.
+
+If a developer legitimately changes the chunking behavior for the better, they simply run the benchmarks locally, overwrite the `baseline_*.json` files, and commit them.
+
+**To manually update the baselines:**
+```bash
+# 1. Update analytical token baseline
+python tests/benchmark.py --json > tests/baseline_token_stats.json
+
+# 2. Update retrieval performance baseline (tests against a subset to match CI criteria)
+python tests/benchmark_retrieval.py --n 5 --json > tests/baseline_retrieval_stats.json
+
+# 3. Commit the new baseline files
+git add tests/baseline_token_stats.json tests/baseline_retrieval_stats.json
+git commit -m "chore: Update benchmark baselines"
+```

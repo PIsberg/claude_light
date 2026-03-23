@@ -26,10 +26,10 @@ PIP="$PYTHON -m pip"
 
 # ── Required packages ────────────────────────────────────────────────────────
 info "Installing required packages (sentence-transformers pulls PyTorch ~1.5 GB on first run)..."
-$PIP install --upgrade sentence-transformers numpy watchdog anthropic
+$PIP install --upgrade sentence-transformers numpy watchdog anthropic prompt_toolkit
 
 # ── Optional packages ────────────────────────────────────────────────────────
-info "Installing optional packages (tree-sitter, rich, prompt_toolkit, einops)..."
+info "Installing optional packages (tree-sitter, rich, einops)..."
 $PIP install --upgrade \
     tree-sitter \
     tree-sitter-java \
@@ -39,7 +39,6 @@ $PIP install --upgrade \
     tree-sitter-javascript \
     tree-sitter-typescript \
     rich \
-    prompt_toolkit \
     einops \
     || warn "Some optional packages failed to install — the tool will still work, with reduced functionality."
 
