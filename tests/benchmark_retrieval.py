@@ -102,7 +102,17 @@ import shutil
 import subprocess
 import sys
 import time
+import warnings
 from pathlib import Path
+
+os.environ["TRANSFORMERS_VERBOSITY"] = "error"
+os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
+warnings.filterwarnings(
+    "ignore",
+    message=".*unauthenticated requests.*",
+    category=UserWarning,
+    module="huggingface_hub.*"
+)
 
 import numpy as np
 
@@ -455,7 +465,7 @@ def index_repo(repo_path: Path, lang_config: dict, model_name: str,
         texts,
         normalize_embeddings=True,
         show_progress_bar=len(texts) > 200,
-        batch_size=8,
+        batch_size=2,
     )
     ids = [c["id"] for c in all_chunks]
     return ids, np.array(embeddings, dtype=np.float32)
@@ -676,6 +686,11 @@ def main() -> None:
         if model_name != current_model or embedder is None:
             print(f"  Loading embedder: {model_name}...", end="", flush=True)
             embedder = SentenceTransformer(model_name, trust_remote_code=True)
+            
+            # Prevent Nomic's 8192-token attention matrix from causing OOM on huge files
+            if hasattr(embedder, "max_seq_length") and embedder.max_seq_length > 2048:
+                embedder.max_seq_length = 2048
+                
             current_model = model_name
             print(" done")
 
