@@ -190,6 +190,18 @@ class TestResolveNewContent(unittest.TestCase):
         _, result = _resolve_new_content({"path": "dummy.py", "type": "edit", "search": search, "replace": replace})
         self.assertIn("        a = 9", result)
 
+    def test_resolve_fuzzy_blank_line_in_replacement(self):
+        # Fuzzy path with a blank line in the replacement (covers lines 1395-1396).
+        # search is a typo (combines two lines) so steps 1-4 all fail → fuzzy fires.
+        from claude_light import _resolve_new_content
+        search = "    try:\n        a = 1, b = 2"
+        replace = "    try:\n        a = 9\n\n        b = 9"   # blank line in middle
+        _, result = _resolve_new_content({"path": "dummy.py", "type": "edit", "search": search, "replace": replace})
+        self.assertIn("a = 9", result)
+        self.assertIn("b = 9", result)
+        # blank line must be preserved
+        self.assertIn("\n\n", result)
+
     def test_autonomous_linting(self):
         # LLM generated a totally busted syntax
         from claude_light import apply_edits
@@ -4911,6 +4923,985 @@ class TestOneShotLintCacheControlStrip(unittest.TestCase):
 
         cl.chunk_store.clear()
         cl.chunk_store.update(orig_store)
+
+
+# ---------------------------------------------------------------------------
+# MockManager — test mode class
+# ---------------------------------------------------------------------------
+
+class TestMockManager(unittest.TestCase):
+
+    def test_mock_manager_small_preset(self):
+        from claude_light import MockManager
+        mm = MockManager("small")
+        self.assertEqual(mm.preset, "small")
+        self.assertGreater(len(mm.files), 0)
+        # Small = 5 files
+        self.assertEqual(len(mm.files), 5)
+        self.assertGreater(mm.total_tokens, 0)
+
+    def test_mock_manager_medium_preset(self):
+        from claude_light import MockManager
+        mm = MockManager("medium")
+        self.assertEqual(len(mm.files), 50)
+
+    def test_mock_manager_large_preset(self):
+        from claude_light import MockManager
+        mm = MockManager("large")
+        self.assertEqual(len(mm.files), 200)
+
+    def test_mock_manager_unknown_preset_defaults_to_small(self):
+        from claude_light import MockManager
+        mm = MockManager("unknown")
+        self.assertEqual(len(mm.files), 5)
+
+    def test_mock_create_message(self):
+        from claude_light import MockManager
+        mm = MockManager("small")
+        resp = mm._mock_create_message(
+            system=[{"type": "text", "text": "some system prompt"}],
+            messages=[{"role": "user", "content": "hello"}],
+        )
+        self.assertIsNotNone(resp)
+        self.assertIsNotNone(resp.usage)
+        self.assertIsNotNone(resp.content)
+        self.assertEqual(len(resp.content), 1)
+
+    def test_mock_create_message_with_retrieved_context(self):
+        from claude_light import MockManager
+        mm = MockManager("small")
+        resp = mm._mock_create_message(
+            system=[],
+            messages=[{
+                "role": "user",
+                "content": [{"type": "text", "text": "// src/main/java/Foo.java\npublic void doTask0() {}"}]
+            }],
+        )
+        # Should mention retrieved methods
+        self.assertIn("doTask", resp.content[0].text)
+
+    def test_mock_embedder_class(self):
+        from claude_light import MockManager
+        import numpy as np
+        mm = MockManager("small")
+        embedder_cls = mm._mock_embedder_class
+        embedder = embedder_cls("all-MiniLM-L6-v2")
+        # Test encode with string
+        emb = embedder.encode("hello world")
+        self.assertEqual(emb.shape, (384,))
+        # Test encode with list
+        embs = embedder.encode(["a", "b", "c"])
+        self.assertEqual(embs.shape, (3, 384))
+
+    def test_mock_embedder_nomic(self):
+        from claude_light import MockManager
+        import numpy as np
+        mm = MockManager("small")
+        embedder = mm._mock_embedder_class("nomic-ai/nomic-embed-text-v1.5")
+        emb = embedder.encode("hello")
+        self.assertEqual(emb.shape, (768,))
+
+    def test_mock_print_stats(self):
+        from claude_light import MockManager, print_stats
+        mm = MockManager("small")
+        mm.orig_print_stats = print_stats
+
+        # Use spec to prevent MagicMock from auto-creating _full_codebase_tokens
+        # which would cause `full_cost > 0` to raise TypeError.
+        usage = MagicMock(spec=["input_tokens", "output_tokens",
+                                "cache_creation_input_tokens", "cache_read_input_tokens"])
+        usage.input_tokens = 100
+        usage.output_tokens = 50
+        usage.cache_creation_input_tokens = 0
+        usage.cache_read_input_tokens = 0
+
+        captured = io.StringIO()
+        with patch("sys.stdout", captured):
+            mm._mock_print_stats(usage, label="Test", file=captured)
+        out = captured.getvalue()
+        # Should contain "Token Savings Report"
+        self.assertIn("Token Savings", out)
+
+    def test_generate_synthetic_files_content(self):
+        from claude_light import MockManager
+        mm = MockManager("small")
+        for fname, content in mm.files.items():
+            self.assertIn("package com.synthetic;", content)
+            self.assertIn("doTask0", content)
+            self.assertTrue(fname.endswith(".java"))
+
+
+# ---------------------------------------------------------------------------
+# _resolve_api_key — is_test_mode path
+# ---------------------------------------------------------------------------
+
+class TestResolveApiKeyTestMode(unittest.TestCase):
+
+    def test_test_mode_returns_mock_key(self):
+        import claude_light as cl
+        with patch.object(cl, "is_test_mode", True):
+            result = _resolve_api_key()
+        self.assertEqual(result, "sk-ant-test-mock-key")
+
+
+# ---------------------------------------------------------------------------
+# one_shot — line 1894 (cache_control strip in lint retry)
+# ---------------------------------------------------------------------------
+
+class TestOneShotLintRetryStrip(unittest.TestCase):
+
+    def test_one_shot_retry_strips_cache_control_from_list_content(self):
+        """Specifically test that list-type content blocks get cache_control stripped."""
+        import claude_light as cl
+        orig_store = dict(cl.chunk_store)
+        cl.chunk_store.clear()
+
+        # On first call: return bad Python edit
+        # On second call: return good answer
+        call_count = [0]
+        def mock_create(**kwargs):
+            call_count[0] += 1
+            resp = MagicMock()
+            block = MagicMock()
+            block.type = "text"
+            if call_count[0] == 1:
+                block.text = "```python:xyz.py\n<<<<<<< SEARCH\na=1\n=======\na=(bad\n>>>>>>> REPLACE\n```"
+            else:
+                block.text = "Done."
+            resp.content = [block]
+            resp.usage = MagicMock()
+            resp.usage.input_tokens = 50
+            resp.usage.output_tokens = 20
+            resp.usage.cache_creation_input_tokens = 0
+            resp.usage.cache_read_input_tokens = 0
+            return resp
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            orig = os.getcwd()
+            os.chdir(tmpdir)
+            try:
+                Path("xyz.py").write_text("a=1\n", encoding="utf-8")
+                with patch("claude_light.client.messages.create", side_effect=mock_create), \
+                     patch("claude_light._update_skeleton"), \
+                     patch("claude_light.index_files"), \
+                     patch("claude_light.print_stats"), \
+                     patch("builtins.print"), \
+                     patch("sys.stderr", io.StringIO()):
+                    cl.one_shot("modify xyz")
+                self.assertGreaterEqual(call_count[0], 2)
+            finally:
+                os.chdir(orig)
+
+        cl.chunk_store.clear()
+        cl.chunk_store.update(orig_store)
+
+
+# ---------------------------------------------------------------------------
+# calculate_cost — additional edge cases
+# ---------------------------------------------------------------------------
+
+class TestCalculateCostEdgeCases(unittest.TestCase):
+
+    def _make_usage(self, input_tokens=0, output_tokens=0, cache_creation=0, cache_read=0):
+        usage = MagicMock()
+        usage.input_tokens = input_tokens
+        usage.output_tokens = output_tokens
+        usage.cache_creation_input_tokens = cache_creation
+        usage.cache_read_input_tokens = cache_read
+        return usage
+
+    def test_proportional_scaling(self):
+        """Doubling all tokens should double the cost."""
+        u1 = self._make_usage(input_tokens=100_000, output_tokens=50_000,
+                              cache_creation=20_000, cache_read=30_000)
+        u2 = self._make_usage(input_tokens=200_000, output_tokens=100_000,
+                              cache_creation=40_000, cache_read=60_000)
+        self.assertAlmostEqual(calculate_cost(u2), calculate_cost(u1) * 2, places=8)
+
+    def test_cache_read_cheaper_than_input(self):
+        """Cache read should cost less than direct input for same token count."""
+        u_input = self._make_usage(input_tokens=1_000_000)
+        u_read  = self._make_usage(cache_read=1_000_000)
+        self.assertLess(calculate_cost(u_read), calculate_cost(u_input))
+
+    def test_cache_write_more_expensive_than_input(self):
+        """Cache write should cost more than direct input for same token count."""
+        u_input = self._make_usage(input_tokens=1_000_000)
+        u_write = self._make_usage(cache_creation=1_000_000)
+        self.assertGreater(calculate_cost(u_write), calculate_cost(u_input))
+
+
+# ---------------------------------------------------------------------------
+# _accumulate_usage — edge cases
+# ---------------------------------------------------------------------------
+
+class TestAccumulateUsageEdgeCases(unittest.TestCase):
+
+    def setUp(self):
+        import claude_light as cl
+        self._orig = dict(cl.session_tokens)
+        cl.session_tokens.update({"input": 0, "cache_write": 0, "cache_read": 0, "output": 0})
+
+    def tearDown(self):
+        import claude_light as cl
+        cl.session_tokens.update(self._orig)
+
+    def test_no_cache_attrs_defaults_to_zero(self):
+        """Usage without cache attrs should add 0 to cache counters."""
+        import claude_light as cl
+        usage = MagicMock(spec=["input_tokens", "output_tokens"])
+        usage.input_tokens = 200
+        usage.output_tokens = 100
+        _accumulate_usage(usage)
+        self.assertEqual(cl.session_tokens["cache_write"], 0)
+        self.assertEqual(cl.session_tokens["cache_read"], 0)
+        self.assertEqual(cl.session_tokens["input"], 200)
+        self.assertEqual(cl.session_tokens["output"], 100)
+
+    def test_zero_usage_noop(self):
+        """Accumulating zero tokens leaves session totals unchanged."""
+        import claude_light as cl
+        usage = MagicMock()
+        usage.input_tokens = 0
+        usage.output_tokens = 0
+        usage.cache_creation_input_tokens = 0
+        usage.cache_read_input_tokens = 0
+        _accumulate_usage(usage)
+        self.assertEqual(cl.session_tokens["input"], 0)
+        self.assertEqual(cl.session_tokens["output"], 0)
+
+
+# ---------------------------------------------------------------------------
+# _is_skipped — additional edge cases
+# ---------------------------------------------------------------------------
+
+class TestIsSkippedEdgeCases(unittest.TestCase):
+
+    def test_dotfile_at_root(self):
+        """A dotted file/dir at path root should be skipped."""
+        p = Path(".env")
+        self.assertTrue(_is_skipped(p))
+
+    def test_dotfile_in_middle_of_path(self):
+        """A dotted component anywhere in the path triggers skip."""
+        p = Path("src/.cache/data.bin")
+        self.assertTrue(_is_skipped(p))
+
+    def test_target_dir_skipped(self):
+        """Maven 'target' dir is in SKIP_DIRS."""
+        self.assertIn("target", SKIP_DIRS)
+        p = Path("target/classes/Foo.class")
+        self.assertTrue(_is_skipped(p))
+
+    def test_gradle_dir_skipped(self):
+        """.gradle dir is in SKIP_DIRS."""
+        self.assertIn(".gradle", SKIP_DIRS)
+        p = Path(".gradle/caches/modules/foo.jar")
+        self.assertTrue(_is_skipped(p))
+
+    def test_deep_normal_path_not_skipped(self):
+        p = Path("src/main/java/com/example/service/OrderService.java")
+        self.assertFalse(_is_skipped(p))
+
+
+# ---------------------------------------------------------------------------
+# _build_system_blocks — additional edge cases
+# ---------------------------------------------------------------------------
+
+class TestBuildSystemBlocksEdgeCases(unittest.TestCase):
+
+    def test_empty_skeleton(self):
+        blocks = _build_system_blocks("")
+        self.assertEqual(len(blocks), 2)
+        self.assertEqual(blocks[1]["text"], "")
+
+    def test_no_extra_blocks(self):
+        """Only exactly 2 blocks should be returned."""
+        blocks = _build_system_blocks("some content")
+        self.assertEqual(len(blocks), 2)
+
+    def test_skeleton_content_preserved_verbatim(self):
+        content = "Line1\n\tLine2\n  indented"
+        blocks = _build_system_blocks(content)
+        self.assertEqual(blocks[1]["text"], content)
+
+
+# ---------------------------------------------------------------------------
+# _dedup_retrieved_context — additional edge cases
+# ---------------------------------------------------------------------------
+
+class TestDedupRetrievedContextEdgeCases(unittest.TestCase):
+
+    def setUp(self):
+        import claude_light as cl
+        self._orig_store = dict(cl.chunk_store)
+        cl.chunk_store.clear()
+
+    def tearDown(self):
+        import claude_light as cl
+        cl.chunk_store.clear()
+        cl.chunk_store.update(self._orig_store)
+
+    def test_chunk_without_separator_uses_filepath_as_header(self):
+        """Chunk text without the '// ...' separator falls back to filepath header."""
+        import claude_light as cl
+        import numpy as np
+        # No '    // ...\n' separator in the text
+        cl.chunk_store["src/Foo.java::doThing"] = {
+            "text": "public void doThing() { return; }",
+            "emb": np.zeros(10),
+        }
+        result = _dedup_retrieved_context([("src/Foo.java::doThing", 0.8)])
+        self.assertIn("src/Foo.java", result)
+        self.assertIn("doThing", result)
+
+    def test_multiple_different_files_both_included(self):
+        """Chunks from two different files both appear in result."""
+        import claude_light as cl
+        import numpy as np
+        sep = "\n    // ...\n"
+        cl.chunk_store["src/A.java::foo"] = {
+            "text": "// src/A.java\nclass A {" + sep + "void foo() {}",
+            "emb": np.zeros(10),
+        }
+        cl.chunk_store["src/B.java::bar"] = {
+            "text": "// src/B.java\nclass B {" + sep + "void bar() {}",
+            "emb": np.zeros(10),
+        }
+        result = _dedup_retrieved_context([
+            ("src/A.java::foo", 0.9),
+            ("src/B.java::bar", 0.8),
+        ])
+        self.assertIn("class A", result)
+        self.assertIn("class B", result)
+        self.assertIn("foo", result)
+        self.assertIn("bar", result)
+
+    def test_retrieval_order_preserved(self):
+        """File preamble order matches retrieval order, not insertion order."""
+        import claude_light as cl
+        import numpy as np
+        sep = "\n    // ...\n"
+        cl.chunk_store["src/Z.java::z"] = {
+            "text": "// src/Z.java\nZZZ" + sep + "void z() {}",
+            "emb": np.zeros(10),
+        }
+        cl.chunk_store["src/A.java::a"] = {
+            "text": "// src/A.java\nAAA" + sep + "void a() {}",
+            "emb": np.zeros(10),
+        }
+        # Z retrieved first
+        result = _dedup_retrieved_context([
+            ("src/Z.java::z", 0.95),
+            ("src/A.java::a", 0.85),
+        ])
+        self.assertLess(result.index("ZZZ"), result.index("AAA"))
+
+    def test_whole_file_included_as_is(self):
+        """Whole-file chunks (no '::') are included without splitting."""
+        import claude_light as cl
+        import numpy as np
+        text = "def entire_file(): pass\ndef second(): pass"
+        cl.chunk_store["src/whole.py"] = {"text": text, "emb": np.zeros(10)}
+        result = _dedup_retrieved_context([("src/whole.py", 0.75)])
+        self.assertIn("entire_file", result)
+        self.assertIn("second", result)
+
+
+# ---------------------------------------------------------------------------
+# auto_tune — boundary and clamping edge cases
+# ---------------------------------------------------------------------------
+
+class TestAutoTuneBoundaries(unittest.TestCase):
+
+    def _make_files(self, n):
+        files = []
+        for i in range(n):
+            f = MagicMock()
+            f.exists.return_value = True
+            f.stat.return_value.st_size = 2000
+            files.append(f)
+        return files
+
+    def test_exactly_50_files_selects_mpnet(self):
+        """Boundary: exactly 50 files should select all-mpnet-base-v2."""
+        import claude_light as cl
+        files = self._make_files(50)
+        with patch("claude_light.SentenceTransformer") as mock_st:
+            mock_st.return_value = MagicMock()
+            cl.EMBED_MODEL = None
+            cl.embedder = None
+            auto_tune(files, quiet=True)
+        self.assertEqual(cl.EMBED_MODEL, "all-mpnet-base-v2")
+
+    def test_exactly_200_files_selects_nomic(self):
+        """Boundary: exactly 200 files should select nomic."""
+        import claude_light as cl
+        files = self._make_files(200)
+        with patch("claude_light.SentenceTransformer") as mock_st:
+            mock_st.return_value = MagicMock()
+            cl.EMBED_MODEL = None
+            cl.embedder = None
+            auto_tune(files, quiet=True)
+        self.assertEqual(cl.EMBED_MODEL, "nomic-ai/nomic-embed-text-v1.5")
+
+    def test_top_k_clamped_to_min_2(self):
+        """Very large average chunk size should clamp TOP_K to 2."""
+        import claude_light as cl
+        files = self._make_files(5)
+        # Each chunk is ~480k chars → ~120k tokens avg → TARGET/120k → well below 2
+        chunks = [{"text": "x" * 480_000} for _ in range(5)]
+        with patch("claude_light.SentenceTransformer") as mock_st:
+            mock_st.return_value = MagicMock()
+            cl.EMBED_MODEL = None
+            cl.embedder = None
+            auto_tune(files, chunks=chunks, quiet=True)
+        self.assertEqual(cl.TOP_K, 2)
+
+    def test_top_k_clamped_to_max_15(self):
+        """Very small average chunk size should clamp TOP_K to 15."""
+        import claude_light as cl
+        files = self._make_files(5)
+        # Each chunk is 4 chars → ~1 token avg → TARGET/1 = 6000 → clamped to 15
+        chunks = [{"text": "x"} for _ in range(100)]
+        with patch("claude_light.SentenceTransformer") as mock_st:
+            mock_st.return_value = MagicMock()
+            cl.EMBED_MODEL = None
+            cl.embedder = None
+            auto_tune(files, chunks=chunks, quiet=True)
+        self.assertEqual(cl.TOP_K, 15)
+
+    def test_empty_chunks_list_falls_back_to_file_sizes(self):
+        """Passing chunks=[] (falsy) uses file sizes for TOP_K computation."""
+        import claude_light as cl
+        files = self._make_files(10)
+        with patch("claude_light.SentenceTransformer") as mock_st:
+            mock_st.return_value = MagicMock()
+            cl.EMBED_MODEL = None
+            cl.embedder = None
+            auto_tune(files, chunks=[], quiet=True)
+        self.assertIsNotNone(cl.TOP_K)
+        self.assertGreaterEqual(cl.TOP_K, 2)
+        self.assertLessEqual(cl.TOP_K, 15)
+
+
+# ---------------------------------------------------------------------------
+# MockManager — _mock_create_message retrieved context branches
+# ---------------------------------------------------------------------------
+
+class TestMockCreateMessageBranches(unittest.TestCase):
+    """Cover the two remaining retrieved-context branches in _mock_create_message."""
+
+    def test_system_block_with_code_marker_accumulates_retrieved_ctx(self):
+        """System block containing '// src/' should be counted as retrieved context (line 2158)."""
+        from claude_light import MockManager
+        mm = MockManager("small")
+        resp = mm._mock_create_message(
+            system=[{"type": "text", "text": "// src/Foo.java\npublic void doTask0() {}"}],
+            messages=[{"role": "user", "content": "what does Foo do?"}],
+        )
+        # injected_tokens > 0 because retrieved_ctx was non-empty
+        self.assertGreater(resp.usage.input_tokens, 0)
+        self.assertIn("doTask", resp.content[0].text)
+
+    def test_message_str_content_with_code_marker(self):
+        """String message content containing '// src/' hits line 2164."""
+        from claude_light import MockManager
+        mm = MockManager("small")
+        resp = mm._mock_create_message(
+            system=[],
+            messages=[{"role": "user", "content": "// src/Bar.java\npublic void doTask0() {}"}],
+        )
+        self.assertGreater(resp.usage.input_tokens, 0)
+        self.assertIn("doTask", resp.content[0].text)
+
+    def test_system_block_non_dict_ignored(self):
+        """Non-dict entries in system list should be skipped without error."""
+        from claude_light import MockManager
+        mm = MockManager("small")
+        resp = mm._mock_create_message(
+            system=["just a string", None, 42],
+            messages=[{"role": "user", "content": "hello"}],
+        )
+        self.assertIsNotNone(resp)
+
+    def test_message_list_content_no_match(self):
+        """List content blocks with no code marker produce zero injected tokens."""
+        from claude_light import MockManager
+        mm = MockManager("small")
+        resp = mm._mock_create_message(
+            system=[],
+            messages=[{"role": "user", "content": [{"type": "text", "text": "plain question"}]}],
+        )
+        self.assertEqual(resp.usage.input_tokens, 0)
+
+
+# ---------------------------------------------------------------------------
+# MockManager — MockPath class internals
+# ---------------------------------------------------------------------------
+
+class TestMockPath(unittest.TestCase):
+    """Tests for the MockPath class created by MockManager._mock_path_class()."""
+
+    def setUp(self):
+        from claude_light import MockManager
+        self.mm = MockManager("small")
+        self.MockPath = self.mm._mock_path_class()
+        self.real_file = next(iter(self.mm.files))   # e.g. "src/File0.java"
+
+    # ── construction ────────────────────────────────────────────────────────
+    def test_init_name_suffix_stem(self):
+        p = self.MockPath("src/Foo.java")
+        self.assertEqual(p.name, "Foo.java")
+        self.assertEqual(p.suffix, ".java")
+        self.assertEqual(p.stem, "Foo")
+
+    def test_init_no_extension(self):
+        p = self.MockPath("Makefile")
+        self.assertEqual(p.suffix, "")
+        self.assertEqual(p.stem, "Makefile")
+
+    def test_init_backslash_normalized(self):
+        p = self.MockPath("src\\Foo.java")
+        self.assertNotIn("\\", str(p))
+
+    def test_parts(self):
+        p = self.MockPath("src/main/Foo.java")
+        self.assertIn("src", p.parts)
+        self.assertIn("main", p.parts)
+
+    # ── comparisons & hashing ────────────────────────────────────────────────
+    def test_str(self):
+        p = self.MockPath("src/Foo.java")
+        self.assertEqual(str(p), "src/Foo.java")
+
+    def test_lt(self):
+        a = self.MockPath("src/A.java")
+        b = self.MockPath("src/B.java")
+        self.assertLess(a, b)
+
+    def test_eq(self):
+        self.assertEqual(self.MockPath("src/A.java"), self.MockPath("src/A.java"))
+        self.assertNotEqual(self.MockPath("src/A.java"), self.MockPath("src/B.java"))
+
+    def test_hash_equal_for_same_path(self):
+        a = self.MockPath("src/A.java")
+        b = self.MockPath("src/A.java")
+        self.assertEqual(hash(a), hash(b))
+
+    # ── read_text / read_bytes ───────────────────────────────────────────────
+    def test_read_text_known_file(self):
+        p = self.MockPath(self.real_file)
+        content = p.read_text()
+        self.assertIsInstance(content, str)
+        self.assertGreater(len(content), 0)
+
+    def test_read_text_md_returns_empty(self):
+        p = self.MockPath("docs/NOTES.md")
+        self.assertEqual(p.read_text(), "")
+
+    def test_read_text_unknown_raises(self):
+        p = self.MockPath("totally/unknown/file.py")
+        with self.assertRaises(OSError):
+            p.read_text()
+
+    def test_read_bytes_known_file(self):
+        p = self.MockPath(self.real_file)
+        data = p.read_bytes()
+        self.assertIsInstance(data, bytes)
+        self.assertGreater(len(data), 0)
+
+    # ── is_file / is_dir ─────────────────────────────────────────────────────
+    def test_is_file_for_known_file(self):
+        self.assertTrue(self.MockPath(self.real_file).is_file())
+
+    def test_is_file_for_md(self):
+        self.assertTrue(self.MockPath("README.md").is_file())
+
+    def test_is_dir_for_unknown(self):
+        # A path not in files and not .md is treated as a directory
+        self.assertTrue(self.MockPath("some/directory").is_dir())
+
+    def test_is_dir_false_for_real_file(self):
+        self.assertFalse(self.MockPath(self.real_file).is_dir())
+
+    # ── exists ───────────────────────────────────────────────────────────────
+    def test_exists_real_file(self):
+        self.assertTrue(self.MockPath(self.real_file).exists())
+
+    def test_exists_dot(self):
+        self.assertTrue(self.MockPath(".").exists())
+
+    def test_exists_cache_dir(self):
+        self.assertTrue(self.MockPath(".claude_light_cache").exists())
+
+    def test_exists_src_prefix(self):
+        self.assertTrue(self.MockPath("src/anything/here").exists())
+
+    def test_exists_false_for_unknown(self):
+        self.assertFalse(self.MockPath("totally/unknown/xyz123").exists())
+
+    # ── stat / rglob / misc ──────────────────────────────────────────────────
+    def test_stat_st_size_positive(self):
+        p = self.MockPath(self.real_file)
+        self.assertGreater(p.stat().st_size, 0)
+
+    def test_stat_st_size_zero_for_missing(self):
+        p = self.MockPath("not/in/files.py")
+        self.assertEqual(p.stat().st_size, 0)
+
+    def test_rglob_yields_all_known_files(self):
+        p = self.MockPath(".")
+        results = list(p.rglob("*.java"))
+        self.assertEqual(len(results), len(self.mm.files))
+
+    def test_relative_to_returns_same_path(self):
+        p = self.MockPath("src/Foo.java")
+        rel = p.relative_to(".")
+        self.assertEqual(str(rel), "src/Foo.java")
+
+    def test_mkdir_does_not_raise(self):
+        self.MockPath("new/dir").mkdir(exist_ok=True)
+
+    def test_write_text_does_not_raise(self):
+        self.MockPath(self.real_file).write_text("overwrite")
+
+    def test_write_bytes_does_not_raise(self):
+        self.MockPath(self.real_file).write_bytes(b"bytes")
+
+
+# ---------------------------------------------------------------------------
+# one_shot — double lint retry covers line 1894
+# ---------------------------------------------------------------------------
+
+class TestOneShotDoubleLintRetry(unittest.TestCase):
+    """Three-attempt scenario: two bad edits force a 3rd call, exercising line 1894."""
+
+    def test_double_retry_strips_cache_control_from_prior_list_content(self):
+        import claude_light as cl
+        orig_store = dict(cl.chunk_store)
+        cl.chunk_store.clear()
+
+        call_count = [0]
+
+        def mock_create(**kwargs):
+            call_count[0] += 1
+            resp = MagicMock()
+            block = MagicMock()
+            block.type = "text"
+            if call_count[0] <= 2:
+                # Return a syntactically broken edit so lint fails
+                block.text = (
+                    "```python:xyz2.py\n"
+                    "<<<<<<< SEARCH\n"
+                    "a=1\n"
+                    "=======\n"
+                    "a=(bad\n"
+                    ">>>>>>> REPLACE\n"
+                    "```"
+                )
+            else:
+                block.text = "All done."
+            resp.content = [block]
+            resp.usage = MagicMock()
+            resp.usage.input_tokens = 50
+            resp.usage.output_tokens = 20
+            resp.usage.cache_creation_input_tokens = 0
+            resp.usage.cache_read_input_tokens = 0
+            return resp
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            orig_dir = os.getcwd()
+            os.chdir(tmpdir)
+            try:
+                Path("xyz2.py").write_text("a=1\n", encoding="utf-8")
+                with patch("claude_light.client.messages.create", side_effect=mock_create), \
+                     patch("claude_light._update_skeleton"), \
+                     patch("claude_light.index_files"), \
+                     patch("claude_light.print_stats"), \
+                     patch("builtins.print"), \
+                     patch("sys.stderr", io.StringIO()):
+                    cl.one_shot("fix xyz2")
+                # Must have made at least 3 calls for line 1894 to be exercised
+                self.assertGreaterEqual(call_count[0], 3)
+            finally:
+                os.chdir(orig_dir)
+
+        cl.chunk_store.clear()
+        cl.chunk_store.update(orig_store)
+
+
+# ---------------------------------------------------------------------------
+# start_chat — interactive loop with mocked I/O
+# ---------------------------------------------------------------------------
+
+class TestStartChatLoop(unittest.TestCase):
+    """Exercise start_chat() by mocking the filesystem observer, threading,
+    and user input.  Covers lines 1919-2016 (minus the prompt_toolkit branch)."""
+
+    def _run_start_chat(self, input_sequence):
+        """Call start_chat() with _PROMPTTK_AVAILABLE=False and the given
+        sequence of input() return values.  The last value should cause the
+        loop to terminate ('exit', or EOFError)."""
+        import claude_light as cl
+
+        inputs = iter(input_sequence)
+
+        def fake_input(_prompt=">"):
+            return next(inputs)
+
+        mock_obs = MagicMock()
+
+        with patch.object(cl, 'full_refresh'), \
+             patch('claude_light.Observer', return_value=mock_obs), \
+             patch('claude_light.SourceHandler', return_value=MagicMock()), \
+             patch('threading.Thread', return_value=MagicMock()), \
+             patch.object(cl, '_PROMPTTK_AVAILABLE', False), \
+             patch.object(cl, 'print_session_summary'), \
+             patch('builtins.input', side_effect=fake_input), \
+             patch('builtins.print'):
+            cl.start_chat()
+
+        return mock_obs
+
+    def test_exits_on_eof(self):
+        """EOFError from input causes a clean exit."""
+        import claude_light as cl
+        mock_obs = MagicMock()
+
+        with patch.object(cl, 'full_refresh'), \
+             patch('claude_light.Observer', return_value=mock_obs), \
+             patch('claude_light.SourceHandler', return_value=MagicMock()), \
+             patch('threading.Thread', return_value=MagicMock()), \
+             patch.object(cl, '_PROMPTTK_AVAILABLE', False), \
+             patch.object(cl, 'print_session_summary'), \
+             patch('builtins.input', side_effect=EOFError), \
+             patch('builtins.print'):
+            cl.start_chat()
+
+        mock_obs.stop.assert_called_once()
+        mock_obs.join.assert_called_once()
+
+    def test_exit_command_terminates_loop(self):
+        mock_obs = self._run_start_chat(["exit"])
+        mock_obs.stop.assert_called_once()
+
+    def test_quit_command_terminates_loop(self):
+        mock_obs = self._run_start_chat(["quit"])
+        mock_obs.stop.assert_called_once()
+
+    def test_empty_query_continues(self):
+        """Empty input is skipped; loop terminates on subsequent 'exit'."""
+        mock_obs = self._run_start_chat(["", "exit"])
+        mock_obs.stop.assert_called_once()
+
+    def test_clear_command(self):
+        """/clear resets conversation history then loop exits."""
+        import claude_light as cl
+        cl.conversation_history.append({"role": "user", "content": "hi"})
+        self._run_start_chat(["/clear", "exit"])
+        self.assertEqual(cl.conversation_history, [])
+
+    def test_compact_command_alias(self):
+        """/compact is an alias for /clear."""
+        import claude_light as cl
+        cl.conversation_history.append({"role": "user", "content": "hi"})
+        self._run_start_chat(["/compact", "exit"])
+        self.assertEqual(cl.conversation_history, [])
+
+    def test_cost_command(self):
+        """/cost calls print_session_summary."""
+        import claude_light as cl
+        mock_obs = MagicMock()
+
+        with patch.object(cl, 'full_refresh'), \
+             patch('claude_light.Observer', return_value=mock_obs), \
+             patch('claude_light.SourceHandler', return_value=MagicMock()), \
+             patch('threading.Thread', return_value=MagicMock()), \
+             patch.object(cl, '_PROMPTTK_AVAILABLE', False), \
+             patch.object(cl, 'print_session_summary') as mock_summary, \
+             patch('builtins.input', side_effect=["/cost", "exit"]), \
+             patch('builtins.print'):
+            cl.start_chat()
+
+        # print_session_summary is called once for /cost + once in finally
+        self.assertGreaterEqual(mock_summary.call_count, 1)
+
+    def test_help_command(self):
+        """/help just prints text; no exception."""
+        self._run_start_chat(["/help", "exit"])
+
+    def test_run_command_calls_chat(self):
+        """/run <cmd> executes a shell command and passes output to chat."""
+        import claude_light as cl
+        mock_obs = MagicMock()
+
+        with patch.object(cl, 'full_refresh'), \
+             patch('claude_light.Observer', return_value=mock_obs), \
+             patch('claude_light.SourceHandler', return_value=MagicMock()), \
+             patch('threading.Thread', return_value=MagicMock()), \
+             patch.object(cl, '_PROMPTTK_AVAILABLE', False), \
+             patch.object(cl, 'print_session_summary'), \
+             patch.object(cl, '_run_command', return_value="cmd output") as mock_run, \
+             patch.object(cl, 'chat') as mock_chat, \
+             patch('builtins.input', side_effect=["/run echo hello", "exit"]), \
+             patch('builtins.print'):
+            cl.start_chat()
+
+        mock_run.assert_called_once_with("echo hello")
+        self.assertTrue(mock_chat.called)
+        # Transcript should be embedded in the chat message
+        self.assertIn("cmd output", mock_chat.call_args[0][0])
+
+    def test_run_command_empty_cmd_no_crash(self):
+        """/run with no command prints error but does not crash."""
+        self._run_start_chat(["/run ", "exit"])
+
+    def test_regular_query_calls_chat(self):
+        """A normal question is passed to chat()."""
+        import claude_light as cl
+        mock_obs = MagicMock()
+
+        with patch.object(cl, 'full_refresh'), \
+             patch('claude_light.Observer', return_value=mock_obs), \
+             patch('claude_light.SourceHandler', return_value=MagicMock()), \
+             patch('threading.Thread', return_value=MagicMock()), \
+             patch.object(cl, '_PROMPTTK_AVAILABLE', False), \
+             patch.object(cl, 'print_session_summary'), \
+             patch.object(cl, 'chat') as mock_chat, \
+             patch('builtins.input', side_effect=["what does foo do?", "exit"]), \
+             patch('builtins.print'):
+            cl.start_chat()
+
+        mock_chat.assert_called_once_with("what does foo do?")
+
+    def test_keyboard_interrupt_from_input_exits_cleanly(self):
+        """KeyboardInterrupt from input() is caught by the inner handler; loop breaks."""
+        import claude_light as cl
+        mock_obs = MagicMock()
+
+        with patch.object(cl, 'full_refresh'), \
+             patch('claude_light.Observer', return_value=mock_obs), \
+             patch('claude_light.SourceHandler', return_value=MagicMock()), \
+             patch('threading.Thread', return_value=MagicMock()), \
+             patch.object(cl, '_PROMPTTK_AVAILABLE', False), \
+             patch.object(cl, 'print_session_summary'), \
+             patch('builtins.input', side_effect=KeyboardInterrupt), \
+             patch('builtins.print'):
+            cl.start_chat()
+
+        mock_obs.stop.assert_called_once()
+
+    def test_keyboard_interrupt_from_chat_outer_handler(self):
+        """KeyboardInterrupt raised inside chat() is caught by the outer handler (line 2010)."""
+        import claude_light as cl
+        mock_obs = MagicMock()
+
+        with patch.object(cl, 'full_refresh'), \
+             patch('claude_light.Observer', return_value=mock_obs), \
+             patch('claude_light.SourceHandler', return_value=MagicMock()), \
+             patch('threading.Thread', return_value=MagicMock()), \
+             patch.object(cl, '_PROMPTTK_AVAILABLE', False), \
+             patch.object(cl, 'print_session_summary'), \
+             patch.object(cl, 'chat', side_effect=KeyboardInterrupt), \
+             patch('builtins.input', return_value="any query"), \
+             patch('builtins.print'):
+            cl.start_chat()
+
+        mock_obs.stop.assert_called_once()
+
+    def test_start_chat_prompttk_path(self):
+        """Exercise the prompt_toolkit branch of start_chat (lines 1934-1964)."""
+        import claude_light as cl
+        mock_obs = MagicMock()
+        mock_session = MagicMock()
+        # First prompt returns '/help', second raises EOFError to exit the loop
+        mock_session.prompt.side_effect = ["/help", EOFError()]
+        mock_ps_class = MagicMock(return_value=mock_session)
+
+        with patch.object(cl, 'full_refresh'), \
+             patch('claude_light.Observer', return_value=mock_obs), \
+             patch('claude_light.SourceHandler', return_value=MagicMock()), \
+             patch('threading.Thread', return_value=MagicMock()), \
+             patch.object(cl, '_PROMPTTK_AVAILABLE', True), \
+             patch.object(cl, '_PromptSession', mock_ps_class), \
+             patch.object(cl, '_FileHistory', return_value=MagicMock()), \
+             patch.object(cl, '_AutoSuggest', return_value=MagicMock()), \
+             patch.object(cl, '_WordCompleter', return_value=MagicMock()), \
+             patch.object(cl, 'CACHE_DIR', MagicMock()), \
+             patch.object(cl, 'print_session_summary'), \
+             patch('builtins.print'):
+            cl.start_chat()
+
+        mock_obs.stop.assert_called_once()
+
+        # The get_status_bar closure is passed as bottom_toolbar to _PromptSession.
+        # Invoke it now to cover lines 1937-1944.
+        call_kwargs = mock_ps_class.call_args.kwargs if mock_ps_class.called else {}
+        status_bar_fn = call_kwargs.get('bottom_toolbar')
+        self.assertIsNotNone(status_bar_fn, "bottom_toolbar callback was not passed")
+        result = status_bar_fn()
+        self.assertIsNotNone(result)
+
+
+# ---------------------------------------------------------------------------
+# MockManager.start() — patches __main__ → requires mounting claude_light as __main__
+# ---------------------------------------------------------------------------
+
+class TestMockManagerStart(unittest.TestCase):
+    """Test MockManager.start() by temporarily registering claude_light as __main__
+    so that its patch.object(__main__, ...) calls land on the right module."""
+
+    def test_start_patches_and_restores(self):
+        import sys
+        import claude_light as cl
+
+        old_main = sys.modules.get('__main__')
+        sys.modules['__main__'] = cl
+
+        mm = cl.MockManager("small")
+        patchers_started = []
+        try:
+            with patch('builtins.print'):
+                mm.start()
+            # Verify patchers were created and started
+            for attr in ('path_patcher', 'api_patcher', 'stats_patcher', 'embedder_patcher'):
+                self.assertTrue(hasattr(mm, attr), f"{attr} should exist after start()")
+                patchers_started.append(getattr(mm, attr))
+            self.assertTrue(mm.preset == "small")
+        finally:
+            # Stop all patchers to restore claude_light module state
+            for p in patchers_started:
+                try:
+                    p.stop()
+                except Exception:
+                    pass
+            sys.modules['__main__'] = old_main
+
+    def test_start_patches_sentence_transformer(self):
+        """After start(), claude_light.SentenceTransformer is the mock embedder class."""
+        import sys
+        import claude_light as cl
+
+        old_main = sys.modules.get('__main__')
+        sys.modules['__main__'] = cl
+        orig_st = cl.SentenceTransformer
+
+        mm = cl.MockManager("small")
+        try:
+            with patch('builtins.print'):
+                mm.start()
+            # SentenceTransformer should now be the mock class
+            self.assertIsNot(cl.SentenceTransformer, orig_st)
+        finally:
+            for attr in ('path_patcher', 'api_patcher', 'stats_patcher', 'embedder_patcher'):
+                p = getattr(mm, attr, None)
+                if p:
+                    try:
+                        p.stop()
+                    except Exception:
+                        pass
+            sys.modules['__main__'] = old_main
 
 
 if __name__ == "__main__":
