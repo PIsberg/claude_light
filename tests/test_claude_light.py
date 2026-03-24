@@ -2067,6 +2067,114 @@ class TestRetrieveScoreFiltering(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# retrieve — context compaction and adaptive selection
+# ---------------------------------------------------------------------------
+
+class TestRetrieveContextModes(unittest.TestCase):
+
+    def setUp(self):
+        import claude_light as cl
+        import numpy as np
+        self._orig_store = dict(cl.chunk_store)
+        self._orig_top_k = cl.TOP_K
+        self._orig_embed = cl.EMBED_MODEL
+        self._orig_embedder = cl.embedder
+        self._orig_min_score = cl.MIN_SCORE
+        self._orig_rel_floor = cl.RELATIVE_SCORE_FLOOR
+
+        cl.chunk_store.clear()
+        cl.chunk_store.update({
+            "src/a.py::alpha": {
+                "text": "// src/a.py\nfrom a import b\n\n    // ...\ndef alpha(x):\n    return x + 1\n",
+                "emb": np.array([1.0, 0.0, 0.0]),
+            },
+            "src/b.py::beta": {
+                "text": "// src/b.py\nfrom b import c\n\n    // ...\ndef beta(y):\n    return y * 2\n",
+                "emb": np.array([0.9, 0.0, 0.0]),
+            },
+            "src/c.py::gamma": {
+                "text": "// src/c.py\nfrom c import d\n\n    // ...\ndef gamma(z):\n    return z - 3\n",
+                "emb": np.array([0.8, 0.0, 0.0]),
+            },
+        })
+        cl.TOP_K = 5
+        cl.EMBED_MODEL = "all-MiniLM-L6-v2"
+        cl.MIN_SCORE = 0.0
+        cl.RELATIVE_SCORE_FLOOR = 0.0
+        mock_embedder = MagicMock()
+        mock_embedder.encode.return_value = np.array([1.0, 0.0, 0.0])
+        cl.embedder = mock_embedder
+
+    def tearDown(self):
+        import claude_light as cl
+        cl.chunk_store.clear()
+        cl.chunk_store.update(self._orig_store)
+        cl.TOP_K = self._orig_top_k
+        cl.EMBED_MODEL = self._orig_embed
+        cl.embedder = self._orig_embedder
+        cl.MIN_SCORE = self._orig_min_score
+        cl.RELATIVE_SCORE_FLOOR = self._orig_rel_floor
+
+    def test_low_effort_uses_summary_only_context(self):
+        import claude_light as cl
+
+        ctx, hits = cl.retrieve("where is alpha", token_budget=2000, effort="low")
+        self.assertTrue(hits)
+        self.assertIn("Relevant Files:", ctx)
+        self.assertNotIn("Detailed Code Context:", ctx)
+        self.assertIn("src/a.py :: alpha", ctx)
+        self.assertNotIn("return y * 2", ctx)
+
+    def test_medium_effort_includes_summary_and_single_detail(self):
+        import claude_light as cl
+
+        ctx, hits = cl.retrieve("explain alpha", token_budget=2000, effort="medium")
+        self.assertTrue(hits)
+        self.assertIn("Relevant Files:", ctx)
+        self.assertIn("Detailed Code Context:", ctx)
+        detail = ctx.split("Detailed Code Context:", 1)[1]
+        self.assertIn("def alpha(x):", detail)
+        self.assertNotIn("def beta(y):", detail)
+
+    def test_high_effort_includes_two_detailed_chunks(self):
+        import claude_light as cl
+
+        ctx, hits = cl.retrieve("refactor alpha and beta", token_budget=2000, effort="high")
+        self.assertTrue(hits)
+        detail = ctx.split("Detailed Code Context:", 1)[1]
+        self.assertIn("def alpha(x):", detail)
+        self.assertIn("def beta(y):", detail)
+        self.assertNotIn("def gamma(z):", detail)
+
+
+class TestAdaptiveRetrieveSelection(unittest.TestCase):
+
+    def test_adaptive_selection_prefers_budgeted_diverse_hits(self):
+        import numpy as np
+        import claude_light as cl
+        from claude_light.retrieval import _adaptive_select_pairs
+
+        orig_store = dict(cl.chunk_store)
+        try:
+            cl.chunk_store.clear()
+            cl.chunk_store.update({
+                "src/a.py::one": {"text": "x" * 400, "emb": np.array([1.0, 0.0])},
+                "src/a.py::two": {"text": "y" * 400, "emb": np.array([0.99, 0.0])},
+                "src/b.py::three": {"text": "z" * 120, "emb": np.array([0.97, 0.0])},
+            })
+            ids = list(cl.chunk_store.keys())
+            scores = np.array([1.0, 0.99, 0.97])
+            selected = _adaptive_select_pairs(ids, scores, budget=220, k=5)
+            selected_files = {cid.split("::", 1)[0] for cid, _ in selected}
+            self.assertIn("src/a.py", selected_files)
+            self.assertIn("src/b.py", selected_files)
+            self.assertLessEqual(len(selected), 2)
+        finally:
+            cl.chunk_store.clear()
+            cl.chunk_store.update(orig_store)
+
+
+# ---------------------------------------------------------------------------
 # _lint_via_treesitter (if available)
 # ---------------------------------------------------------------------------
 
@@ -2406,6 +2514,45 @@ class TestBuildSkeletonCached(unittest.TestCase):
                 os.chdir(orig)
                 cl._skeleton_md_hashes = {}
                 cl._skeleton_md_parts  = {}
+
+
+# ---------------------------------------------------------------------------
+# markdown compaction
+# ---------------------------------------------------------------------------
+
+class TestMarkdownCompaction(unittest.TestCase):
+
+    def test_large_non_core_markdown_is_compacted(self):
+        from claude_light.skeleton import _render_md_file
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            p = Path(tmpdir) / "guide.md"
+            p.write_text(
+                "# Guide\n\n"
+                + "Intro paragraph.\n\n"
+                + "\n".join(f"- item {i}" for i in range(80))
+                + "\n\n## Details\n\n"
+                + ("Long body line.\n" * 200),
+                encoding="utf-8",
+            )
+            rendered = _render_md_file(p)
+
+        self.assertIn("<!--", rendered)
+        self.assertIn("# Guide", rendered)
+        self.assertIn("... [COMPACTED markdown excerpt]", rendered)
+        self.assertLess(len(rendered), 1800)
+
+    def test_large_readme_keeps_full_mode_truncation(self):
+        from claude_light.skeleton import _render_md_file
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            p = Path(tmpdir) / "README.md"
+            p.write_text("# Title\n\n" + ("body line\n" * 1200), encoding="utf-8")
+            rendered = _render_md_file(p)
+
+        self.assertIn("# Title", rendered)
+        self.assertIn("... [TRUNCATED due to length]", rendered)
+        self.assertNotIn("... [COMPACTED markdown excerpt]", rendered)
 
 
 # ---------------------------------------------------------------------------

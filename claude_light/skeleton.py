@@ -3,6 +3,11 @@ from pathlib import Path
 from claude_light.config import SKIP_DIRS
 import claude_light.state as state
 
+_FULL_MD_NAMES = {"claude.md", "agents.md"}
+_FULL_MD_LIMIT = 5_000
+_COMPACT_MD_LIMIT = 1_200
+_SMALL_MD_LIMIT = 1_500
+
 def _file_hash(path: Path) -> str:
     """MD5 of file bytes — fast change detection, not cryptographic."""
     return hashlib.md5(path.read_bytes()).hexdigest()
@@ -70,11 +75,62 @@ def _render_compressed_node(node, lines, indent):
 def _render_md_file(path: Path) -> str:
     try:
         text = path.read_text(encoding="utf-8", errors="ignore").strip()
-        if len(text) > 5000 and path.name.lower() not in ("claude.md", "agents.md"):
-            text = text[:5000] + "\n\n... [TRUNCATED due to length]"
+        if path.name.lower() in _FULL_MD_NAMES:
+            pass
+        elif len(text) > _FULL_MD_LIMIT and not _looks_structured_md(text):
+            text = text[:_FULL_MD_LIMIT] + "\n\n... [TRUNCATED due to length]"
+        elif len(text) > _SMALL_MD_LIMIT:
+            text = _compact_md_text(text, limit=_COMPACT_MD_LIMIT)
         return f"<!-- {path} -->\n{text}" if text else ""
     except OSError:
         return ""
+
+
+def _looks_structured_md(text: str) -> bool:
+    return any(marker in text for marker in ("\n# ", "\n##", "\n###", "\n- ", "\n* ", "\n1. "))
+
+
+def _compact_md_text(text: str, limit: int = _COMPACT_MD_LIMIT) -> str:
+    lines = text.splitlines()
+    kept = []
+    saw_body = False
+    blank_pending = False
+
+    for raw_line in lines:
+        line = raw_line.rstrip()
+        stripped = line.strip()
+        if not stripped:
+            blank_pending = bool(kept)
+            continue
+
+        keep = False
+        if stripped.startswith(("#", "##", "###")):
+            keep = True
+        elif stripped.startswith(("- ", "* ", "1. ", "2. ", "3. ")):
+            keep = True
+        elif stripped.startswith("```"):
+            continue
+        elif not saw_body:
+            keep = True
+            saw_body = True
+        elif len(kept) < 18:
+            keep = True
+
+        if not keep:
+            continue
+
+        if blank_pending and kept:
+            kept.append("")
+            blank_pending = False
+        kept.append(line)
+
+        if len("\n".join(kept)) >= limit:
+            break
+
+    compact = "\n".join(kept).strip()
+    if len(compact) < len(text):
+        compact += "\n\n... [COMPACTED markdown excerpt]"
+    return compact
 
 def _assemble_skeleton() -> str:
     docs = "\n\n".join(v for v in state._skeleton_md_parts.values() if v)

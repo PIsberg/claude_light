@@ -193,7 +193,7 @@ def chat(query):
     token_budget = _RETRIEVAL_BUDGET[effort]
 
     from claude_light.indexer import _chunk_label
-    retrieved_ctx, hits = retrieve(query, token_budget=token_budget)
+    retrieved_ctx, hits = retrieve(query, token_budget=token_budget, effort=effort)
 
     if hits:
         names      = ", ".join(_chunk_label(p) for p, _ in hits)
@@ -306,7 +306,7 @@ def one_shot(prompt):
     index_files()
 
     routed_model, effort, max_tok = route_query(prompt)
-    retrieved_ctx, hits = retrieve(prompt, token_budget=_RETRIEVAL_BUDGET[effort])
+    retrieved_ctx, hits = retrieve(prompt, token_budget=_RETRIEVAL_BUDGET[effort], effort=effort)
     
     from claude_light.indexer import _chunk_label
     import re
