@@ -1,0 +1,26 @@
+[
+  {
+    "instance_id": "fixture-auth-login",
+    "repo": "fixture/offline-demo",
+    "repo_path": "retrieval_repo",
+    "embed_model": "offline-token-overlap-v2",
+    "problem_statement": "Users cannot log in. Investigate the login_user password check and admin authentication flow in the auth module.",
+    "gold_files": ["src/auth.py"]
+  },
+  {
+    "instance_id": "fixture-billing-invoice",
+    "repo": "fixture/offline-demo",
+    "repo_path": "retrieval_repo",
+    "embed_model": "offline-token-overlap-v2",
+    "problem_statement": "Invoice totals are wrong after discount and tax. Fix calculate_invoice_total in billing so the taxed invoice amount is correct.",
+    "gold_files": ["src/billing.py"]
+  },
+  {
+    "instance_id": "fixture-reporting-sales",
+    "repo": "fixture/offline-demo",
+    "repo_path": "retrieval_repo",
+    "embed_model": "offline-token-overlap-v2",
+    "problem_statement": "The weekly sales dashboard shows the wrong average_order_value. Inspect generate_weekly_sales_report in reporting and verify total_revenue aggregation.",
+    "gold_files": ["src/reporting.py"]
+  }
+]

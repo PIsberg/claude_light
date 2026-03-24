@@ -1,56 +1,83 @@
 [
   {
-    "instance_id": "marshmallow-code__marshmallow-1359",
-    "repo": "marshmallow-code/marshmallow",
-    "commit": "b40a0f4e33823e6d0f341f7e8684e359a99060d1",
+    "instance_id": "fixture-auth-login",
+    "repo": "fixture/offline-demo",
+    "commit": "fixture",
     "n_gold_files": 1,
-    "n_chunks": 894,
-    "n_files": 34,
-    "embed_model": "all-MiniLM-L6-v2",
+    "n_chunks": 8,
+    "n_files": 4,
+    "embed_model": "offline-token-overlap-v2",
     "metrics": {
       "hit_at_k": {
-        "5": false,
-        "10": false,
-        "15": false
+        "5": true,
+        "10": true,
+        "15": true
       },
       "recall_at_k": {
-        "5": 0.0,
-        "10": 0.0,
-        "15": 0.0
+        "5": 1.0,
+        "10": 1.0,
+        "15": 1.0
       },
       "precision_at_k": {
-        "5": 0.0,
-        "10": 0.0,
-        "15": 0.0
+        "5": 0.3333,
+        "10": 0.25,
+        "15": 0.25
       },
-      "mrr": 0.0
+      "mrr": 1.0
     }
   },
   {
-    "instance_id": "marshmallow-code__marshmallow-1343",
-    "repo": "marshmallow-code/marshmallow",
-    "commit": "2be2d83a1a9a6d3d9b85804f3ab545cecc409bb0",
+    "instance_id": "fixture-billing-invoice",
+    "repo": "fixture/offline-demo",
+    "commit": "fixture",
     "n_gold_files": 1,
-    "n_chunks": 889,
-    "n_files": 36,
-    "embed_model": "all-MiniLM-L6-v2",
+    "n_chunks": 8,
+    "n_files": 4,
+    "embed_model": "offline-token-overlap-v2",
     "metrics": {
       "hit_at_k": {
-        "5": false,
-        "10": false,
-        "15": false
+        "5": true,
+        "10": true,
+        "15": true
       },
       "recall_at_k": {
-        "5": 0.0,
-        "10": 0.0,
-        "15": 0.0
+        "5": 1.0,
+        "10": 1.0,
+        "15": 1.0
       },
       "precision_at_k": {
-        "5": 0.0,
-        "10": 0.0,
-        "15": 0.0
+        "5": 0.25,
+        "10": 0.25,
+        "15": 0.25
       },
-      "mrr": 0.0
+      "mrr": 1.0
+    }
+  },
+  {
+    "instance_id": "fixture-reporting-sales",
+    "repo": "fixture/offline-demo",
+    "commit": "fixture",
+    "n_gold_files": 1,
+    "n_chunks": 8,
+    "n_files": 4,
+    "embed_model": "offline-token-overlap-v2",
+    "metrics": {
+      "hit_at_k": {
+        "5": true,
+        "10": true,
+        "15": true
+      },
+      "recall_at_k": {
+        "5": 1.0,
+        "10": 1.0,
+        "15": 1.0
+      },
+      "precision_at_k": {
+        "5": 0.3333,
+        "10": 0.25,
+        "15": 0.25
+      },
+      "mrr": 1.0
     }
   }
 ]

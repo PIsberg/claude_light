@@ -8,11 +8,11 @@ PURPOSE
 Tests whether claude_light's embedding + retrieval pipeline correctly surfaces
 the *files* that need to change when a developer describes a real bug.
 
-Uses the SWE-bench Lite dataset (princeton-nlp/SWE-bench_Lite): each instance
-is a real GitHub issue paired with the actual patch that fixed it. The patch
-tells us which files were touched -- the ground truth. We embed the problem
-statement, run retrieval, and check whether those files appear in the top-K
-results.
+Supports two benchmark modes:
+
+1. SWE-bench Lite (live/networked): real GitHub issues and repos.
+2. Local fixture mode (offline): a committed tiny repo + query cases for
+   deterministic CI regression testing with non-zero retrieval signal.
 
 This is purely an embedding benchmark. No API key or Anthropic calls are made.
 
@@ -31,7 +31,7 @@ For K values [5, 10, 15] (matching claude_light's retrieval range):
 
 METHODOLOGY
 -----------
-1. Load SWE-bench Lite from HuggingFace (dev split by default: 23 instances).
+1. Load either SWE-bench Lite from HuggingFace or a local fixture file.
 2. For each instance:
    a. Clone the repo at base_commit (cached in --repos-dir between runs).
    b. Scan all source files using the same SKIP_DIRS + extension filter as
@@ -65,7 +65,10 @@ ASSUMPTIONS AND LIMITATIONS
 DEPENDENCIES
 ------------
 Required:
-  pip install datasets sentence-transformers numpy
+  pip install numpy
+
+Live SWE-bench mode only:
+  pip install datasets sentence-transformers
 
 Optional (strongly recommended for accurate method-level chunking):
   pip install tree-sitter tree-sitter-python tree-sitter-java tree-sitter-go \\
@@ -76,10 +79,11 @@ System:
 
 USAGE
 -----
-  python benchmark_retrieval.py                         # dev split, all instances
+  python benchmark_retrieval.py                         # SWE-bench dev split
   python benchmark_retrieval.py --split test            # full 300-instance test split
   python benchmark_retrieval.py --n 10                  # first N instances only
   python benchmark_retrieval.py --repo sympy/sympy      # filter to one repo
+  python benchmark_retrieval.py --fixture tests/fixtures/retrieval_cases.json
   python benchmark_retrieval.py --k 5 10 15             # K values to evaluate
   python benchmark_retrieval.py --repos-dir /data/repos # custom clone cache dir
   python benchmark_retrieval.py --json                  # JSON output to stdout
@@ -95,6 +99,7 @@ Embedding cache adds ~10-50 MB per (repo, commit) depending on repo size.
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -120,21 +125,26 @@ import numpy as np
 # Optional dependencies -- fail gracefully with clear instructions
 # ---------------------------------------------------------------------------
 
-try:
-    from datasets import load_dataset
-except ImportError:
-    sys.exit(
-        "[Error] 'datasets' is required:\n"
-        "  pip install datasets\n"
-    )
+def require_datasets():
+    try:
+        from datasets import load_dataset
+    except ImportError:
+        sys.exit(
+            "[Error] 'datasets' is required for live SWE-bench benchmarking:\n"
+            "  pip install datasets\n"
+        )
+    return load_dataset
 
-try:
-    from sentence_transformers import SentenceTransformer
-except ImportError:
-    sys.exit(
-        "[Error] 'sentence-transformers' is required:\n"
-        "  pip install sentence-transformers\n"
-    )
+
+def require_sentence_transformers():
+    try:
+        from sentence_transformers import SentenceTransformer
+    except ImportError:
+        sys.exit(
+            "[Error] 'sentence-transformers' is required for live SWE-bench benchmarking:\n"
+            "  pip install sentence-transformers\n"
+        )
+    return SentenceTransformer
 
 # ---------------------------------------------------------------------------
 # Constants -- mirrored from claude_light.py to ensure identical behaviour
@@ -326,6 +336,40 @@ def select_embed_model(n_files: int) -> str:
     return EMBED_THRESHOLDS[-1][1]  # nomic fallback
 
 
+class TokenOverlapEmbedder:
+    """Deterministic offline embedder for committed fixture benchmarks."""
+
+    def __init__(self, dimensions: int = 256):
+        self.dimensions = dimensions
+
+    def encode(self, texts, normalize_embeddings=True, show_progress_bar=False, batch_size=16):
+        if isinstance(texts, str):
+            texts = [texts]
+        vectors = [self._encode_text(text) for text in texts]
+        arr = np.array(vectors, dtype=np.float32)
+        if normalize_embeddings:
+            norms = np.linalg.norm(arr, axis=1, keepdims=True)
+            norms[norms == 0.0] = 1.0
+            arr = arr / norms
+        if len(vectors) == 1:
+            return arr[0]
+        return arr
+
+    def _encode_text(self, text: str) -> np.ndarray:
+        vec = np.zeros(self.dimensions, dtype=np.float32)
+        for token in re.findall(r"[a-z0-9_]+", text.lower()):
+            idx = self._stable_index(token)
+            vec[idx] += 1.0
+            for part in token.split("_"):
+                if part and part != token:
+                    vec[self._stable_index(part)] += 0.5
+        return vec
+
+    def _stable_index(self, token: str) -> int:
+        digest = hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest()
+        return int.from_bytes(digest, "little") % self.dimensions
+
+
 # ---------------------------------------------------------------------------
 # Embedding cache -- persist per (repo, commit, model) to avoid re-embedding
 # ---------------------------------------------------------------------------
@@ -360,6 +404,28 @@ def save_embedding_cache(cache_root: Path, repo: str, commit: str, model: str,
     (d / "meta.json").write_text(json.dumps(meta))
     (d / "chunk_ids.json").write_text(json.dumps(chunk_ids))
     np.save(d / "embeddings.npy", embeddings.astype(np.float32))
+
+
+def load_fixture_instances(fixture_path: Path) -> list:
+    payload = json.loads(fixture_path.read_text(encoding="utf-8"))
+    base_dir = fixture_path.parent
+    instances = []
+    for raw in payload:
+        repo_path = (base_dir / raw["repo_path"]).resolve()
+        gold_files = raw.get("gold_files")
+        if gold_files is None and raw.get("patch"):
+            gold_files = sorted(extract_gold_files(raw["patch"]))
+        instances.append({
+            "instance_id": raw["instance_id"],
+            "repo": raw["repo"],
+            "base_commit": raw.get("base_commit", "fixture"),
+            "problem_statement": raw["problem_statement"],
+            "patch": raw.get("patch", ""),
+            "gold_files": [normalize_repo_path(p) for p in (gold_files or [])],
+            "local_repo_path": repo_path,
+            "embed_model": raw.get("embed_model", "offline-token-overlap-v2"),
+        })
+    return instances
 
 
 # ---------------------------------------------------------------------------
@@ -419,9 +485,9 @@ def extract_gold_files(patch: str) -> set:
         if line.startswith("+++ /dev/null"):
             # File was deleted -- can't retrieve what doesn't exist
             if i > 0 and lines[i - 1].startswith("--- b/"):
-                deleted.add(lines[i - 1][6:])
+                deleted.add(normalize_repo_path(lines[i - 1][6:]))
         elif line.startswith("+++ b/"):
-            path = line[6:]
+            path = normalize_repo_path(line[6:])
             # Check if the previous --- line was /dev/null (new file)
             if i > 0 and lines[i - 1].startswith("--- /dev/null"):
                 pass  # New file -- skip
@@ -430,12 +496,24 @@ def extract_gold_files(patch: str) -> set:
     return gold - deleted
 
 
+def normalize_repo_path(path: str) -> str:
+    return path.replace("\\", "/")
+
+
+def count_indexable_files(repo_path: Path) -> int:
+    return sum(
+        1 for p in repo_path.rglob("*")
+        if p.is_file()
+        and p.suffix.lower() in INDEXABLE_EXTENSIONS
+        and not is_skipped(p.relative_to(repo_path))
+    )
+
+
 # ---------------------------------------------------------------------------
 # Index a repo -- chunk + embed all source files
 # ---------------------------------------------------------------------------
 
-def index_repo(repo_path: Path, lang_config: dict, model_name: str,
-               embedder: SentenceTransformer) -> tuple:
+def index_repo(repo_path: Path, lang_config: dict, model_name: str, embedder) -> tuple:
     """
     Scan, chunk, and embed all source files in repo_path.
     Returns (chunk_ids, embeddings) where chunk_ids[i] corresponds to embeddings[i].
@@ -490,7 +568,7 @@ def retrieve_top_k(query_emb: np.ndarray, chunk_embs: np.ndarray,
 
 def chunk_id_to_file(chunk_id: str) -> str:
     """'path/to/file.py::method' -> 'path/to/file.py'. Whole-file IDs pass through."""
-    return chunk_id.split("::")[0]
+    return normalize_repo_path(chunk_id.split("::")[0])
 
 
 def compute_instance_metrics(top_k_pairs: list, gold_files: set, k_values: list) -> dict:
@@ -613,6 +691,8 @@ def main() -> None:
                         help="Limit to first N instances (default: all)")
     parser.add_argument("--repo", default=None,
                         help="Filter to a specific repo, e.g. sympy/sympy")
+    parser.add_argument("--fixture", type=Path, default=None,
+                        help="Offline fixture file with committed local repo cases")
     parser.add_argument("--k", type=int, nargs="+", default=DEFAULT_K_VALUES,
                         help="K values to evaluate (default: 5 10 15)")
     parser.add_argument("--repos-dir", type=Path, default=Path(".benchmark_repos"),
@@ -634,17 +714,22 @@ def main() -> None:
 
     k_values = sorted(args.k)
 
+    benchmark_label = f"fixture {args.fixture}" if args.fixture else f"SWE-bench Lite ({args.split} split)"
     log_progress(f"\nRAG Retrieval Quality Benchmark")
-    log_progress(f"Dataset: SWE-bench Lite ({args.split} split)")
+    log_progress(f"Dataset: {benchmark_label}")
     log_progress(f"K values: {k_values}")
     log_progress(f"Repos cache: {args.repos_dir}")
     log_progress(f"Embed cache: {args.cache_dir}\n")
 
-    # Load dataset
-    log_progress("Loading SWE-bench Lite from HuggingFace...", end="", flush=True)
-    dataset = load_dataset("princeton-nlp/SWE-bench_Lite", split=args.split)
-    instances = list(dataset)
-    log_progress(f" {len(instances)} instances loaded.")
+    if args.fixture:
+        instances = load_fixture_instances(args.fixture)
+        log_progress(f"Loaded {len(instances)} fixture instances.")
+    else:
+        load_dataset = require_datasets()
+        log_progress("Loading SWE-bench Lite from HuggingFace...", end="", flush=True)
+        dataset = load_dataset("princeton-nlp/SWE-bench_Lite", split=args.split)
+        instances = list(dataset)
+        log_progress(f" {len(instances)} instances loaded.")
 
     if args.repo:
         instances = [i for i in instances if i["repo"] == args.repo]
@@ -666,9 +751,8 @@ def main() -> None:
         repo   = instance["repo"]
         commit = instance["base_commit"]
         stmt   = instance["problem_statement"]
-        patch  = instance["patch"]
-
-        gold_files = extract_gold_files(patch)
+        patch  = instance.get("patch", "")
+        gold_files = set(instance.get("gold_files") or extract_gold_files(patch))
         if not gold_files:
             log_progress(f"\n[{idx}/{len(instances)}] {iid}: no retrievable gold files, skipping.")
             continue
@@ -676,30 +760,28 @@ def main() -> None:
         log_progress(f"\n[{idx}/{len(instances)}] {iid}")
         log_progress(f"  Repo: {repo}@{commit[:8]}  |  Gold files: {len(gold_files)}")
 
-        # Clone / load repo
-        repo_path = get_repo_path(repo, commit, args.repos_dir)
-        if repo_path is None:
-            log_progress(f"  Skipping (clone failed).")
-            continue
+        if "local_repo_path" in instance:
+            repo_path = Path(instance["local_repo_path"])
+        else:
+            repo_path = get_repo_path(repo, commit, args.repos_dir)
+            if repo_path is None:
+                log_progress(f"  Skipping (clone failed).")
+                continue
 
         # Count files to select embedding model
-        n_files = sum(
-            1 for p in repo_path.rglob("*")
-            if p.is_file()
-            and p.suffix.lower() in INDEXABLE_EXTENSIONS
-            and not is_skipped(p.relative_to(repo_path))
-        )
-        model_name = select_embed_model(n_files)
+        n_files = count_indexable_files(repo_path)
+        model_name = instance.get("embed_model") or select_embed_model(n_files)
 
         # Load or create embedder (reuse if same model)
         if model_name != current_model or embedder is None:
             log_progress(f"  Loading embedder: {model_name}...", end="", flush=True)
-            embedder = SentenceTransformer(model_name, trust_remote_code=True)
-            
-            # Prevent Nomic's 8192-token attention matrix from causing OOM on huge files
-            if hasattr(embedder, "max_seq_length") and embedder.max_seq_length > 2048:
-                embedder.max_seq_length = 2048
-                
+            if model_name == "offline-token-overlap-v2":
+                embedder = TokenOverlapEmbedder()
+            else:
+                SentenceTransformer = require_sentence_transformers()
+                embedder = SentenceTransformer(model_name, trust_remote_code=True)
+                if hasattr(embedder, "max_seq_length") and embedder.max_seq_length > 2048:
+                    embedder.max_seq_length = 2048
             current_model = model_name
             log_progress(" done")
 

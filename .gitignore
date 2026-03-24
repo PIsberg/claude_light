@@ -3,3 +3,8 @@ __pycache__/
 .claude_light_cache/
 .benchmark_repos/
 .benchmark_retrieval_cache/
+.benchmark_retrieval_cache_fixture/
+.benchmark_retrieval_cache_fixture2/
+.benchmark_retrieval_cache_fixture3/
+test_ts.py
+dummy.py

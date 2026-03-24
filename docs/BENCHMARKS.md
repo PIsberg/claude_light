@@ -36,7 +36,7 @@ comparison, and this document now reflects that.
 | `benchmark_cost.py` | Real-world cost savings vs naive baseline | Yes | ~$0.05–$0.50 |
 | `benchmark_claude_code.py` | Claude Code vs `claude_light` vs naive baseline | Yes | Varies with live API/tool runs |
 
-\* Downloads HuggingFace dataset + sentence-transformers on first run (~1.5 GB).
+\* Offline fixture mode is fully local. Live SWE-bench mode downloads HuggingFace data + sentence-transformers on first run (~1.5 GB).
 
 ---
 
@@ -137,9 +137,10 @@ Ratio:                  346x
 
 ### Purpose
 
-Answers: *"Does claude_light's RAG pipeline retrieve the right code?"* using real
-bug-fix commits from the [SWE-bench Lite](https://huggingface.co/datasets/princeton-nlp/SWE-bench_Lite)
-dataset as ground truth.
+Answers: *"Does claude_light's RAG pipeline retrieve the right code?"* in two modes:
+
+- Offline fixture mode for deterministic CI regression checks
+- Live [SWE-bench Lite](https://huggingface.co/datasets/princeton-nlp/SWE-bench_Lite) mode for broader retrieval studies
 
 Given a natural-language issue description, the benchmark checks whether the
 correct source files appear in the top-K retrieved chunks — the same chunks
@@ -147,6 +148,15 @@ claude_light would send to Claude.
 
 ### Methodology
 
+Offline fixture mode:
+1. Load `tests/fixtures/retrieval_cases.json`.
+2. Index the committed tiny repo in `tests/fixtures/retrieval_repo/`.
+3. Chunk source files with the same tree-sitter pipeline used by `claude_light.py`.
+4. Embed with the deterministic local `offline-token-overlap-v1` embedder.
+5. Query with the issue text and rank chunks by cosine similarity.
+6. Measure Hit@K, Recall@K, Precision@K, and MRR at K = [5, 10, 15].
+
+Live SWE-bench mode:
 1. Download SWE-bench Lite from HuggingFace (`princeton-nlp/SWE-bench_Lite`).
 2. For each instance, clone the target repo at the base commit using a treeless
    shallow clone (`git clone --filter=blob:none --no-checkout`).
@@ -168,17 +178,23 @@ claude_light would send to Claude.
 
 Higher is always better. Hit@K and MRR are the primary signals.
 
-### Repos Covered (SWE-bench Lite subset)
+### Coverage
 
-The dataset spans 6 Python repositories: `django/django`, `astropy/astropy`,
-`sympy/sympy`, `scikit-learn/scikit-learn`, `matplotlib/matplotlib`,
-`pytest-dev/pytest`. Some instances may fail to clone or checkout if the exact
-commit no longer exists on the remote.
+The committed offline fixture covers 3 tiny Python retrieval cases: auth,
+billing, and reporting. It is intentionally deterministic and currently has
+non-zero retrieval signal for CI regression testing.
+
+The live SWE-bench dataset spans repositories such as `django/django`,
+`astropy/astropy`, `sympy/sympy`, `scikit-learn/scikit-learn`,
+`matplotlib/matplotlib`, and `pytest-dev/pytest`.
 
 ### Running
 
 ```bash
-# Install dependencies
+# Offline committed fixture (used in CI)
+python benchmark_retrieval.py --fixture tests/fixtures/retrieval_cases.json
+
+# Install dependencies for the larger live benchmark
 pip install datasets sentence-transformers numpy
 
 # Full dev split (23 instances — fast, no API key needed)
@@ -451,7 +467,9 @@ The current README numbers are:
 # 1. Analytical (free, instant)
 python benchmark.py
 
-# 2. Retrieval quality (free, needs GPU/CPU for embeddings)
+# 2. Retrieval quality
+python benchmark_retrieval.py --fixture tests/fixtures/retrieval_cases.json
+# or the larger live benchmark:
 pip install datasets sentence-transformers numpy
 python benchmark_retrieval.py --split dev
 
@@ -473,7 +491,8 @@ To share benchmark results with other claude_light users:
 # Capture all three
 python benchmark.py --json       > results_analytical.json
 python benchmark_retrieval.py \
-    --split dev --json           > results_retrieval.json
+    --fixture tests/fixtures/retrieval_cases.json \
+    --json                       > results_retrieval.json
 python benchmark_cost.py \
     --json 2>/dev/null           > results_cost.json
 ```
@@ -493,8 +512,8 @@ If a developer legitimately changes the chunking behavior for the better, they s
 # 1. Update analytical token baseline
 python tests/benchmark.py --json > tests/baseline_token_stats.json
 
-# 2. Update retrieval performance baseline (matches the CI marshmallow subset)
-python tests/benchmark_retrieval.py --repo marshmallow-code/marshmallow --output tests/baseline_retrieval_stats.json
+# 2. Update retrieval performance baseline (matches the CI offline fixture)
+python tests/benchmark_retrieval.py --fixture tests/fixtures/retrieval_cases.json --output tests/baseline_retrieval_stats.json
 
 # 3. Commit the new baseline files
 git add tests/baseline_token_stats.json tests/baseline_retrieval_stats.json

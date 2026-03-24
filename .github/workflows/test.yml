@@ -37,8 +37,7 @@ jobs:
         python tests/benchmark.py --json > tests/baseline_token_stats_new.json
         python tests/check_regression.py tokens tests/baseline_token_stats.json tests/baseline_token_stats_new.json
         
-    - name: Run retrieval benchmark (subset)
+    - name: Run retrieval benchmark (offline fixture)
       run: |
-        # Limiting to a small repo (marshmallow) so the pipeline uses MiniLM and completes rapidly
-        python tests/benchmark_retrieval.py --repo marshmallow-code/marshmallow --output tests/baseline_retrieval_stats_new.json
+        python tests/benchmark_retrieval.py --fixture tests/fixtures/retrieval_cases.json --output tests/baseline_retrieval_stats_new.json
         python tests/check_regression.py retrieval tests/baseline_retrieval_stats.json tests/baseline_retrieval_stats_new.json

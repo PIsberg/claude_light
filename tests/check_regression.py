@@ -40,6 +40,10 @@ def check_retrieval(baseline, current):
     
     b_recall = avg_metric(baseline, "recall_at_k", 10)
     c_recall = avg_metric(current, "recall_at_k", 10)
+
+    if b_hit <= 0.0 and b_recall <= 0.0:
+        print("ERROR: Retrieval baseline has zero signal. Refresh it with a meaningful fixture.")
+        sys.exit(1)
     
     print(f"Retrieval baseline Hit@10: {b_hit:.3f}, Recall@10: {b_recall:.3f}")
     print(f"Retrieval current Hit@10:  {c_hit:.3f}, Recall@10: {c_recall:.3f}")

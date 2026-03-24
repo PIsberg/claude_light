@@ -233,15 +233,15 @@ python tests/benchmark.py --json > tests/baseline_token_stats_new.json
 python tests/check_regression.py tokens tests/baseline_token_stats.json tests/baseline_token_stats_new.json
 ```
 
-3. Lightweight retrieval regression on the committed marshmallow subset
+3. Offline retrieval regression on the committed local fixture
 
 ```bash
-python tests/benchmark_retrieval.py --repo marshmallow-code/marshmallow --output tests/baseline_retrieval_stats_new.json
+python tests/benchmark_retrieval.py --fixture tests/fixtures/retrieval_cases.json --output tests/baseline_retrieval_stats_new.json
 python tests/check_regression.py retrieval tests/baseline_retrieval_stats.json tests/baseline_retrieval_stats_new.json
 ```
 
-If retrieval behavior changes intentionally, refresh the baseline with the same subset command so CI remains deterministic:
+If retrieval behavior changes intentionally, refresh the baseline with the same fixture command so CI remains deterministic:
 
 ```bash
-python tests/benchmark_retrieval.py --repo marshmallow-code/marshmallow --output tests/baseline_retrieval_stats.json
+python tests/benchmark_retrieval.py --fixture tests/fixtures/retrieval_cases.json --output tests/baseline_retrieval_stats.json
 ```
