@@ -4,6 +4,27 @@ Three standalone benchmarks ship with `claude_light.py`. Each tests a different
 aspect of what the tool optimises and can be shared independently to demonstrate
 its value.
 
+## Published Headline Numbers
+
+The current headline benchmark figures published in [`README.md`](../README.md)
+come from `benchmark_claude_code.py`, which compares Claude Code against
+`claude_light` on the same 4 Python repositories and 10-query workload.
+
+Measured on 2026-03-23:
+
+| Repository | Repo size | Claude Code | claude_light | Savings |
+|---|---:|---:|---:|---:|
+| `psf/requests` v2.31.0 | 108K tokens | $0.91 | $0.23 | **75%** |
+| `pallets/flask` 3.0.0 | 144K tokens | $1.62 | $0.17 | **89%** |
+| `encode/httpx` 0.25.2 | 191K tokens | $1.75 | $0.45 | **74%** |
+| `bottlepy/bottle` 0.13.2 | 92K tokens | $1.52 | $0.30 | **80%** |
+| **Total (≈40 queries)** | | **$5.81** | **$1.16** | **80% / 5× cheaper** |
+
+`benchmark_cost.py` is still useful, but it answers a different question:
+Claude Light vs a naive "send the whole repo" baseline. The README headline
+stats should therefore be treated as the source of truth for tool-vs-tool cost
+comparison, and this document now reflects that.
+
 ---
 
 ## Quick Reference
@@ -13,6 +34,7 @@ its value.
 | `benchmark.py` | Analytical token savings formula | No | Free |
 | `benchmark_retrieval.py` | RAG retrieval quality (Hit@K, MRR) | No | Free* |
 | `benchmark_cost.py` | Real-world cost savings vs naive baseline | Yes | ~$0.05–$0.50 |
+| `benchmark_claude_code.py` | Claude Code vs `claude_light` vs naive baseline | Yes | Varies with live API/tool runs |
 
 \* Downloads HuggingFace dataset + sentence-transformers on first run (~1.5 GB).
 
@@ -260,7 +282,7 @@ real dollar amounts on real codebases.
 | `psf/requests` | v2.31.0 | HTTP library |
 | `pallets/flask` | 3.0.0 | WSGI web framework |
 | `encode/httpx` | 0.25.2 | Next-gen HTTP client |
-| `tiangolo/fastapi` | 0.104.1 | Fast API framework |
+| `bottlepy/bottle` | 0.13.2 | Fast micro web-framework |
 
 These repos were chosen because they are:
 - Pure Python (no generated code or large binary assets)
@@ -369,7 +391,61 @@ Naive/Actual ratio: 174x
 
 ---
 
-## Running All Three Benchmarks
+## 4 · `benchmark_claude_code.py` — Claude Code vs Claude Light
+
+### Purpose
+
+Answers: *"How does `claude_light` compare to Claude Code on the same real
+queries?"* by combining live Claude Code runs with the saved JSON output from
+`benchmark_cost.py`.
+
+This is the benchmark that feeds the README headline comparison table.
+
+### What It Compares
+
+For each repo/query pair it compares:
+
+- **Claude Code**: `claude --print` in a fresh isolated session
+- **claude_light**: JSON results captured from `benchmark_cost.py --json`
+- **Naive baseline**: sending the entire repo every time
+
+### Repo Set
+
+The current published comparison uses:
+
+| Repo | Tag | Description |
+|---|---|---|
+| `psf/requests` | v2.31.0 | HTTP library |
+| `pallets/flask` | 3.0.0 | WSGI web framework |
+| `encode/httpx` | 0.25.2 | Next-gen HTTP client |
+| `bottlepy/bottle` | 0.13.2 | Fast micro web-framework |
+
+### Running
+
+```bash
+# First capture claude_light's real-cost benchmark output
+python benchmark_cost.py --json > cl_results.json
+
+# Then run the Claude Code comparison
+python benchmark_claude_code.py --claude-light-results cl_results.json
+
+# One repo only
+python benchmark_claude_code.py --repo pallets/flask --claude-light-results cl_results.json
+```
+
+### Published Result Snapshot
+
+The current README numbers are:
+
+| Repository | Claude Code | claude_light | Savings |
+|---|---:|---:|---:|
+| `psf/requests` | $0.91 | $0.23 | **75%** |
+| `pallets/flask` | $1.62 | $0.17 | **89%** |
+| `encode/httpx` | $1.75 | $0.45 | **74%** |
+| `bottlepy/bottle` | $1.52 | $0.30 | **80%** |
+| **Total** | **$5.81** | **$1.16** | **80% / 5× cheaper** |
+
+## Running All Four Benchmarks
 
 ```bash
 # 1. Analytical (free, instant)
@@ -383,6 +459,10 @@ python benchmark_retrieval.py --split dev
 export ANTHROPIC_API_KEY=sk-ant-...
 python benchmark_cost.py --dry-run  # preview without API calls
 python benchmark_cost.py            # real run
+
+# 4. Claude Code comparison (requires Claude Code plus benchmark_cost JSON)
+python benchmark_cost.py --json > cl_results.json
+python benchmark_claude_code.py --claude-light-results cl_results.json
 ```
 
 ## Sharing Results
@@ -413,8 +493,8 @@ If a developer legitimately changes the chunking behavior for the better, they s
 # 1. Update analytical token baseline
 python tests/benchmark.py --json > tests/baseline_token_stats.json
 
-# 2. Update retrieval performance baseline (tests against a subset to match CI criteria)
-python tests/benchmark_retrieval.py --n 5 --json > tests/baseline_retrieval_stats.json
+# 2. Update retrieval performance baseline (matches the CI marshmallow subset)
+python tests/benchmark_retrieval.py --repo marshmallow-code/marshmallow --output tests/baseline_retrieval_stats.json
 
 # 3. Commit the new baseline files
 git add tests/baseline_token_stats.json tests/baseline_retrieval_stats.json

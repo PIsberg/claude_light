@@ -1,10 +1,10 @@
-"""benchmark_cost.py — Real-World Token Cost Benchmark for claude_light.py
+"""benchmark_cost.py — Real-World Token Cost Benchmark for Claude Light
 
 PURPOSE
 -------
-Measures actual API token usage and cost savings when claude_light.py is used
+Measures actual API token usage and cost savings when Claude Light is used
 against real open-source Python repositories. Unlike benchmark.py (which uses
-analytical formulas on synthetic data), this script runs claude_light.py as a
+analytical formulas on synthetic data), this script runs the modular CLI as a
 subprocess and parses the real stats it emits to stderr.
 
 WHAT IT MEASURES
@@ -22,12 +22,12 @@ METHODOLOGY
 -----------
 1.  Clone each repo at a fixed tagged commit (shallow, --depth 1).
 2.  For each of 10 standard queries, run:
-      python claude_light.py "query"
+      python -m claude_light "query"
     in one-shot mode (stdin=/dev/null so no interactive prompts).
 3.  Strip ANSI codes from stderr and extract the [Stats], [Cost], and [Router]
     lines with regex.
 4.  Compute naive_cost by counting all source tokens in the repo (same
-    extensions + SKIP_DIRS as claude_light.py) and pricing them at PRICE_INPUT.
+    extensions + SKIP_DIRS as Claude Light and pricing them at PRICE_INPUT.
 
 ASSUMPTIONS / LIMITATIONS
 --------------------------
@@ -37,14 +37,14 @@ ASSUMPTIONS / LIMITATIONS
   Queries 2–10 benefit from warm-cache reads.
 - "Naive cost" assumes the entire repo is sent on every single query at full
   input price — this is the worst-case baseline against which the tool competes.
-- The [Stats] line is written to stderr by claude_light.py's print_stats().
+- The [Stats] line is written to stderr by Claude Light's print_stats().
   If the line format changes, update the STATS_RE / COST_RE / ROUTER_RE patterns.
-- tree-sitter is recommended for chunking; without it claude_light.py falls back
+- tree-sitter is recommended for chunking; without it Claude Light falls back
   to whole-file mode which may affect retrieval quality but not cost measurement.
 
 DEPENDENCIES
 ------------
-  pip install anthropic    # required by claude_light.py
+  pip install anthropic    # required by Claude Light
   git                      # for cloning repos
 
 USAGE
@@ -79,17 +79,17 @@ import sys
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
-# Pricing constants — must match claude_light.py exactly
+# Pricing constants — must match Claude Light exactly
 # ---------------------------------------------------------------------------
 PRICE_INPUT  = 3.00   # $/M uncached input tokens
 PRICE_WRITE  = 3.75   # $/M cache-write tokens
 PRICE_READ   = 0.30   # $/M cache-read tokens
 PRICE_OUTPUT = 15.00  # $/M output tokens
 
-# Extensions indexed by claude_light.py (from _WANTED_LANGS + .md)
+# Extensions indexed by Claude Light (from _WANTED_LANGS + .md)
 INDEXABLE_EXTS = {".java", ".py", ".js", ".go", ".rs", ".ts", ".tsx", ".md"}
 
-# Directories skipped by claude_light.py (from SKIP_DIRS)
+# Directories skipped by Claude Light (from SKIP_DIRS)
 SKIP_DIRS = {
     ".git", "target", "build", "node_modules",
     ".idea", "__pycache__", ".mvn", ".gradle",
@@ -143,7 +143,7 @@ STANDARD_QUERIES = [
 ]
 
 # ---------------------------------------------------------------------------
-# Regex patterns — match claude_light.py stderr output after ANSI stripping
+# Regex patterns — match Claude Light stderr output after ANSI stripping
 #
 # [Stats]  12,345 tokens  |  cached 10,000 (81.0%)  |  new 2,345
 # [Cost]   $0.0023  |  saved $0.0187 (89.0% vs no-cache)  |  session $0.0023
@@ -167,7 +167,7 @@ def strip_ansi(text: str) -> str:
 
 
 def parse_stderr(stderr_text: str) -> dict | None:
-    """Extract stats from one claude_light.py stderr dump. Returns None on parse failure."""
+    """Extract stats from one Claude Light stderr dump. Returns None on parse failure."""
     clean = strip_ansi(stderr_text)
     sm = STATS_RE.search(clean)
     cm = COST_RE.search(clean)
@@ -197,7 +197,7 @@ def is_skipped(path: Path) -> bool:
 
 
 def count_naive_tokens(repo_dir: Path) -> int:
-    """Count total tokens in all indexed source files (same logic as claude_light.py)."""
+    """Count total tokens in all indexed source files (same logic as Claude Light)."""
     total = 0
     for f in repo_dir.rglob("*"):
         if f.is_file() and f.suffix in INDEXABLE_EXTS:
@@ -230,17 +230,17 @@ def clone_repo(repo_key: str, repos_dir: Path) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Running claude_light.py
+# Running the modular CLI
 # ---------------------------------------------------------------------------
 
-def run_query(claude_light_path: Path, repo_dir: Path, query: str,
+def run_query(repo_root: Path, repo_dir: Path, query: str,
               timeout: int = 120) -> dict:
-    """Run claude_light.py in one-shot mode and parse its output."""
+    """Run Claude Light in one-shot mode and parse its output."""
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
     result = subprocess.run(
-        [sys.executable, str(claude_light_path), query],
+        [sys.executable, "-m", "claude_light", query],
         cwd=str(repo_dir),
         capture_output=True,
         text=True,
@@ -249,6 +249,7 @@ def run_query(claude_light_path: Path, repo_dir: Path, query: str,
         stdin=subprocess.DEVNULL,
         timeout=timeout,
         env=env,
+        check=False,
     )
     parsed = parse_stderr(result.stderr)
     if parsed is None:
@@ -317,7 +318,7 @@ def _print_table(headers, rows, widths):
 # Main benchmark logic
 # ---------------------------------------------------------------------------
 
-def run_repo_benchmark(repo_key: str, repo_dir: Path, claude_light_path: Path,
+def run_repo_benchmark(repo_key: str, repo_dir: Path, repo_root: Path,
                        queries: list, dry_run: bool = False) -> dict:
     """Run all queries against one repo. Returns structured results."""
     print(f"\n{'='*70}")
@@ -340,7 +341,7 @@ def run_repo_benchmark(repo_key: str, repo_dir: Path, claude_light_path: Path,
             continue
 
         try:
-            stats = run_query(claude_light_path, repo_dir, query)
+            stats = run_query(repo_root, repo_dir, query)
         except subprocess.TimeoutExpired:
             print("          [TIMEOUT]")
             query_results.append({"query": query, "effort_hint": effort_hint, "ok": False,
@@ -459,7 +460,7 @@ def print_aggregate_table(all_results: list):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Real-world token cost benchmark for claude_light.py",
+        description="Real-world token cost benchmark for Claude Light",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -473,12 +474,6 @@ def main():
         default=".benchmark_repos",
         metavar="DIR",
         help="Directory where repos are cloned (default: .benchmark_repos)",
-    )
-    parser.add_argument(
-        "--claude-light",
-        default=None,
-        metavar="PATH",
-        help="Path to claude_light.py (default: auto-detect next to this script)",
     )
     parser.add_argument(
         "--json",
@@ -499,13 +494,10 @@ def main():
     )
     args = parser.parse_args()
 
-    # Locate claude_light.py
-    if args.claude_light:
-        cl_path = Path(args.claude_light).resolve()
-    else:
-        cl_path = Path(__file__).parent / "claude_light.py"
-    if not cl_path.exists():
-        print(f"[error] claude_light.py not found at {cl_path}", file=sys.stderr)
+    repo_root = Path(__file__).resolve().parent.parent
+    module_entry = repo_root / "claude_light" / "__main__.py"
+    if not module_entry.exists():
+        print(f"[error] claude_light module entrypoint not found at {module_entry}", file=sys.stderr)
         sys.exit(1)
 
     # API key check (skip for dry-run)
@@ -538,7 +530,7 @@ def main():
     print(f"  Repos:        {', '.join(repo_keys)}")
     print(f"  Queries/repo: {len(STANDARD_QUERIES)}")
     print(f"  Mode:         {'dry-run' if args.dry_run else 'live (incurs API costs)'}")
-    print(f"  claude_light: {cl_path}")
+    print(f"  claude_light: python -m claude_light")
     print()
 
     all_results = []
@@ -550,7 +542,7 @@ def main():
             continue
 
         result = run_repo_benchmark(
-            repo_key, repo_dir, cl_path,
+            repo_key, repo_dir, repo_root,
             STANDARD_QUERIES, dry_run=args.dry_run,
         )
         all_results.append(result)

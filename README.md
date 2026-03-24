@@ -195,6 +195,53 @@ The script automatically selects the most efficient embedding model based on the
 
 
 ### Tests
-python claude_light.py --test-mode small
 
-python claude_light.py --test-mode large
+Run the full unit test suite:
+
+```bash
+python -m pytest -q
+```
+
+Run a quick CLI smoke test with the synthetic mocked codebase:
+
+```bash
+python -m claude_light --test-mode small "List all public classes or modules in this codebase"
+```
+
+Larger synthetic presets are also available for local stress testing:
+
+```bash
+python -m claude_light --test-mode medium
+python -m claude_light --test-mode large
+python -m claude_light --test-mode extra-large
+```
+
+### CI Regression Checks
+
+The GitHub Actions workflow currently runs three checks:
+
+1. Unit tests
+
+```bash
+python -m pytest -q
+```
+
+2. Analytical token-cost regression
+
+```bash
+python tests/benchmark.py --json > tests/baseline_token_stats_new.json
+python tests/check_regression.py tokens tests/baseline_token_stats.json tests/baseline_token_stats_new.json
+```
+
+3. Lightweight retrieval regression on the committed marshmallow subset
+
+```bash
+python tests/benchmark_retrieval.py --repo marshmallow-code/marshmallow --output tests/baseline_retrieval_stats_new.json
+python tests/check_regression.py retrieval tests/baseline_retrieval_stats.json tests/baseline_retrieval_stats_new.json
+```
+
+If retrieval behavior changes intentionally, refresh the baseline with the same subset command so CI remains deterministic:
+
+```bash
+python tests/benchmark_retrieval.py --repo marshmallow-code/marshmallow --output tests/baseline_retrieval_stats.json
+```

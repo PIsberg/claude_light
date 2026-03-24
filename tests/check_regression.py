@@ -20,6 +20,15 @@ def check_tokens(baseline, current):
 def check_retrieval(baseline, current):
     # Both are lists of instance dicts
     # We want to check aggregate Hit@10 and Recall@10
+
+    def instance_keys(data):
+        return [(r.get("repo"), r.get("instance_id")) for r in data]
+
+    if instance_keys(baseline) != instance_keys(current):
+        print("ERROR: Retrieval benchmark slice does not match baseline.")
+        print(f"Baseline instances: {instance_keys(baseline)}")
+        print(f"Current instances:  {instance_keys(current)}")
+        sys.exit(1)
     
     def avg_metric(data, key, k):
         k_str = str(k)

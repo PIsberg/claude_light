@@ -30,7 +30,7 @@ jobs:
         
     - name: Run unit tests
       run: |
-        python -m unittest discover -v tests/
+        python -m pytest -q
         
     - name: Run analytical benchmark
       run: |

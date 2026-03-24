@@ -2,3 +2,4 @@
 __pycache__/
 .claude_light_cache/
 .benchmark_repos/
+.benchmark_retrieval_cache/

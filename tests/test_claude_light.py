@@ -4932,7 +4932,7 @@ class TestOneShotLintCacheControlStrip(unittest.TestCase):
 class TestMockManager(unittest.TestCase):
 
     def test_mock_manager_small_preset(self):
-        from claude_light import MockManager
+        from tests.test_mocks import MockManager
         mm = MockManager("small")
         self.assertEqual(mm.preset, "small")
         self.assertGreater(len(mm.files), 0)
@@ -4941,22 +4941,22 @@ class TestMockManager(unittest.TestCase):
         self.assertGreater(mm.total_tokens, 0)
 
     def test_mock_manager_medium_preset(self):
-        from claude_light import MockManager
+        from tests.test_mocks import MockManager
         mm = MockManager("medium")
         self.assertEqual(len(mm.files), 50)
 
     def test_mock_manager_large_preset(self):
-        from claude_light import MockManager
+        from tests.test_mocks import MockManager
         mm = MockManager("large")
         self.assertEqual(len(mm.files), 200)
 
     def test_mock_manager_unknown_preset_defaults_to_small(self):
-        from claude_light import MockManager
+        from tests.test_mocks import MockManager
         mm = MockManager("unknown")
         self.assertEqual(len(mm.files), 5)
 
     def test_mock_create_message(self):
-        from claude_light import MockManager
+        from tests.test_mocks import MockManager
         mm = MockManager("small")
         resp = mm._mock_create_message(
             system=[{"type": "text", "text": "some system prompt"}],
@@ -4968,7 +4968,7 @@ class TestMockManager(unittest.TestCase):
         self.assertEqual(len(resp.content), 1)
 
     def test_mock_create_message_with_retrieved_context(self):
-        from claude_light import MockManager
+        from tests.test_mocks import MockManager
         mm = MockManager("small")
         resp = mm._mock_create_message(
             system=[],
@@ -4981,7 +4981,7 @@ class TestMockManager(unittest.TestCase):
         self.assertIn("doTask", resp.content[0].text)
 
     def test_mock_embedder_class(self):
-        from claude_light import MockManager
+        from tests.test_mocks import MockManager
         import numpy as np
         mm = MockManager("small")
         embedder_cls = mm._mock_embedder_class
@@ -4994,7 +4994,7 @@ class TestMockManager(unittest.TestCase):
         self.assertEqual(embs.shape, (3, 384))
 
     def test_mock_embedder_nomic(self):
-        from claude_light import MockManager
+        from tests.test_mocks import MockManager
         import numpy as np
         mm = MockManager("small")
         embedder = mm._mock_embedder_class("nomic-ai/nomic-embed-text-v1.5")
@@ -5002,7 +5002,8 @@ class TestMockManager(unittest.TestCase):
         self.assertEqual(emb.shape, (768,))
 
     def test_mock_print_stats(self):
-        from claude_light import MockManager, print_stats
+        from tests.test_mocks import MockManager
+        from claude_light import print_stats
         mm = MockManager("small")
         mm.orig_print_stats = print_stats
 
@@ -5023,7 +5024,7 @@ class TestMockManager(unittest.TestCase):
         self.assertIn("Token Savings", out)
 
     def test_generate_synthetic_files_content(self):
-        from claude_light import MockManager
+        from tests.test_mocks import MockManager
         mm = MockManager("small")
         for fname, content in mm.files.items():
             self.assertIn("package com.synthetic;", content)
@@ -5394,7 +5395,7 @@ class TestMockCreateMessageBranches(unittest.TestCase):
 
     def test_system_block_with_code_marker_accumulates_retrieved_ctx(self):
         """System block containing '// src/' should be counted as retrieved context (line 2158)."""
-        from claude_light import MockManager
+        from tests.test_mocks import MockManager
         mm = MockManager("small")
         resp = mm._mock_create_message(
             system=[{"type": "text", "text": "// src/Foo.java\npublic void doTask0() {}"}],
@@ -5406,7 +5407,7 @@ class TestMockCreateMessageBranches(unittest.TestCase):
 
     def test_message_str_content_with_code_marker(self):
         """String message content containing '// src/' hits line 2164."""
-        from claude_light import MockManager
+        from tests.test_mocks import MockManager
         mm = MockManager("small")
         resp = mm._mock_create_message(
             system=[],
@@ -5417,7 +5418,7 @@ class TestMockCreateMessageBranches(unittest.TestCase):
 
     def test_system_block_non_dict_ignored(self):
         """Non-dict entries in system list should be skipped without error."""
-        from claude_light import MockManager
+        from tests.test_mocks import MockManager
         mm = MockManager("small")
         resp = mm._mock_create_message(
             system=["just a string", None, 42],
@@ -5427,7 +5428,7 @@ class TestMockCreateMessageBranches(unittest.TestCase):
 
     def test_message_list_content_no_match(self):
         """List content blocks with no code marker produce zero injected tokens."""
-        from claude_light import MockManager
+        from tests.test_mocks import MockManager
         mm = MockManager("small")
         resp = mm._mock_create_message(
             system=[],
@@ -5444,7 +5445,7 @@ class TestMockPath(unittest.TestCase):
     """Tests for the MockPath class created by MockManager._mock_path_class()."""
 
     def setUp(self):
-        from claude_light import MockManager
+        from tests.test_mocks import MockManager
         self.mm = MockManager("small")
         self.MockPath = self.mm._mock_path_class()
         self.real_file = next(iter(self.mm.files))   # e.g. "src/File0.java"
@@ -5845,6 +5846,179 @@ class TestStartChatLoop(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# module entrypoint and main() routing
+# ---------------------------------------------------------------------------
+
+class TestModuleEntrypoint(unittest.TestCase):
+
+    def test_module_entrypoint_reconfigures_streams_and_calls_main(self):
+        import runpy
+        import types
+
+        fake_stdout = MagicMock()
+        fake_stderr = MagicMock()
+        fake_main_module = types.SimpleNamespace(main=MagicMock())
+
+        with patch.dict(sys.modules, {"claude_light.main": fake_main_module}), \
+             patch.object(sys, "stdout", fake_stdout), \
+             patch.object(sys, "stderr", fake_stderr):
+            runpy.run_module("claude_light", run_name="__main__")
+
+        fake_stdout.reconfigure.assert_called_once_with(encoding="utf-8", errors="replace")
+        fake_stderr.reconfigure.assert_called_once_with(encoding="utf-8", errors="replace")
+        fake_main_module.main.assert_called_once()
+
+
+class TestMainRouting(unittest.TestCase):
+
+    def test_main_non_tty_stdin_routes_to_one_shot(self):
+        import claude_light.main as main_mod
+
+        with patch.object(main_mod.sys, "argv", ["claude_light"]), \
+             patch.object(main_mod.sys.stdin, "isatty", return_value=False), \
+             patch.object(main_mod.sys.stdin, "read", return_value="question from stdin"), \
+             patch.object(main_mod, "one_shot") as mock_one_shot, \
+             patch.object(main_mod, "start_chat") as mock_start_chat:
+            main_mod.main()
+
+        mock_one_shot.assert_called_once_with("question from stdin")
+        mock_start_chat.assert_not_called()
+
+    def test_main_test_mode_starts_mock_manager(self):
+        import claude_light.main as main_mod
+
+        mock_manager = MagicMock()
+        mock_manager_cls = MagicMock(return_value=mock_manager)
+
+        with patch.object(main_mod.sys, "argv", ["claude_light", "--test-mode", "small", "describe", "repo"]), \
+             patch("tests.test_mocks.MockManager", mock_manager_cls), \
+             patch.object(main_mod, "one_shot") as mock_one_shot, \
+             patch.object(main_mod, "start_chat") as mock_start_chat:
+            main_mod.main()
+
+        mock_manager_cls.assert_called_once_with("small")
+        mock_manager.start.assert_called_once()
+        mock_one_shot.assert_called_once_with("describe repo")
+        mock_start_chat.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# compatibility layer state sync
+# ---------------------------------------------------------------------------
+
+class TestCompatibilityStateSync(unittest.TestCase):
+
+    def test_assign_embed_model_updates_state_module(self):
+        import claude_light as cl
+        import claude_light.state as st
+
+        orig_cl = cl.EMBED_MODEL
+        orig_st = st.EMBED_MODEL
+        try:
+            cl.EMBED_MODEL = "sync-test-model"
+            self.assertEqual(st.EMBED_MODEL, "sync-test-model")
+        finally:
+            cl.EMBED_MODEL = orig_cl
+            st.EMBED_MODEL = orig_st
+
+    def test_index_files_wrapper_refreshes_file_hash_alias(self):
+        import claude_light as cl
+        import claude_light.state as st
+
+        orig_hashes = dict(cl._file_hashes)
+        orig_store = dict(cl.chunk_store)
+        orig_embedder = cl.embedder
+        orig_model = cl.EMBED_MODEL
+        orig_exts = set(cl.INDEXABLE_EXTENSIONS)
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                orig_cwd = os.getcwd()
+                os.chdir(tmpdir)
+                try:
+                    Path("tiny.py").write_text("def fn():\n    return 1\n", encoding="utf-8")
+                    cl._file_hashes = {}
+                    st._file_hashes = {}
+                    cl.chunk_store.clear()
+                    cl.INDEXABLE_EXTENSIONS = {".py"}
+                    cl.EMBED_MODEL = "all-MiniLM-L6-v2"
+                    fake_embedder = MagicMock()
+                    fake_embedder.encode.return_value = [[0.1, 0.2, 0.3]]
+                    cl.embedder = fake_embedder
+                    with patch("claude_light.auto_tune"):
+                        cl.index_files(quiet=True)
+                    self.assertIn("tiny.py", cl._file_hashes)
+                    self.assertEqual(cl._file_hashes, st._file_hashes)
+                finally:
+                    os.chdir(orig_cwd)
+        finally:
+            cl._file_hashes.clear()
+            cl._file_hashes.update(orig_hashes)
+            st._file_hashes.clear()
+            st._file_hashes.update(orig_hashes)
+            cl.chunk_store.clear()
+            cl.chunk_store.update(orig_store)
+            st.chunk_store.clear()
+            st.chunk_store.update(orig_store)
+            cl.embedder = orig_embedder
+            st.embedder = orig_embedder
+            cl.EMBED_MODEL = orig_model
+            st.EMBED_MODEL = orig_model
+            cl.INDEXABLE_EXTENSIONS = orig_exts
+            import claude_light.config as cfg
+            cfg.INDEXABLE_EXTENSIONS = orig_exts
+
+
+# ---------------------------------------------------------------------------
+# _load_cache corrupted cache artifacts
+# ---------------------------------------------------------------------------
+
+class TestLoadCacheCorruption(unittest.TestCase):
+
+    def test_load_cache_corrupt_manifest_returns_all_stale(self):
+        from claude_light import _load_cache
+        import claude_light as cl
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            orig = os.getcwd()
+            os.chdir(tmpdir)
+            try:
+                f = Path("a.py")
+                f.write_text("def a():\n    pass\n", encoding="utf-8")
+                cl.CACHE_DIR.mkdir(exist_ok=True)
+                cl.CACHE_MANIFEST.write_text("{not-json", encoding="utf-8")
+                cl.CACHE_INDEX.write_bytes(b"not-a-pickle")
+                cached, stale = _load_cache([f], "all-MiniLM-L6-v2", quiet=True)
+                self.assertEqual(cached, {})
+                self.assertEqual(stale, [f])
+            finally:
+                os.chdir(orig)
+
+    def test_load_cache_corrupt_pickle_returns_all_stale(self):
+        from claude_light import _load_cache, _file_hash
+        import claude_light as cl
+        import json
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            orig = os.getcwd()
+            os.chdir(tmpdir)
+            try:
+                f = Path("a.py")
+                f.write_text("def a():\n    pass\n", encoding="utf-8")
+                h = _file_hash(f)
+                cl.CACHE_DIR.mkdir(exist_ok=True)
+                cl.CACHE_MANIFEST.write_text(
+                    json.dumps({"embed_model": "all-MiniLM-L6-v2", "files": {"a.py": h}}),
+                    encoding="utf-8",
+                )
+                cl.CACHE_INDEX.write_bytes(b"corrupt-pickle")
+                cached, stale = _load_cache([f], "all-MiniLM-L6-v2", quiet=True)
+                self.assertEqual(cached, {})
+                self.assertEqual(stale, [f])
+            finally:
+                os.chdir(orig)
+
+
+# ---------------------------------------------------------------------------
 # MockManager.start() — patches __main__ → requires mounting claude_light as __main__
 # ---------------------------------------------------------------------------
 
@@ -5853,13 +6027,14 @@ class TestMockManagerStart(unittest.TestCase):
     so that its patch.object(__main__, ...) calls land on the right module."""
 
     def test_start_patches_and_restores(self):
+        from tests.test_mocks import MockManager
         import sys
         import claude_light as cl
 
         old_main = sys.modules.get('__main__')
         sys.modules['__main__'] = cl
 
-        mm = cl.MockManager("small")
+        mm = MockManager("small")
         patchers_started = []
         try:
             with patch('builtins.print'):
@@ -5879,6 +6054,7 @@ class TestMockManagerStart(unittest.TestCase):
             sys.modules['__main__'] = old_main
 
     def test_start_patches_sentence_transformer(self):
+        from tests.test_mocks import MockManager
         """After start(), claude_light.SentenceTransformer is the mock embedder class."""
         import sys
         import claude_light as cl
@@ -5887,7 +6063,7 @@ class TestMockManagerStart(unittest.TestCase):
         sys.modules['__main__'] = cl
         orig_st = cl.SentenceTransformer
 
-        mm = cl.MockManager("small")
+        mm = MockManager("small")
         try:
             with patch('builtins.print'):
                 mm.start()
