@@ -4,7 +4,8 @@ import anthropic
 
 from claude_light.config import (
     API_KEY, MODEL, MODEL_HAIKU, MODEL_SONNET, MODEL_OPUS, SUMMARY_MODEL,
-    MAX_HISTORY_TURNS, SUMMARIZE_BATCH, _RETRIEVAL_BUDGET, SYSTEM_PROMPT
+    MAX_HISTORY_TURNS, SUMMARIZE_BATCH, _RETRIEVAL_BUDGET, SYSTEM_PROMPT,
+    ENABLE_STREAMING
 )
 from claude_light.ui import (
     _T_ROUTE, _T_SYS, _T_ERR, _T_RAG, _T_CACHE,
@@ -16,6 +17,8 @@ from claude_light.skeleton import build_skeleton, _refresh_tree_only, _assemble_
 from claude_light.indexer import index_files
 from claude_light.retrieval import retrieve
 from claude_light.editor import parse_edit_blocks, apply_edits
+from claude_light.retry import retry_with_backoff
+from claude_light.streaming import stream_chat_response, accumulate_usage_from_dict, calculate_usage_cost
 
 client = anthropic.Anthropic(api_key=API_KEY) if API_KEY != "sk-ant-test-mock-key" else None
 if not client:
@@ -81,10 +84,11 @@ def _extract_text(content_blocks) -> str:
     )
 
 def _accumulate_usage(usage):
-    state.session_tokens["input"]       += usage.input_tokens
-    state.session_tokens["cache_write"] += getattr(usage, "cache_creation_input_tokens", 0)
-    state.session_tokens["cache_read"]  += getattr(usage, "cache_read_input_tokens", 0)
-    state.session_tokens["output"]      += usage.output_tokens
+    with state.lock:
+        state.session_tokens["input"]       += usage.input_tokens
+        state.session_tokens["cache_write"] += getattr(usage, "cache_creation_input_tokens", 0)
+        state.session_tokens["cache_read"]  += getattr(usage, "cache_read_input_tokens", 0)
+        state.session_tokens["output"]      += usage.output_tokens
 
 def _summarize_turns(messages: list) -> tuple:
     lines = []
@@ -95,20 +99,25 @@ def _summarize_turns(messages: list) -> tuple:
             content = " ".join(b.get("text", "") for b in content if b.get("type") == "text")
         lines.append(f"{role}: {content}")
     dialogue = "\n\n".join(lines)
-    response = client.messages.create(
-        model=SUMMARY_MODEL,
-        max_tokens=400,
-        messages=[{
-            "role": "user",
-            "content": (
-                "Summarize the following conversation turns concisely (under 300 words).\n"
-                "Capture: what was asked, decisions reached, files edited and what changed, "
-                "key facts established about the codebase.\n"
-                "Output only the summary — no preamble.\n\n"
-                f"<turns>\n{dialogue}\n</turns>"
-            ),
-        }],
-    )
+    
+    @retry_with_backoff
+    def _call_api():
+        return client.messages.create(
+            model=SUMMARY_MODEL,
+            max_tokens=400,
+            messages=[{
+                "role": "user",
+                "content": (
+                    "Summarize the following conversation turns concisely (under 300 words).\n"
+                    "Capture: what was asked, decisions reached, files edited and what changed, "
+                    "key facts established about the codebase.\n"
+                    "Output only the summary — no preamble.\n\n"
+                    f"<turns>\n{dialogue}\n</turns>"
+                ),
+            }],
+        )
+    
+    response = _call_api()
     return response.content[0].text.strip(), response.usage
 
 def _maybe_compress_history():
@@ -140,7 +149,41 @@ def _build_system_blocks(skeleton):
     ]
     return blocks
 
-def _apply_skeleton(new_skeleton: str):
+def _make_streaming_api_call(**create_kwargs):
+    """
+    Make an API call using streaming if enabled, otherwise use non-streaming.
+
+    Returns:
+        Tuple of (reply_text, usage_dict)
+    """
+    if ENABLE_STREAMING and hasattr(client.messages, 'stream'):
+        try:
+            # Use streaming
+            reply_text, usage_dict = stream_chat_response(client, **create_kwargs)
+            # Convert usage dict to response.usage-like object for compatibility
+            class UsageObj:
+                pass
+            usage = UsageObj()
+            usage.input_tokens = usage_dict.get('input_tokens', 0)
+            usage.output_tokens = usage_dict.get('output_tokens', 0)
+            usage.cache_creation_input_tokens = usage_dict.get('cache_creation_tokens', 0)
+            usage.cache_read_input_tokens = usage_dict.get('cache_read_tokens', 0)
+            return reply_text, usage
+        except (AttributeError, NotImplementedError):
+            # Fallback to non-streaming if stream not available
+            @retry_with_backoff
+            def _call_api():
+                return client.messages.create(**create_kwargs)
+            response = _call_api()
+            return _extract_text(response.content), response.usage
+    else:
+        # Non-streaming path
+        @retry_with_backoff
+        def _call_api():
+            return client.messages.create(**create_kwargs)
+        response = _call_api()
+        return _extract_text(response.content), response.usage
+
     with state.lock:
         state.skeleton_context = new_skeleton
         state.last_interaction = time.time()
@@ -240,15 +283,16 @@ def chat(query):
 
     try:
         for attempt in range(3):
-            response = client.messages.create(**create_kwargs)
-            reply = _extract_text(response.content)
+            # Use streaming or non-streaming API call
+            reply, usage = _make_streaming_api_call(**create_kwargs)
+            
             edits = parse_edit_blocks(reply)
             
             if edits:
                 lint_errs = apply_edits(edits, check_only=True)
                 if lint_errs:
-                    cost = calculate_cost(response.usage)
-                    _accumulate_usage(response.usage)
+                    cost = calculate_cost(usage)
+                    _accumulate_usage(usage)
                     with state.lock:
                         state.session_cost += cost
 
@@ -278,8 +322,8 @@ def chat(query):
                 clean_reply = reply
             state.conversation_history.append({"role": "assistant", "content": clean_reply})
 
-            cost = calculate_cost(response.usage)
-            _accumulate_usage(response.usage)
+            cost = calculate_cost(usage)
+            _accumulate_usage(usage)
             with state.lock:
                 state.last_interaction = time.time()
                 state.session_cost += cost
@@ -292,7 +336,7 @@ def chat(query):
             if edits:
                 apply_edits(edits, explanation=explanation)
 
-            print_stats(response.usage, label=f"Turn {turns}")
+            print_stats(usage, label=f"Turn {turns}")
             break
 
     except KeyboardInterrupt:
@@ -330,15 +374,16 @@ def one_shot(prompt):
         create_kwargs["thinking"] = {"type": "enabled", "budget_tokens": 10_000}
     try:
         for attempt in range(3):
-            response = client.messages.create(**create_kwargs)
-            reply = _extract_text(response.content)
+            # Use streaming or non-streaming API call
+            reply, usage = _make_streaming_api_call(**create_kwargs)
+            
             edits = parse_edit_blocks(reply)
 
             if edits:
                 lint_errs = apply_edits(edits, check_only=True)
                 if lint_errs:
-                    cost = calculate_cost(response.usage)
-                    _accumulate_usage(response.usage)
+                    cost = calculate_cost(usage)
+                    _accumulate_usage(usage)
                     with state.lock:
                         state.session_cost += cost
 
@@ -363,11 +408,11 @@ def one_shot(prompt):
             if edits:
                 apply_edits(edits, explanation=explanation)
 
-            cost = calculate_cost(response.usage)
-            _accumulate_usage(response.usage)
+            cost = calculate_cost(usage)
+            _accumulate_usage(usage)
             with state.lock:
                 state.session_cost += cost
-            print_stats(response.usage, label="Stats", file=sys.stderr)
+            print_stats(usage, label="Stats", file=sys.stderr)
             break
 
     except Exception as e:

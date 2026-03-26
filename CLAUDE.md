@@ -134,6 +134,27 @@ Every prompt is handled the same way — Claude decides whether to answer in pro
 
 For a deeper dive into the implementation, see [architecture.md](architecture.md).
 
+## Reliability Features
+
+**Auto-Retry with Exponential Backoff** (`claude_light/retry.py`): 
+- Automatically retries transient API errors (429 rate limits, 5xx server errors, connection errors)
+- Exponential backoff: 2s → 4s → 8s (capped at 60s)
+- Non-retriable errors (401, 403, 404, 400) fail immediately
+- Max 3 attempts per request
+
+**Thread-Safe State Management** (`claude_light/state.py`, `claude_light/llm.py`, `claude_light/ui.py`):
+- All access to shared state (`session_cost`, `session_tokens`, `conversation_history`) is protected by `threading.Lock`
+- Prevents race conditions when multiple threads read/write session data simultaneously
+- Critical sections: state updates in `_accumulate_usage()`, `/cost` command reading, status bar updates
+- Ensures consistent token counts and cost calculations under concurrent access
+
+**Streaming Response Output** (`claude_light/streaming.py`):
+- Real-time token streaming from the Anthropic API
+- Responses appear incrementally instead of all at once — better UX for long outputs
+- Proper handling of thinking blocks (shown as progress indicator, not in user output)
+- Accurate token tracking from streaming events for cost calculations
+- Graceful fallback to non-streaming if API doesn't support it
+
 ## Key Config (top of script)
 
 | Variable | Purpose |

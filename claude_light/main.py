@@ -49,10 +49,11 @@ def start_chat():
         from prompt_toolkit import HTML
 
         def get_status_bar():
-            total_in = state.session_tokens["input"] + state.session_tokens["cache_write"] + state.session_tokens["cache_read"]
-            saved = state.session_tokens["cache_read"]
+            with state.lock:
+                total_in = state.session_tokens["input"] + state.session_tokens["cache_write"] + state.session_tokens["cache_read"]
+                saved = state.session_tokens["cache_read"]
+                cost = state.session_cost
             ratio = (saved / total_in * 100) if total_in > 0 else 0.0
-            cost = state.session_cost
             repo = os.path.basename(os.getcwd())
             
             return HTML(
@@ -78,10 +79,12 @@ def start_chat():
             return _session.prompt("> ").strip()
     else:
         def _get_input():
-            total_in = state.session_tokens["input"] + state.session_tokens["cache_write"] + state.session_tokens["cache_read"]
-            saved = state.session_tokens["cache_read"]
+            with state.lock:
+                total_in = state.session_tokens["input"] + state.session_tokens["cache_write"] + state.session_tokens["cache_read"]
+                saved = state.session_tokens["cache_read"]
+                cost = state.session_cost
             ratio = (saved / total_in * 100) if total_in > 0 else 0.0
-            print(f"\n[{os.path.basename(os.getcwd())}] Tokens: {total_in:,} ({saved:,} saved, {ratio:.1f}%) | Cost: ${state.session_cost:.4f}")
+            print(f"\n[{os.path.basename(os.getcwd())}] Tokens: {total_in:,} ({saved:,} saved, {ratio:.1f}%) | Cost: ${cost:.4f}")
             return input("> ").strip()
 
     try:

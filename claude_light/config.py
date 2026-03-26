@@ -46,6 +46,7 @@ MODEL                   = MODEL_SONNET              # default; overridden per-tu
 SUMMARY_MODEL           = MODEL_HAIKU               # cheap model for history compression
 HEARTBEAT_SECS          = 30
 CACHE_TTL_SECS          = 240
+ENABLE_STREAMING        = True         # enable real-time token streaming
 TARGET_RETRIEVED_TOKENS = 6_000   # desired context size per query in tokens
 MIN_SCORE               = 0.45    # discard retrieved files below this similarity (absolute floor)
 RELATIVE_SCORE_FLOOR    = 0.60    # drop chunks below this fraction of the top chunk's score

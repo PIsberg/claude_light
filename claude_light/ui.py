@@ -83,6 +83,9 @@ def print_stats(usage, label="Stats", file=sys.stdout):
     savings_pct = (savings / nocache_cost * 100) if nocache_cost > 0 else 0.0
     hit_pct     = (read_tokens / total_input * 100) if total_input > 0 else 0.0
 
+    with state.lock:
+        session_cost = state.session_cost
+
     print(
         f"{_ANSI_DIM}[{label}]{_ANSI_RESET}  {total_input:,} tokens  |  "
         f"cached {_ANSI_GREEN}{read_tokens:,}{_ANSI_RESET} ({hit_pct:.1f}%)  |  "
@@ -93,15 +96,19 @@ def print_stats(usage, label="Stats", file=sys.stdout):
         f"{_ANSI_DIM}[Cost]{_ANSI_RESET}   "
         f"{_ANSI_YELLOW}${actual_cost:.4f}{_ANSI_RESET}  |  "
         f"saved {_ANSI_GREEN}${savings:.4f}{_ANSI_RESET} ({savings_pct:.1f}% vs no-cache)  |  "
-        f"session {_ANSI_YELLOW}${state.session_cost:.4f}{_ANSI_RESET}",
+        f"session {_ANSI_YELLOW}${session_cost:.4f}{_ANSI_RESET}",
         file=file,
     )
 
 def print_session_summary():
-    inp   = state.session_tokens["input"]
-    cw    = state.session_tokens["cache_write"]
-    cr    = state.session_tokens["cache_read"]
-    out   = state.session_tokens["output"]
+    with state.lock:
+        inp   = state.session_tokens["input"]
+        cw    = state.session_tokens["cache_write"]
+        cr    = state.session_tokens["cache_read"]
+        out   = state.session_tokens["output"]
+        cost  = state.session_cost
+        turns = len(state.conversation_history) // 2
+
     total = inp + cw + cr + out
 
     cost_inp = (inp / 1_000_000) * PRICE_INPUT
@@ -119,12 +126,11 @@ def print_session_summary():
     _R = _ANSI_RESET
     _H = _ANSI_BOLD
 
-    def row(label, tokens, cost, color=""):
-        cost_str = f"${cost:.4f}"
+    def row(label, tokens, cost_val, color=""):
+        cost_str = f"${cost_val:.4f}"
         return (f"│ {color}{label:<{col_w[0]}}{_R} │ {tokens:>{col_w[1]},} │"
                 f" {pct(tokens):>{col_w[2]}} │ {_ANSI_YELLOW}{cost_str:>{col_w[3]}}{_R} │")
 
-    turns      = len(state.conversation_history) // 2
     input_base = inp + cw + cr
     hit_str    = f"{_ANSI_GREEN}{cr / input_base * 100:.1f}%{_R}" if input_base else "—"
 
