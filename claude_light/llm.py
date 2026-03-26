@@ -290,7 +290,7 @@ def chat(query):
             if explanation:
                 _print_reply(explanation)
             if edits:
-                apply_edits(edits)
+                apply_edits(edits, explanation=explanation)
 
             print_stats(response.usage, label=f"Turn {turns}")
             break
@@ -361,7 +361,7 @@ def one_shot(prompt):
             if explanation:
                 print(explanation)
             if edits:
-                apply_edits(edits)
+                apply_edits(edits, explanation=explanation)
 
             cost = calculate_cost(response.usage)
             _accumulate_usage(response.usage)

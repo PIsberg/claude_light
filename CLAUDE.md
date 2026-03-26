@@ -126,7 +126,9 @@ Without tree-sitter, chunking falls back to whole-file mode. Without rich/prompt
 - `route_query(query)` — heuristic classifier; returns `(model_id, effort_label, max_tokens)` and prints routing decision to stderr
 - `_extract_text(content_blocks)` — joins text blocks from API response, skipping thinking blocks (used when `effort="max"` triggers extended thinking)
 
-**Interactive commands**: `/clear`, `/cost`, `/help`, `exit`/`quit`, `Ctrl+C`.
+**Interactive commands**: `/clear`, `/compact`, `/cost`, `/help`, `/run <cmd>`, `/undo`, `exit`/`quit`, `Ctrl+C`.
+
+**Auto-commit safety net**: When Claude makes file changes, the tool automatically commits them to git with a descriptive message (`Claude: [summary of changes]`). If you don't like what was done, just type `/undo` to revert to the previous state — no work lost, completely safe for AI refactoring. (Requires: `.git` repository; gracefully skipped if not in a git repo.)
 
 Every prompt is handled the same way — Claude decides whether to answer in prose or return file edits. When the response contains ` ```lang:path ``` ` blocks, the script diffs (with ANSI colour), confirms, and writes them automatically. One-shot and piped modes auto-apply without confirmation.
 

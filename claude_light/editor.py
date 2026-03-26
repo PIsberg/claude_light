@@ -5,6 +5,7 @@ from pathlib import Path
 
 from claude_light.ui import _T_EDIT, _T_ERR, _ANSI_CYAN, _ANSI_GREEN, _ANSI_RED, _ANSI_BOLD, _ANSI_RESET, show_diff
 from claude_light.linter import _lint_content
+from claude_light import git_manager
 
 _ANY_BLOCK = re.compile(r"```[a-zA-Z0-9_+-]*(?::([^\n`]+))?[ \t]*\n(.*?)```", re.DOTALL)
 _SR_PATTERN = re.compile(
@@ -160,7 +161,19 @@ def _resolve_new_content(edit):
     raise ValueError(f"SEARCH block not found in {edit['path']} (even with fuzzy sequence matching)")
 
 
-def apply_edits(edits, check_only=False):
+def apply_edits(edits, check_only=False, explanation=""):
+    """
+    Apply file edits from Claude's response.
+    
+    Args:
+        edits: List of edit dictionaries (from parse_edit_blocks).
+        check_only: If True, only check edits for syntax errors, don't write files.
+        explanation: Brief explanation of changes (used in auto-commit message).
+        
+    Returns:
+        If check_only=True, returns list of lint errors (empty if no errors).
+        If check_only=False, returns None after applying changes (or early on error).
+    """
     if not edits:
         if not check_only:
             print(f"{_T_EDIT} No file blocks found in response.")
@@ -218,6 +231,7 @@ def apply_edits(edits, check_only=False):
         return
 
     written = 0
+    written_files = []
     for r in applicable:
         try:
             p = Path(r["path"])
@@ -225,7 +239,12 @@ def apply_edits(edits, check_only=False):
             p.write_text(r["_new"], encoding="utf-8")
             print(f"{_T_EDIT} Wrote {_ANSI_CYAN}{r['path']}{_ANSI_RESET}")
             written += 1
+            written_files.append(r["path"])
         except Exception as ex:
             print(f"{_T_ERR} Failed to write {r['path']}: {ex}")
 
     print(f"{_T_EDIT} {_ANSI_GREEN}{written}/{len(applicable)}{_ANSI_RESET} change(s) applied.\n")
+    
+    # Attempt auto-commit if in a git repo
+    if written_files and git_manager.is_git_repo():
+        git_manager.auto_commit(written_files, explanation)

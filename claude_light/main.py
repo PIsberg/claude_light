@@ -6,7 +6,7 @@ from watchdog.observers import Observer
 
 import claude_light.state as state
 from claude_light.config import MODEL, CACHE_DIR, HEARTBEAT_SECS, CACHE_TTL_SECS
-from claude_light.ui import _ANSI_BOLD, _ANSI_RESET, _ANSI_CYAN, _ANSI_DIM, _T_SYS, _T_ERR, print_session_summary
+from claude_light.ui import _ANSI_BOLD, _ANSI_RESET, _ANSI_CYAN, _ANSI_DIM, _ANSI_GREEN, _ANSI_RED, _T_SYS, _T_ERR, print_session_summary
 from claude_light.llm import full_refresh, chat, one_shot, warm_cache
 from claude_light.indexer import SourceHandler
 
@@ -64,7 +64,7 @@ def start_chat():
 
         CACHE_DIR.mkdir(exist_ok=True)
         _slash_completer = _WordCompleter(
-            ["/compact", "/clear", "/cost", "/help", "/run", "exit", "quit"],
+            ["/compact", "/clear", "/cost", "/help", "/run", "/undo", "exit", "quit"],
             sentence=True,
         )
         _session = _PromptSession(
@@ -107,6 +107,7 @@ def start_chat():
                     "  /compact      — reset conversation history\n"
                     "  /cost         — show session spend so far\n"
                     "  /run <cmd>    — run a shell command and feed output to Claude\n"
+                    "  /undo         — undo the last commit (revert AI changes)\n"
                     "  exit          — quit\n"
                 )
                 continue
@@ -119,8 +120,33 @@ def start_chat():
                 transcript = _run_command(cmd)
                 chat(f"I ran the following command and got this output. Please help me understand or fix any issues:\n\n```\n{transcript}\n```")
                 continue
-
-            chat(query)
+            if query == "/undo":
+                from claude_light import git_manager
+                if not git_manager.is_git_repo():
+                    print(f"{_T_ERR} Not in a git repository. Cannot undo.\n")
+                    continue
+                
+                last_commit = git_manager.get_last_commit_message()
+                if not last_commit:
+                    print(f"{_T_ERR} No commits to undo.\n")
+                    continue
+                
+                msg_preview = last_commit.strip().split('\n')[0][:60]
+                print(f"Last commit: {msg_preview}")
+                print(f"Undo this commit? [{_ANSI_GREEN}y{_ANSI_RESET}/{_ANSI_RED}n{_ANSI_RESET}] ", end="", flush=True)
+                try:
+                    confirm = input().strip().lower() in ("y", "yes")
+                except (KeyboardInterrupt, EOFError):
+                    confirm = False
+                
+                if confirm:
+                    if git_manager.undo_last_commit():
+                        print(f"{_T_SYS} Undo complete.\n")
+                    else:
+                        print(f"{_T_ERR} Failed to undo.\n")
+                else:
+                    print(f"{_T_SYS} Cancelled.\n")
+                continue
     except KeyboardInterrupt:
         pass
     finally:

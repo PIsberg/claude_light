@@ -6227,5 +6227,163 @@ class TestMockManagerStart(unittest.TestCase):
             sys.modules['__main__'] = old_main
 
 
+# ---------------------------------------------------------------------------
+# git_manager — auto-commit and undo functionality
+# ---------------------------------------------------------------------------
+
+class TestGitManager(unittest.TestCase):
+    """Tests for the git auto-commit feature."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.orig = os.getcwd()
+        os.chdir(self.tmpdir)
+        # Initialize a git repo
+        subprocess.run(["git", "init"], capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], capture_output=True)
+        # Create initial commit
+        Path("README.md").write_text("# Test", encoding="utf-8")
+        subprocess.run(["git", "add", "README.md"], capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Initial commit"], capture_output=True)
+
+    def tearDown(self):
+        os.chdir(self.orig)
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_is_git_repo_detects_repo(self):
+        from claude_light import git_manager
+        self.assertTrue(git_manager.is_git_repo())
+
+    def test_is_git_repo_detects_non_repo(self):
+        from claude_light import git_manager
+        os.chdir(self.orig)
+        self.assertFalse(git_manager.is_git_repo())
+
+    def test_get_git_root_returns_path(self):
+        from claude_light import git_manager
+        root = git_manager.get_git_root()
+        self.assertIsNotNone(root)
+        self.assertTrue(root.exists())
+
+    def test_get_modified_files_empty_initially(self):
+        from claude_light import git_manager
+        files = git_manager.get_modified_files()
+        self.assertEqual(files, [])
+
+    def test_get_modified_files_detects_changes(self):
+        from claude_light import git_manager
+        Path("test.py").write_text("x = 1\n", encoding="utf-8")
+        files = git_manager.get_modified_files()
+        self.assertIn("test.py", files)
+
+    def test_get_last_commit_message_returns_initial(self):
+        from claude_light import git_manager
+        msg = git_manager.get_last_commit_message()
+        self.assertIsNotNone(msg)
+        self.assertIn("Initial commit", msg)
+
+    def test_auto_commit_creates_commit(self):
+        from claude_light import git_manager
+        Path("new_file.py").write_text("x = 42\n", encoding="utf-8")
+        
+        # Capture output
+        captured = io.StringIO()
+        with patch("sys.stdout", captured):
+            result = git_manager.auto_commit(["new_file.py"], "Added new file")
+        
+        self.assertTrue(result)
+        # Verify commit was created
+        msg = git_manager.get_last_commit_message()
+        self.assertIn("Added new file", msg)
+
+    def test_auto_commit_includes_explanation_in_message(self):
+        from claude_light import git_manager
+        Path("feature.py").write_text("def feature(): pass\n", encoding="utf-8")
+        
+        captured = io.StringIO()
+        with patch("sys.stdout", captured):
+            git_manager.auto_commit(["feature.py"], "Implement new feature")
+        
+        msg = git_manager.get_last_commit_message()
+        self.assertIn("Implement new feature", msg)
+
+    def test_auto_commit_truncates_long_explanation(self):
+        from claude_light import git_manager
+        Path("long.py").write_text("x = 1\n", encoding="utf-8")
+        long_explanation = "This is a very long explanation that should be truncated " * 10
+        
+        captured = io.StringIO()
+        with patch("sys.stdout", captured):
+            git_manager.auto_commit(["long.py"], long_explanation)
+        
+        msg = git_manager.get_last_commit_message()
+        # Message should be reasonably short
+        self.assertLess(len(msg), 200)
+
+    def test_undo_last_commit_reverts_changes(self):
+        from claude_light import git_manager
+        Path("file.py").write_text("x = 1\n", encoding="utf-8")
+        
+        captured = io.StringIO()
+        with patch("sys.stdout", captured):
+            git_manager.auto_commit(["file.py"], "Add file")
+        
+        # Verify file exists
+        self.assertTrue(Path("file.py").exists())
+        
+        # Undo the commit
+        with patch("sys.stdout", captured):
+            git_manager.undo_last_commit()
+        
+        # File should be gone (working directory reverted)
+        self.assertFalse(Path("file.py").exists())
+
+    def test_undo_last_commit_fails_without_commits(self):
+        from claude_light import git_manager
+        # Clear git repo and reinit
+        import shutil
+        shutil.rmtree(".git", ignore_errors=True)
+        subprocess.run(["git", "init"], capture_output=True)
+        
+        captured = io.StringIO()
+        with patch("sys.stdout", captured):
+            result = git_manager.undo_last_commit()
+        
+        self.assertFalse(result)
+
+    def test_get_commit_history_returns_recent_commits(self):
+        from claude_light import git_manager
+        # Create a few commits
+        for i in range(3):
+            Path(f"file{i}.py").write_text(f"x = {i}\n", encoding="utf-8")
+            captured = io.StringIO()
+            with patch("sys.stdout", captured):
+                git_manager.auto_commit([f"file{i}.py"], f"Add file {i}")
+        
+        history = git_manager.get_commit_history(n=5)
+        self.assertGreater(len(history), 0)
+        # Should contain the latest commits
+        self.assertTrue(any("Add file" in h for h in history))
+
+    def test_auto_commit_stages_all_when_no_files_provided(self):
+        from claude_light import git_manager
+        # Modify multiple files
+        Path("a.py").write_text("a = 1\n", encoding="utf-8")
+        Path("b.py").write_text("b = 2\n", encoding="utf-8")
+        
+        captured = io.StringIO()
+        with patch("sys.stdout", captured):
+            # Pass empty list to stage all
+            result = git_manager.auto_commit([], "Batch update")
+        
+        self.assertTrue(result)
+        # Both files should be committed
+        msg = git_manager.get_last_commit_message()
+        self.assertIn("Batch update", msg)
+
+
 if __name__ == "__main__":
     unittest.main()
+
