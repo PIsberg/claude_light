@@ -1,6 +1,7 @@
 import sys
 import os
 import threading
+import signal
 from pathlib import Path
 from watchdog.observers import Observer
 
@@ -30,12 +31,34 @@ def heartbeat():
             warm_cache()
 
 
+def _setup_signal_handlers():
+    """Setup signal handlers for graceful shutdown."""
+    def signal_handler(signum, frame):
+        # Signal to stop everything gracefully
+        state.stop_event.set()
+    
+    # Handle SIGINT (Ctrl+C) and SIGTERM
+    try:
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+    except Exception:
+        # Signal handling might not be available on all platforms
+        pass
+
+
 def start_chat():
     full_refresh()
+    _setup_signal_handlers()  # Setup signal handlers before starting threads
 
-    observer = Observer()
-    observer.schedule(SourceHandler(), path=".", recursive=True)
-    observer.start()
+    observer = None
+    try:
+        observer = Observer()
+        observer.schedule(SourceHandler(), path=".", recursive=True)
+        observer.start()
+    except Exception as e:
+        print(f"{_T_ERR} Failed to start file watcher: {e}", file=sys.stderr)
+        # Continue without file watching if it fails
+    
     threading.Thread(target=heartbeat, daemon=True).start()
 
     print(f"\n╭── {_ANSI_BOLD}❖ Claude Light{_ANSI_RESET} ──╮")
@@ -154,8 +177,12 @@ def start_chat():
         pass
     finally:
         state.stop_event.set()
-        observer.stop()
-        observer.join()
+        if observer is not None:
+            try:
+                observer.stop()
+                observer.join(timeout=5)  # Wait max 5 seconds for observer to stop
+            except Exception as e:
+                print(f"{_T_ERR} Error stopping file watcher: {e}", file=sys.stderr)
         print_session_summary()
 
 

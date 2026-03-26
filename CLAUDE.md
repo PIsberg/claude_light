@@ -155,6 +155,13 @@ For a deeper dive into the implementation, see [architecture.md](architecture.md
 - Accurate token tracking from streaming events for cost calculations
 - Graceful fallback to non-streaming if API doesn't support it
 
+**Watchdog Resource Management** (`claude_light/main.py`):
+- Properly stops and joins file observer thread on session exit
+- Handles observer startup failures gracefully (continues without file watching)
+- Signal handlers for SIGINT (Ctrl+C) and SIGTERM enable clean shutdown
+- Timeout on observer.join() (5 seconds) prevents hanging on exit
+- Thread-safe cleanup ensures no orphaned processes
+
 ## Key Config (top of script)
 
 | Variable | Purpose |
