@@ -17,26 +17,31 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python-version }}
-        
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install pytest sentence-transformers numpy watchdog anthropic prompt_toolkit rich datasets einops tree-sitter tree-sitter-java tree-sitter-python tree-sitter-go tree-sitter-rust tree-sitter-javascript tree-sitter-typescript
-        
+        pip install pytest pytest-timeout sentence-transformers numpy watchdog anthropic prompt_toolkit rich datasets einops tree-sitter tree-sitter-java tree-sitter-python tree-sitter-go tree-sitter-rust tree-sitter-javascript tree-sitter-typescript
+
     - name: Run unit tests
       run: |
-        python -m pytest -q
-        
+        # Run editor tests first (before MockManager patches Path)
+        python -m pytest tests/unit/test_editor.py -q --timeout=60
+        # Run config tests (before MockManager patches Path)
+        python -m pytest tests/unit/test_config.py -q --timeout=60
+        # Run remaining unit tests
+        python -m pytest tests/unit/ --ignore=tests/unit/test_editor.py --ignore=tests/unit/test_config.py -q --timeout=120 -x
+
     - name: Run analytical benchmark
       run: |
         python tests/benchmark.py --json > tests/baseline_token_stats_new.json
         python tests/check_regression.py tokens tests/baseline_token_stats.json tests/baseline_token_stats_new.json
-        
+
     - name: Run retrieval benchmark (offline fixture)
       run: |
         python tests/benchmark_retrieval.py --fixture tests/fixtures/retrieval_cases.json --output tests/baseline_retrieval_stats_new.json

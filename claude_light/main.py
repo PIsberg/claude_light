@@ -195,7 +195,7 @@ def main():
     args, unknown = parser.parse_known_args()
 
     if args.test_mode:
-        from tests.test_mocks import MockManager
+        from tests.utilities.test_mocks import MockManager
         manager = MockManager(args.test_mode)
         manager.start()
 
