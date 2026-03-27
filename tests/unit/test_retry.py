@@ -10,7 +10,9 @@ from unittest.mock import MagicMock, patch
 
 # Set up environment
 os.environ["ANTHROPIC_API_KEY"] = "sk-ant-test-key"
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Go up 3 levels from tests/unit/
+from pathlib import Path
+project_root = str(Path(__file__).resolve().parent.parent.parent)
 sys.path.insert(0, project_root)
 
 from claude_light.retry import retry_with_backoff, _should_retry, MAX_RETRIES, INITIAL_BACKOFF_SECS, MAX_BACKOFF_SECS

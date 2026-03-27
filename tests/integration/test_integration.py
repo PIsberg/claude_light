@@ -6,7 +6,8 @@ import os
 from pathlib import Path
 
 # Set up environment
-project_root = Path(__file__).resolve().parent
+# Go up 3 levels from tests/integration/
+project_root = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(project_root))
 os.environ["ANTHROPIC_API_KEY"] = "sk-ant-test-key"
 

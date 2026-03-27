@@ -11,8 +11,8 @@ from pathlib import Path
 from unittest.mock import Mock, MagicMock, patch
 from typing import Iterator
 
-# Add parent to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Add parent to path - go up 3 levels from tests/unit/
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from claude_light.streaming import (
     StreamingResponseHandler, stream_chat_response,

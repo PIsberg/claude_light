@@ -4,12 +4,12 @@
 import sys
 from pathlib import Path
 
-# Add parent to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Add parent to path - go up 3 levels from tests/linting/
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 try:
     # Try to import the test module
-    import tests.test_thread_safety as test_module
+    import tests.unit.test_thread_safety as test_module
     print("✓ test_thread_safety.py imports successfully")
     
     # Check that test classes are defined

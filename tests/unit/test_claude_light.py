@@ -11,8 +11,8 @@ from unittest.mock import MagicMock, patch, PropertyMock
 # Inject dummy API key to prevent sys.exit when importing claude_light
 os.environ["ANTHROPIC_API_KEY"] = "sk-ant-dummy-test-key"
 
-# Add the project root to sys.path
-project_root = Path(__file__).resolve().parent.parent
+# Add the project root to sys.path - go up 3 levels from tests/unit/
+project_root = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from claude_light import (

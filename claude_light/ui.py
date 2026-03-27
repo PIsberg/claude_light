@@ -5,6 +5,7 @@ import difflib
 from pathlib import Path
 
 from claude_light.config import PRICE_WRITE, PRICE_READ, PRICE_INPUT, PRICE_OUTPUT
+from claude_light.testing import TEST_MODE_TAG
 import claude_light.state as state
 
 try:
@@ -31,7 +32,7 @@ _T_CACHE  = f"{_ANSI_YELLOW}[Cache]{_ANSI_RESET}"
 _T_SYS    = f"{_ANSI_MAGENTA}[System]{_ANSI_RESET}"
 _T_EDIT   = f"{_ANSI_CYAN}[Edit]{_ANSI_RESET}"
 _T_ERR    = f"{_ANSI_RED}[Error]{_ANSI_RESET}"
-_T_TEST   = f"{_ANSI_BLUE}[Test Mode]{_ANSI_RESET}"
+_T_TEST   = TEST_MODE_TAG
 _T_ROUTE  = f"{_ANSI_MAGENTA}[Router]{_ANSI_RESET}"
 
 class _Spinner:

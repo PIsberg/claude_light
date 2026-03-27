@@ -10,10 +10,12 @@ files_to_check = [
     "claude_light/editor.py",
     "claude_light/llm.py",
     "claude_light/main.py",
-    "tests/test_claude_light.py",
+    "claude_light/testing.py",
+    "tests/unit/test_claude_light.py",
 ]
 
-project_root = Path(__file__).resolve().parent
+# Go up 3 levels from tests/linting/
+project_root = Path(__file__).resolve().parent.parent.parent
 errors = []
 
 for file_path in files_to_check:

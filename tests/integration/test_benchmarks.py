@@ -8,7 +8,7 @@ from unittest.mock import patch
 class TestRetrievalBenchmarkFixtureMode(unittest.TestCase):
 
     def test_load_fixture_instances_resolves_local_repo_paths(self):
-        from tests import benchmark_retrieval as bench
+        from tests.benchmarks import benchmark_retrieval as bench
 
         fixture_path = Path("tests/fixtures/retrieval_cases.json")
         instances = bench.load_fixture_instances(fixture_path)
@@ -18,7 +18,7 @@ class TestRetrievalBenchmarkFixtureMode(unittest.TestCase):
         self.assertEqual(instances[0]["gold_files"], ["src/auth.py"])
 
     def test_fixture_benchmark_outputs_non_zero_signal(self):
-        from tests import benchmark_retrieval as bench
+        from tests.benchmarks import benchmark_retrieval as bench
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "retrieval.json"
@@ -47,7 +47,7 @@ class TestRetrievalBenchmarkFixtureMode(unittest.TestCase):
 class TestRetrievalRegressionCheck(unittest.TestCase):
 
     def test_check_retrieval_fails_on_zero_signal_baseline(self):
-        from tests import check_regression as regression
+        from tests.linting import check_regression as regression
 
         baseline = [
             {
@@ -64,7 +64,7 @@ class TestRetrievalRegressionCheck(unittest.TestCase):
             regression.check_retrieval(baseline, baseline)
 
     def test_check_retrieval_fails_on_quality_drop(self):
-        from tests import check_regression as regression
+        from tests.linting import check_regression as regression
 
         baseline = [
             {

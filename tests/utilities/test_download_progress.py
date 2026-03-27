@@ -13,8 +13,8 @@ import sys
 from pathlib import Path
 from unittest.mock import Mock, MagicMock, patch
 
-# Add parent to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Add parent to path - go up 3 levels from tests/utilities/
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from claude_light.executor import (
     _check_model_cached, _get_model_cache_dir, 

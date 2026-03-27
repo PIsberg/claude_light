@@ -5,8 +5,8 @@ import sys
 import os
 from pathlib import Path
 
-# Add project root to path
-project_root = Path(__file__).resolve().parent
+# Add project root to path - go up 3 levels from tests/integration/
+project_root = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 # Set dummy API key to avoid exit

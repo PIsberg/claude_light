@@ -12,8 +12,8 @@ import sys
 from unittest.mock import Mock, patch
 from pathlib import Path
 
-# Add parent to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Add parent to path - go up 3 levels from tests/unit/
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import claude_light.state as state
 from claude_light.ui import print_session_summary, print_stats

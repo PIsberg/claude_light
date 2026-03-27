@@ -12,8 +12,8 @@ import time
 from pathlib import Path
 from unittest.mock import Mock, MagicMock, patch
 
-# Add parent to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Add parent to path - go up 3 levels from tests/unit/
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import claude_light.state as state
 

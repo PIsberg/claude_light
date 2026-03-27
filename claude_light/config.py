@@ -2,6 +2,8 @@ import os
 import sys
 from pathlib import Path
 
+from claude_light.testing import is_test_mode_enabled, get_test_api_key
+
 try:
     from tree_sitter import Language, Parser as TSParser
     _TREESITTER_AVAILABLE = True
@@ -13,12 +15,12 @@ except ImportError:
         "tree-sitter-go tree-sitter-rust tree-sitter-javascript tree-sitter-typescript"
     )
 
-is_test_mode = "--test-mode" in sys.argv
+is_test_mode = is_test_mode_enabled()
 
 def _resolve_api_key() -> str:
     """Return the API key from env, then ~/.anthropic, then .env in cwd."""
     if is_test_mode:
-        return "sk-ant-test-mock-key"
+        return get_test_api_key()
     key = os.environ.get("ANTHROPIC_API_KEY", "")
     if key:
         return key
