@@ -1,0 +1,97 @@
+============================= test session starts =============================
+platform win32 -- Python 3.11.4, pytest-9.0.2, pluggy-1.6.0 -- C:\Python311\python.exe
+cachedir: .pytest_cache
+rootdir: C:\dev\private\claude_light
+configfile: pytest.ini
+plugins: anyio-4.12.1
+collecting ... collected 5 items
+
+tests/test_claude_light.py::TestChat::test_chat_api_exception PASSED     [ 20%]
+tests/test_claude_light.py::TestChat::test_chat_keyboard_interrupt PASSED [ 40%]
+tests/test_claude_light.py::TestChat::test_chat_simple_query FAILED      [ 60%]
+tests/test_claude_light.py::TestChat::test_chat_stores_turns_in_history FAILED [ 80%]
+tests/test_claude_light.py::TestChat::test_chat_with_edit_block FAILED   [100%]
+
+================================== FAILURES ===================================
+_______________________ TestChat.test_chat_simple_query _______________________
+
+self = <test_claude_light.TestChat testMethod=test_chat_simple_query>
+
+    def test_chat_simple_query(self):
+        import claude_light as cl
+        resp = self._make_response("This is the answer.")
+        with patch("claude_light.client.messages.create", return_value=resp), \
+             patch("claude_light._print_reply"), \
+             patch("claude_light.print_stats"):
+            cl.chat("What does foo do?")
+        # History should have grown
+>       self.assertGreater(len(cl.conversation_history), 0)
+E       AssertionError: 0 not greater than 0
+
+tests\test_claude_light.py:1517: AssertionError
+---------------------------- Captured stdout call -----------------------------
+[36m[RAG][0m [36mFoo.py[0m
+      [2mFoo.py 1.00[0m
+
+[Error] API call failed: Error code: 401 - {'type': 'error', 'error': {'type': 'authentication_error', 'message': 'invalid x-api-key'}, 'request_id': 'req_011CZTqfdDeSc5ZWSrHiPznD'}
+---------------------------- Captured stderr call -----------------------------
+[35m[Router][0m effort=[36mmedium[0m  model=[1msonnet[0m
+_________________ TestChat.test_chat_stores_turns_in_history __________________
+
+self = <test_claude_light.TestChat testMethod=test_chat_stores_turns_in_history>
+
+    def test_chat_stores_turns_in_history(self):
+        import claude_light as cl
+        resp = self._make_response("The answer is 42.")
+        with patch("claude_light.client.messages.create", return_value=resp), \
+             patch("claude_light._print_reply"), \
+             patch("claude_light.print_stats"):
+            cl.chat("What is the answer?")
+        # Should have exactly one user+assistant pair
+>       self.assertEqual(len(cl.conversation_history), 2)
+E       AssertionError: 0 != 2
+
+tests\test_claude_light.py:1527: AssertionError
+---------------------------- Captured stdout call -----------------------------
+[36m[RAG][0m [36mFoo.py[0m
+      [2mFoo.py 1.00[0m
+
+[Error] API call failed: Error code: 401 - {'type': 'error', 'error': {'type': 'authentication_error', 'message': 'invalid x-api-key'}, 'request_id': 'req_011CZTqfeeU19cDgd2ifcxcB'}
+---------------------------- Captured stderr call -----------------------------
+[35m[Router][0m effort=[32mlow[0m  model=[1mhaiku[0m
+_____________________ TestChat.test_chat_with_edit_block ______________________
+
+self = <test_claude_light.TestChat testMethod=test_chat_with_edit_block>
+
+    def test_chat_with_edit_block(self):
+        import claude_light as cl
+        resp = self._make_response(
+            "Here is the change:\n"
+            "```python:src/Foo.py\n"
+            "<<<<<<< SEARCH\ndef foo(): pass\n=======\ndef foo(): return 1\n>>>>>>> REPLACE\n"
+            "```\n"
+            "Changed foo to return 1."
+        )
+        with patch("claude_light.client.messages.create", return_value=resp), \
+             patch("claude_light._print_reply"), \
+             patch("claude_light.print_stats"), \
+             patch("claude_light.apply_edits") as mock_apply, \
+             patch("claude_light._resolve_new_content", return_value=("def foo(): pass\n", "def foo(): return 1\n")):
+            cl.chat("Update foo")
+        # apply_edits should have been called for check_only first
+>       self.assertTrue(mock_apply.called)
+E       AssertionError: False is not true
+
+tests\test_claude_light.py:1547: AssertionError
+---------------------------- Captured stdout call -----------------------------
+[36m[RAG][0m [36mFoo.py[0m
+      [2mFoo.py 1.00[0m
+
+[Error] API call failed: Error code: 401 - {'type': 'error', 'error': {'type': 'authentication_error', 'message': 'invalid x-api-key'}, 'request_id': 'req_011CZTqffcGHJHYE5mCPNsQs'}
+---------------------------- Captured stderr call -----------------------------
+[35m[Router][0m effort=[33mhigh[0m  model=[1msonnet[0m
+=========================== short test summary info ===========================
+FAILED tests/test_claude_light.py::TestChat::test_chat_simple_query - Asserti...
+FAILED tests/test_claude_light.py::TestChat::test_chat_stores_turns_in_history
+FAILED tests/test_claude_light.py::TestChat::test_chat_with_edit_block - Asse...
+========================= 3 failed, 2 passed in 7.58s =========================

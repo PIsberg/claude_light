@@ -27,7 +27,7 @@ Path.unlink = _safe_unlink
 
 
 def _refresh_exports():
-    globals().update({
+    export_dict = {
         "Path": Path,
         "Observer": Observer,
         "SentenceTransformer": executor.SentenceTransformer,
@@ -120,7 +120,8 @@ def _refresh_exports():
         "_file_timers": indexer._file_timers,
         "skeleton_context": state.skeleton_context,
         "stop_event": state.stop_event,
-    })
+    }
+    globals().update(export_dict)
 
 
 _refresh_exports()
