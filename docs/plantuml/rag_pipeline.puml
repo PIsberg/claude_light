@@ -1,0 +1,82 @@
+@startuml Claude_Light_RAG_Pipeline
+title Claude Light - Hybrid RAG Pipeline
+
+start
+
+:User enters query;
+partition "1. Query Routing" {
+  :Analyze query keywords;
+  if (Contains MAX signals?\n(architect, optimize, trade-off)) then (yes, 2+ hits)
+    :effort = max\nmodel = Opus\nmax_tokens = 16,000;
+  elseif (Contains HIGH signals?\n(implement, refactor, fix)) then (yes, 1+ hits)
+    :effort = high\nmodel = Sonnet\nmax_tokens = 8,192;
+  elseif (Contains LOW signals only?\n(list, show, where)) then (yes)
+    :effort = low\nmodel = Haiku\nmax_tokens = 2,048;
+  else (default/uncertain)
+    :effort = medium\nmodel = Sonnet\nmax_tokens = 4,096;
+  endif
+  :Set retrieval budget:\nlow=1.5K, med=3K, high=6K, max=9K tokens;
+}
+
+partition "2. Chunk Retrieval" {
+  :Load embedding matrix from chunk_store;
+  :Encode query with prefix\n(e.g., "search_query: ");
+  :Compute similarity scores\nscores = embeddings @ query_emb;
+  
+  fork
+    :Filter 1: MIN_SCORE >= 0.45\n(absolute floor);
+  fork again
+    :Filter 2: score >= top_score * 0.60\n(relative floor);
+  end fork
+  
+  :Select top-k chunks\nwithin token budget;
+  if (Multiple chunks from\nsame file?) then (yes)
+    :Deduplicate: emit preamble once,\nlist methods below;
+  endif
+  :Render context with\nfile summaries + details;
+}
+
+partition "3. Context Assembly" {
+  :Get skeleton from cache\n(directory tree + .md);
+  :Compress conversation history\n(summarize old turns);
+  :Build message array with\n3 cache breakpoints;
+}
+
+partition "4. API Call" {
+  if (effort == max) then (yes)
+    :Enable thinking mode\nbudget_tokens = 10,000;
+  endif
+  :Call Anthropic API\nwith streaming;
+  :Stream response to terminal;
+}
+
+partition "5. Response Processing" {
+  :Parse SEARCH/REPLACE blocks\nor new file blocks;
+  if (Has edits?) then (yes)
+    :Lint edited content;
+    if (Syntax errors?) then (yes)
+      :Request correction from Claude\n(retry up to 3x);
+    else (no errors)
+      :Show diffs to user;
+      :Apply edits after confirmation;
+      :Auto-commit if git repo;
+    endif
+  else (no edits)
+    :Display answer only;
+  endif
+  :Strip code blocks from history\n(store "[Files edited: ...]" instead);
+  :Update session tokens & cost;
+}
+
+stop
+
+note right
+  <b>Key Optimizations:</b>
+  1. Dynamic model routing saves 8x on simple queries
+  2. Effort-based retrieval budget prevents over-fetching
+  3. Two-stage filtering (absolute + relative) removes noise
+  4. Deduplication saves 5-20% on multi-method queries
+  5. Code block stripping prevents history bloat
+end note
+
+@enduml

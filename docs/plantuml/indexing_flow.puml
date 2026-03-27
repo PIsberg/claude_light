@@ -1,0 +1,65 @@
+@startuml Claude_Light_Indexing_Flow
+title Claude Light - File Indexing & Auto-Tuning
+
+start
+
+:Scan project directory;
+:Filter by INDEXABLE_EXTENSIONS;
+:Skip directories (.git, build, etc.);
+
+partition "Auto-Tune Model" {
+  if (Files < 50) then (small)
+    :all-MiniLM-L6-v2 (22 MB);
+  elseif (Files < 200) then (medium)
+    :all-mpnet-base-v2 (420 MB);
+  else (large)
+    :nomic-embed-text-v1.5;
+  endif
+}
+
+partition "Cache Lookup" {
+  :Load manifest.json;
+  if (model matches?) then (yes)
+    :Compare file hashes;
+    if (hash matches) then (hit)
+      :Load from index.pkl;
+    else (miss)
+      :Mark for re-indexing;
+    endif
+  else (changed)
+    :Full re-index;
+  endif
+}
+
+partition "Chunking" {
+  :Process each file;
+  if (tree-sitter?) then (yes)
+    :Parse AST;
+    :Extract methods;
+    :Create chunks with preamble;
+  else (no)
+    :Whole file chunk;
+  endif
+}
+
+partition "Embedding" {
+  :Add document prefix;
+  :Batch encode chunks;
+  :Store in chunk_store;
+}
+
+partition "Save Cache" {
+  :Save index.pkl;
+  :Save manifest.json;
+}
+
+stop
+
+note right
+  Incremental Indexing:
+  - Only changed files re-indexed
+  - File watcher on save
+  - Debounced at 1.5s
+end note
+
+@enduml

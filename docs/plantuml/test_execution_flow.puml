@@ -1,0 +1,59 @@
+@startuml Test_Execution_Flow
+title Claude Light - Test Execution Flow
+
+start
+
+:pytest invoked;
+:Read pytest.ini config;
+:Scan tests/ directory;
+:Collect test files;
+
+note right
+  Excludes:
+  - tests/fixtures/
+  - tests/benchmarks/
+  - tests/linting/
+end note
+
+:Load conftest.py fixtures;
+:Set ANTHROPIC_API_KEY env;
+
+fork
+  :Run unit tests;
+fork again
+  :Run integration tests;
+end fork
+
+if (Test mode enabled?) then (yes)
+  :Load MockManager;
+  :Generate synthetic codebase;
+  :Patch Path, API, Embedder;
+else (no)
+  :Run standard tests;
+endif
+
+:Run benchmark.py;
+:Generate token stats JSON;
+:Run check_regression.py tokens;
+
+if (Cost OK?) then (yes)
+  :PASS;
+else (no)
+  :FAIL;
+  stop
+endif
+
+:Run benchmark_retrieval.py;
+:Generate retrieval stats JSON;
+:Run check_regression.py retrieval;
+
+if (Retrieval OK?) then (yes)
+  :PASS;
+else (no)
+  :FAIL;
+  stop
+endif
+
+stop
+
+@enduml

@@ -1,0 +1,104 @@
+@startuml Claude_Light_Sequence_Diagram
+title Claude Light - Query Processing Sequence
+
+actor User
+participant "main.py\n(Entry)" as Main
+participant "llm.py\n(LLM Client)" as LLM
+participant "retrieval.py\n(RAG)" as Retrieval
+participant "state.py\n(Chunk Store)" as ChunkStore
+participant "skeleton.py\n(Skeleton)" as Skeleton
+participant "Anthropic API" as API
+participant "editor.py\n(Editor)" as Editor
+participant "linter.py\n(Linter)" as Linter
+
+== Session Initialization ==
+User -> Main : Start application
+Main -> Skeleton : build_skeleton()
+Skeleton --> Main : directory tree + .md files
+Main -> LLM : warm_cache()
+LLM -> API : minimal request with skeleton
+API --> LLM : cache skeleton (ephemeral)
+Main -> Main : Start heartbeat daemon
+Main -> Main : Start file watcher
+
+== Query Processing ==
+User -> Main : Enter query
+Main -> LLM : chat(query)
+
+activate LLM
+LLM -> LLM : route_query()
+note right : Classifies effort level\n(low/medium/high/max)\nSelects model & budget
+
+LLM -> Retrieval : retrieve(query, budget)
+activate Retrieval
+Retrieval -> ChunkStore : Get all embeddings
+ChunkStore --> Retrieval : embedding matrix
+Retrieval -> Retrieval : Encode query
+Retrieval -> Retrieval : Matrix multiplication\nscores = embs @ q_emb
+Retrieval -> Retrieval : Filter by MIN_SCORE\nand relative floor
+Retrieval --> LLM : ranked chunks
+deactivate Retrieval
+
+LLM -> LLM : _maybe_compress_history()
+LLM -> Skeleton : Get cached skeleton
+Skeleton --> LLM : skeleton_context
+
+LLM -> API : messages.create()\n- system (skeleton cached)\n- history (last turn cached)\n- chunks (cached if repeated)\n- new query
+activate API
+API --> LLM : Stream response\n(thinking + text)
+deactivate API
+
+LLM -> Editor : parse_edit_blocks(reply)
+activate Editor
+alt Has edits
+  Editor --> LLM : list of edits
+  LLM -> Linter : _lint_content()
+  activate Linter
+  alt Has errors
+    Linter --> LLM : lint errors
+    LLM -> API : Request correction (retry)
+    API --> LLM : corrected code
+  else No errors
+    Linter --> LLM : OK
+    LLM -> Editor : apply_edits()
+    Editor -> User : Show diffs
+    User --> Editor : Confirm y/n
+    Editor --> Editor : Write files
+    Editor --> LLM : Auto-commit if git
+  end
+  deactivate Linter
+else No edits
+  Editor --> LLM : empty list
+  LLM -> User : Display answer
+end
+deactivate Editor
+
+LLM -> LLM : Update conversation_history\n(strip code blocks)
+LLM -> LLM : Update session_tokens & cost
+LLM --> Main : Response complete
+deactivate LLM
+
+== Background Processes ==
+note over Main : Heartbeat daemon (every 30s)
+loop Every HEARTBEAT_SECS
+  Main -> Main : Check idle time
+  alt idle > CACHE_TTL_SECS (4 min)
+    Main -> API : warm_cache()
+    note right : Keep ephemeral cache alive\nPrevents 10x cold-start cost
+  end
+end
+
+note over Main : File watcher (Watchdog)
+loop On file change
+  Main -> Main : Detect .md or source file
+  alt .md file changed
+    Main -> Skeleton : _refresh_single_md()
+    Skeleton -> Skeleton : Rebuild skeleton
+    Main -> API : warm_cache()
+  else source file changed
+    Main -> Main : reindex_file()
+    note right : Re-chunk with tree-sitter\nRe-embed with sentence-transformers
+  end
+end
+
+@enduml

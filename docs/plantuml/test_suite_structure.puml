@@ -1,0 +1,95 @@
+@startuml Test_Suite_Structure
+title Claude Light - Test Suite Structure
+
+skinparam backgroundColor #FEFEFE
+skinparam rectangle {
+  BackgroundColor<<unit>> #E3F2FD
+  BackgroundColor<<integration>> #E8F5E9
+  BackgroundColor<<utility>> #FFF3E0
+  BackgroundColor<<fixture>> #F3E5F5
+}
+
+package "tests/" {
+  rectangle "conftest.py\n(Shared Fixtures)" as Conftest
+  
+  package "unit/" <<unit>> {
+    rectangle "test_claude_light.py\n(Core Tests)" as TestCore
+    rectangle "test_llm.py\n(Routing & API)" as TestLLM
+    rectangle "test_retrieval.py\n(RAG)" as TestRetrieval
+    rectangle "test_editor.py\n(Edit Parsing)" as TestEditor
+    rectangle "test_indexer.py\n(Indexing)" as TestIndexer
+    rectangle "test_skeleton.py\n(Tree Building)" as TestSkeleton
+    rectangle "test_linter.py\n(Syntax Check)" as TestLinter
+    rectangle "test_streaming.py\n(Streaming)" as TestStreaming
+    rectangle "test_retry.py\n(Backoff)" as TestRetry
+    rectangle "test_ui.py\n(UI/Colors)" as TestUI
+    rectangle "test_executor.py\n(Commands)" as TestExecutor
+    rectangle "test_parsing.py\n(Chunking)" as TestParsing
+    rectangle "test_watchdog.py\n(File Watch)" as TestWatchdog
+    rectangle "test_thread_safety.py\n(Concurrency)" as TestThread
+    rectangle "test_config.py\n(Config)" as TestConfig
+  }
+  
+  package "integration/" <<integration>> {
+    rectangle "test_integration.py\n(Git Auto-Commit)" as TestIntegration
+    rectangle "test_git_import.py\n(Git Module)" as TestGit
+    rectangle "test_benchmarks.py\n(Benchmark Integration)" as TestBenchmarks
+  }
+  
+  package "utilities/" <<utility>> {
+    rectangle "test_mocks.py\n(Mock Manager)" as TestMocks
+    rectangle "test_download_progress.py" as TestDownload
+  }
+  
+  package "linting/" <<utility>> {
+    rectangle "check_regression.py" as CheckRegression
+    rectangle "check_syntax.py" as CheckSyntax
+    rectangle "validate_syntax.py" as ValidateSyntax
+  }
+  
+  package "benchmarks/" <<utility>> {
+    rectangle "benchmark.py\n(Token Costs)" as BenchmarkTokens
+    rectangle "benchmark_retrieval.py" as BenchmarkRetrieval
+    rectangle "benchmark_claude_code.py" as BenchmarkClaudeCode
+    rectangle "benchmark_cost.py" as BenchmarkCost
+  }
+  
+  package "fixtures/" <<fixture>> {
+    rectangle "retrieval_cases.json\n(Test Instances)" as RetrievalFixtures
+    rectangle "*.py\n(Sample Code)" as SampleCode
+  }
+}
+
+' Relationships
+Conftest -[hidden]--> TestCore : provides fixtures
+TestMocks -[hidden]--> TestCore : used by --test-mode
+CheckRegression -[hidden]--> BenchmarkTokens : validates results
+RetrievalFixtures -[hidden]--> BenchmarkRetrieval : test data
+
+note top of TestCore
+  6,600+ lines of unit tests
+  Tests core functionality:
+  - Query routing
+  - Edit parsing
+  - Chunk labeling
+  - Cost calculation
+  - History compression
+end note
+
+note right of TestMocks
+  MockManager class provides:
+  - Synthetic codebase generation
+  - Mock Path class
+  - Mock Anthropic API
+  - Mock embeddings
+  Used for --test-mode flag
+end note
+
+note bottom of CheckRegression
+  Regression checks ensure:
+  - Token costs don't increase >1%
+  - Retrieval Hit@10 doesn't drop >2%
+  - Retrieval Recall@10 doesn't drop >2%
+end note
+
+@enduml

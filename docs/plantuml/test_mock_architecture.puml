@@ -1,0 +1,100 @@
+@startuml Test_Mock_Architecture
+title Claude Light - Test Mock Architecture
+
+skinparam backgroundColor #FEFEFE
+
+package "Production Code" {
+  [claude_light.llm] as LLM
+  [claude_light.indexer] as Indexer
+  [claude_light.skeleton] as Skeleton
+  [claude_light.editor] as Editor
+  [claude_light.config] as Config
+}
+
+package "Test Mocks (test_mocks.py)" {
+  component "MockManager" as MockManager {
+    component "_mock_path_class" as MockPath
+    component "_mock_create_message" as MockAPI
+    component "_mock_embedder_class" as MockEmbedder
+    component "_mock_print_stats" as MockStats
+  }
+}
+
+package "External Dependencies" {
+  database "Anthropic API" as Anthropic
+  component "SentenceTransformer" as Embedder
+  component "Path (pathlib)" as Path
+}
+
+' MockManager patches
+MockManager -[hidden]--> MockPath
+MockManager -[hidden]--> MockAPI
+MockManager -[hidden]--> MockEmbedder
+MockManager -[hidden]--> MockStats
+
+' Patching relationships
+MockPath ..> LLM : patches Path
+MockPath ..> Indexer : patches Path
+MockPath ..> Skeleton : patches Path
+MockPath ..> Editor : patches Path
+MockPath ..> Config : patches Path
+
+MockAPI ..> LLM : patches client.messages.create
+MockEmbedder ..> Indexer : patches SentenceTransformer
+MockStats ..> LLM : patches print_stats
+
+' Mock behaviors
+note right of MockPath
+  MockPath behavior:
+  - rglob() returns synthetic files
+  - read_text() returns generated code
+  - exists() returns True for test paths
+  - mkdir/write_text are no-ops
+end note
+
+note right of MockAPI
+  MockAPI behavior:
+  - Returns MockUsage with token counts
+  - Simulates retrieved context
+  - Calculates savings percentage
+  - Never makes real API calls
+end note
+
+note right of MockEmbedder
+  MockEmbedder behavior:
+  - Returns random numpy arrays
+  - Supports batch encoding
+  - Dimension based on model name
+  - No actual ML computation
+end note
+
+' Synthetic codebase generation
+rectangle "Synthetic Codebase" as Synthetic {
+  rectangle "Service0.java\n(20 methods)" as S0
+  rectangle "Service1.java\n(20 methods)" as S1
+  rectangle "...\n..." as Dots
+  rectangle "Service999.java\n(20 methods)" as S999
+}
+
+MockManager --> Synthetic : generates based on preset
+
+rectangle "Presets" as Presets {
+  rectangle "small: 5 files, 10 methods" as Small
+  rectangle "medium: 50 files, 15 methods" as Medium
+  rectangle "large: 200 files, 20 methods" as Large
+  rectangle "extra-large: 1000 files, 20 methods" as XL
+}
+
+Synthetic -[hidden]--> Presets
+
+note bottom
+  Usage: python -m claude_light --test-mode small "query"
+  
+  The MockManager intercepts all file I/O and API calls,
+  allowing full integration testing without:
+  - Real API costs
+  - Network dependencies
+  - File system modifications
+end note
+
+@enduml

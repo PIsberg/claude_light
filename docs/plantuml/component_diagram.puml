@@ -1,0 +1,102 @@
+@startuml Claude_Light_Component_Diagram
+title Claude Light - Component Architecture
+
+skinparam componentStyle rectangle
+skinparam backgroundColor #FEFEFE
+skinparam componentBackgroundColor #FFFFFF
+skinparam arrowColor #555555
+
+package "User Interface Layer" {
+  [main.py\n(Entry Point)] as Main
+  [ui.py\n(Terminal UI)] as UI
+  [state.py\n(Shared State)] as State
+}
+
+package "Core Processing" {
+  [llm.py\n(LLM Client)] as LLM
+  [retrieval.py\n(RAG Engine)] as Retrieval
+  [editor.py\n(Code Editor)] as Editor
+  [executor.py\n(Command Runner)] as Executor
+}
+
+package "Indexing & Caching" {
+  [indexer.py\n(File Watcher)] as Indexer
+  [skeleton.py\n(Skeleton Builder)] as Skeleton
+  [parsing.py\n(Code Parser)] as Parsing
+  [config.py\n(Configuration)] as Config
+}
+
+package "External Services" {
+  database "Anthropic API\n(Claude)" as Anthropic
+  [sentence-transformers\n(Embeddings)] as Embeddings
+  [tree-sitter\n(AST Parsing)] as TreeSitter
+  [Git Repository] as Git
+}
+
+package "Support Modules" {
+  [linter.py\n(Syntax Check)] as Linter
+  [retry.py\n(Backoff)] as Retry
+  [streaming.py\n(Stream Handler)] as Streaming
+  [git_manager.py\n(Git Ops)] as GitManager
+}
+
+' User interactions
+Main --> UI : displays status
+Main --> State : reads/writes session data
+
+' Main orchestration
+Main --> LLM : chat/one_shot
+Main --> Indexer : file watch events
+
+' LLM processing flow
+LLM --> Retrieval : retrieve relevant chunks
+LLM --> Skeleton : get cached skeleton
+LLM --> Anthropic : API calls
+LLM --> Streaming : stream responses
+LLM --> Retry : error handling
+LLM --> Editor : parse & apply edits
+LLM --> State : update tokens/cost
+
+' Retrieval pipeline
+Retrieval --> Embeddings : encode queries/chunks
+Retrieval --> State : access chunk_store
+Retrieval --> Parsing : get code snippets
+
+' Indexing pipeline
+Indexer --> TreeSitter : parse AST
+Indexer --> Parsing : chunk files
+Indexer --> Embeddings : generate embeddings
+Indexer --> Skeleton : update on file changes
+Indexer --> State : update chunk_store
+
+' Editor flow
+Editor --> Linter : validate syntax
+Editor --> GitManager : auto-commit changes
+Editor --> UI : show diffs
+
+' Git integration
+GitManager --> Git : git operations
+Main --> GitManager : /undo command
+
+' Configuration
+Config -[hidden]--> LLM : API keys, models
+Config -[hidden]--> Retrieval : thresholds
+Config -[hidden]--> Indexer : extensions
+
+note right of State
+  Shared state includes:
+  - chunk_store (embeddings)
+  - conversation_history
+  - session_tokens
+  - skeleton_context
+  - file_hashes
+end note
+
+note bottom of Anthropic
+  3-tier caching:
+  1. Skeleton (session)
+  2. History (turns)
+  3. Chunks (queries)
+end note
+
+@enduml

@@ -1,0 +1,41 @@
+@startuml Claude_Light_Caching_Diagram
+title Claude Light - Three-Tier Prompt Caching Strategy
+
+skinparam backgroundColor #FEFEFE
+
+rectangle "1. SYSTEM PROMPT" as SystemPrompt
+rectangle "2. SKELETON (cached)" as Skeleton
+rectangle "3. HISTORY (cached)" as History
+rectangle "4. CHUNKS (cached)" as Chunks
+rectangle "5. QUERY" as Query
+
+SystemPrompt --> Skeleton
+Skeleton --> History
+History --> Chunks
+Chunks --> Query
+
+note right of Skeleton
+  Breakpoint 1: ephemeral cache
+  Stable across entire session
+end note
+
+note right of History
+  Breakpoint 2: cache_control
+  Stable for all but newest turn
+end note
+
+note right of Chunks
+  Breakpoint 3: cache_control
+  Stable for same-code questions
+end note
+
+rectangle "Full: $3.00" as FullPrice
+rectangle "Cache Read: $0.30" as CacheRead
+
+FullPrice ..> SystemPrompt
+FullPrice ..> Query
+CacheRead ..> Skeleton
+CacheRead ..> History
+CacheRead ..> Chunks
+
+@enduml
