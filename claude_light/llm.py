@@ -184,6 +184,7 @@ def _make_streaming_api_call(**create_kwargs):
         response = _call_api()
         return _extract_text(response.content), response.usage
 
+def _apply_skeleton(new_skeleton):
     with state.lock:
         state.skeleton_context = new_skeleton
         state.last_interaction = time.time()

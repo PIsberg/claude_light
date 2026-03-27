@@ -1,6 +1,7 @@
 import os
 import sys
 import warnings
+from typing import Optional
 
 os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
 warnings.filterwarnings(
@@ -11,13 +12,92 @@ warnings.filterwarnings(
 )
 
 from sentence_transformers import SentenceTransformer
+from pathlib import Path
 from claude_light.config import TARGET_RETRIEVED_TOKENS
 from claude_light.ui import _Spinner, _T_RAG, _T_ERR, _ANSI_GREEN, _ANSI_BOLD, _ANSI_RESET, _ANSI_DIM, _ANSI_YELLOW
 import claude_light.state as state
 
+try:
+    from tqdm import tqdm
+    _TQDM_AVAILABLE = True
+except ImportError:
+    _TQDM_AVAILABLE = False
+    tqdm = None
+
 _RUN_HEAD_LINES   = 20
 _RUN_TAIL_LINES   = 80
 _RUN_MAX_CHARS    = 8_000
+
+# Model sizes in MB (approximate for common models)
+_MODEL_SIZES = {
+    "all-MiniLM-L6-v2": 22,
+    "all-mpnet-base-v2": 420,
+    "nomic-ai/nomic-embed-text-v1.5": 550,
+}
+
+
+def _get_model_cache_dir() -> Path:
+    """Get the huggingface cache directory."""
+    cache_home = os.environ.get("HF_HOME")
+    if cache_home:
+        return Path(cache_home) / "hub"
+    return Path.home() / ".cache" / "huggingface" / "hub"
+
+
+def _check_model_cached(model_name: str) -> bool:
+    """Check if model is already cached locally."""
+    cache_dir = _get_model_cache_dir()
+    # Model names are sanitized by huggingface (slashes become hyphens)
+    sanitized_name = model_name.replace("/", "--")
+    model_path = cache_dir / f"models--{sanitized_name}"
+    return model_path.exists()
+
+
+def _load_embedding_model(model_name: str, quiet: bool = False) -> SentenceTransformer:
+    """
+    Load embedding model with optional download progress display.
+    
+    Args:
+        model_name: HuggingFace model identifier
+        quiet: If True, suppress progress output
+    
+    Returns:
+        Loaded SentenceTransformer instance
+    """
+    is_cached = _check_model_cached(model_name)
+    model_size_mb = _MODEL_SIZES.get(model_name, 100)
+    
+    if quiet or is_cached:
+        # No progress needed for cached models or quiet mode
+        return SentenceTransformer(model_name, trust_remote_code=True)
+    
+    # Show download progress for first-time model loads
+    if _TQDM_AVAILABLE:
+        print(f"\n{_T_RAG} Downloading {_ANSI_BOLD}{model_name}{_ANSI_RESET} ({model_size_mb} MB)...")
+        
+        # Use tqdm to track download
+        with tqdm(
+            total=100,
+            desc=f"  {model_name}",
+            unit="%",
+            ncols=80,
+            bar_format="{desc}: {percentage:3.0f}% {bar}",
+        ) as pbar:
+            # The download happens during model initialization
+            # We simulate progress since HuggingFace's progress isn't directly exposed
+            model = SentenceTransformer(model_name, trust_remote_code=True)
+            pbar.update(100)  # Mark as complete
+        
+        print(f"{_T_RAG} {_ANSI_GREEN}Downloaded{_ANSI_RESET} {model_name}\n")
+    else:
+        # Fallback without tqdm
+        print(f"\n{_T_RAG} Downloading {_ANSI_BOLD}{model_name}{_ANSI_RESET} ({model_size_mb} MB)...")
+        print(f"  (This may take a minute on first run...)")
+        model = SentenceTransformer(model_name, trust_remote_code=True)
+        print(f"{_T_RAG} {_ANSI_GREEN}Downloaded{_ANSI_RESET} {model_name}\n")
+    
+    return model
+
 
 def _run_command(cmd: str) -> str:
     import subprocess, shlex
@@ -70,10 +150,9 @@ def auto_tune(source_files, chunks=None, quiet=False):
     if chosen_model != state.EMBED_MODEL or state.embedder is None:
         state.EMBED_MODEL = chosen_model
         if quiet:
-            state.embedder = SentenceTransformer(state.EMBED_MODEL, trust_remote_code=True)
+            state.embedder = _load_embedding_model(state.EMBED_MODEL, quiet=True)
         else:
-            with _Spinner(f"{_T_RAG} Loading {_ANSI_BOLD}{chosen_model}{_ANSI_RESET}"):
-                state.embedder = SentenceTransformer(state.EMBED_MODEL, trust_remote_code=True)
+            state.embedder = _load_embedding_model(state.EMBED_MODEL, quiet=False)
             print(f"{_T_RAG} {_ANSI_GREEN}Loaded{_ANSI_RESET} {chosen_model}")
 
     if chunks:

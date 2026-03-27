@@ -46,7 +46,7 @@ def _refresh_exports():
         "_extract_text": llm._extract_text,
         "_build_system_blocks": llm._build_system_blocks,
         "_summarize_turns": llm._summarize_turns,
-        "_apply_skeleton": globals().get("_apply_skeleton", llm._apply_skeleton),
+        "_apply_skeleton": llm._apply_skeleton,
         "parse_edit_blocks": editor.parse_edit_blocks,
         "apply_edits": editor.apply_edits,
         "_resolve_new_content": editor._resolve_new_content,
