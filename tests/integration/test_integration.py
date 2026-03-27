@@ -45,10 +45,10 @@ functions = [
     ('get_commit_history', callable),
 ]
 
-for func_name, expected_type in functions:
+for func_name, _ in functions:
     if hasattr(git_manager, func_name):
         func = getattr(git_manager, func_name)
-        if isinstance(func, expected_type):
+        if callable(func):
             print(f"   ✓ git_manager.{func_name} is callable")
         else:
             print(f"   ✗ git_manager.{func_name} is not callable")

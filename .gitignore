@@ -8,3 +8,4 @@ __pycache__/
 .benchmark_retrieval_cache_fixture3/
 test_ts.py
 dummy.py
+.qwen/
