@@ -1,43 +1,40 @@
-#!/usr/bin/env python3
-"""Quick test to verify git_manager module imports correctly."""
+"""Integration test: verify git_manager module imports and exposes all expected functions."""
 
-import sys
 import os
+import sys
+import unittest
 from pathlib import Path
 
-# Add project root to path - go up 3 levels from tests/integration/
-project_root = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(project_root))
+os.environ.setdefault("ANTHROPIC_API_KEY", "sk-ant-test-key")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-# Set dummy API key to avoid exit
-os.environ["ANTHROPIC_API_KEY"] = "sk-ant-test-key"
 
-try:
-    from claude_light import git_manager
-    print("✓ git_manager imported successfully")
-    
-    # Check all expected functions exist
-    functions = [
-        'is_git_repo',
-        'get_git_root',
-        'get_modified_files',
-        'get_last_commit_message',
-        'auto_commit',
-        'undo_last_commit',
-        'get_commit_history',
+class TestGitManagerImport(unittest.TestCase):
+
+    _functions = [
+        "is_git_repo",
+        "get_git_root",
+        "get_modified_files",
+        "get_last_commit_message",
+        "auto_commit",
+        "undo_last_commit",
+        "get_commit_history",
     ]
-    
-    for func_name in functions:
-        if hasattr(git_manager, func_name):
-            print(f"✓ Function '{func_name}' exists")
-        else:
-            print(f"✗ Function '{func_name}' missing!")
-            sys.exit(1)
-    
-    print("\n✓ All git_manager functions are present and importable")
-    sys.exit(0)
-except Exception as e:
-    print(f"✗ Import failed: {e}")
-    import traceback
-    traceback.print_exc()
-    sys.exit(1)
+
+    def test_git_manager_importable(self):
+        print("\n  ▶ TestGitManagerImport.test_git_manager_importable")
+        from claude_light import git_manager  # noqa: F401
+
+    def test_all_functions_present(self):
+        print("\n  ▶ TestGitManagerImport.test_all_functions_present")
+        from claude_light import git_manager
+        for func_name in self._functions:
+            with self.subTest(func=func_name):
+                self.assertTrue(
+                    hasattr(git_manager, func_name),
+                    f"Function '{func_name}' missing from git_manager",
+                )
+
+
+if __name__ == "__main__":
+    unittest.main()
