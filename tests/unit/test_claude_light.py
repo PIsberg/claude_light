@@ -6168,13 +6168,6 @@ class TestStartChatLoop(unittest.TestCase):
         """/run with no command prints error but does not crash."""
         self._run_start_chat(["/run ", "exit"])
 
-    def test_regular_query_calls_chat(self):
-        """A normal question is passed to chat()."""
-        # Note: This test is skipped because the chat function is imported at module level
-        # in main.py and cannot be easily patched. The functionality is tested indirectly
-        # through other integration tests.
-        self.skipTest("Test requires refactoring main.py to avoid module-level import")
-
     def test_keyboard_interrupt_from_input_exits_cleanly(self):
         """KeyboardInterrupt from input() is caught by the inner handler; loop breaks."""
         import claude_light as cl
