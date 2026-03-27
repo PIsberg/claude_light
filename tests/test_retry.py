@@ -15,6 +15,22 @@ sys.path.insert(0, project_root)
 
 from claude_light.retry import retry_with_backoff, _should_retry, MAX_RETRIES, INITIAL_BACKOFF_SECS, MAX_BACKOFF_SECS
 import anthropic
+import httpx
+
+
+def _make_status_error(cls, message="error", status_code=400):
+    """Create an Anthropic API status error with a mock response."""
+    mock_response = MagicMock(spec=httpx.Response)
+    mock_response.status_code = status_code
+    mock_response.headers = httpx.Headers()
+    mock_response.request = MagicMock(spec=httpx.Request)
+    return cls(message, response=mock_response, body=None)
+
+
+def _make_connection_error():
+    """Create an Anthropic APIConnectionError with a mock request."""
+    mock_request = MagicMock(spec=httpx.Request)
+    return anthropic.APIConnectionError(request=mock_request)
 
 
 class TestShouldRetry(unittest.TestCase):
@@ -22,12 +38,12 @@ class TestShouldRetry(unittest.TestCase):
 
     def test_rate_limit_error_is_retriable(self):
         """RateLimitError should be retriable."""
-        error = anthropic.RateLimitError("too many requests")
+        error = _make_status_error(anthropic.RateLimitError, "too many requests", 429)
         self.assertTrue(_should_retry(error))
 
     def test_connection_error_is_retriable(self):
         """APIConnectionError should be retriable."""
-        error = anthropic.APIConnectionError("connection timeout")
+        error = _make_connection_error()
         self.assertTrue(_should_retry(error))
 
     def test_server_error_is_retriable(self):
@@ -38,22 +54,22 @@ class TestShouldRetry(unittest.TestCase):
 
     def test_authentication_error_not_retriable(self):
         """AuthenticationError (401) should not be retriable."""
-        error = anthropic.AuthenticationError("invalid key")
+        error = _make_status_error(anthropic.AuthenticationError, "invalid key", 401)
         self.assertFalse(_should_retry(error))
 
     def test_permission_error_not_retriable(self):
-        """PermissionError (403) should not be retriable."""
-        error = anthropic.PermissionError("forbidden")
+        """PermissionDeniedError (403) should not be retriable."""
+        error = _make_status_error(anthropic.PermissionDeniedError, "forbidden", 403)
         self.assertFalse(_should_retry(error))
 
     def test_not_found_error_not_retriable(self):
         """NotFoundError (404) should not be retriable."""
-        error = anthropic.NotFoundError("not found")
+        error = _make_status_error(anthropic.NotFoundError, "not found", 404)
         self.assertFalse(_should_retry(error))
 
     def test_invalid_request_error_not_retriable(self):
         """InvalidRequestError (400) should not be retriable."""
-        error = anthropic.BadRequestError("bad request")
+        error = _make_status_error(anthropic.BadRequestError, "bad request", 400)
         self.assertFalse(_should_retry(error))
 
     def test_generic_exception_not_retriable(self):
@@ -77,12 +93,12 @@ class TestRetryWithBackoff(unittest.TestCase):
     def test_retry_on_transient_error(self):
         """Function should retry on rate limit error."""
         call_count = [0]
-        
+
         @retry_with_backoff
         def flaky():
             call_count[0] += 1
             if call_count[0] < 2:
-                raise anthropic.RateLimitError("rate limited")
+                raise _make_status_error(anthropic.RateLimitError, "rate limited", 429)
             return "success"
         
         # Should succeed after retry
@@ -93,12 +109,12 @@ class TestRetryWithBackoff(unittest.TestCase):
     def test_fail_on_non_retriable_error(self):
         """Function should fail immediately on non-retriable error."""
         call_count = [0]
-        
+
         @retry_with_backoff
         def auth_error():
             call_count[0] += 1
-            raise anthropic.AuthenticationError("invalid key")
-        
+            raise _make_status_error(anthropic.AuthenticationError, "invalid key", 401)
+
         # Should fail immediately without retries
         with self.assertRaises(anthropic.AuthenticationError):
             auth_error()
@@ -108,12 +124,12 @@ class TestRetryWithBackoff(unittest.TestCase):
     def test_max_retries_exceeded(self):
         """Function should fail after MAX_RETRIES attempts."""
         call_count = [0]
-        
+
         @retry_with_backoff
         def always_fails():
             call_count[0] += 1
-            raise anthropic.RateLimitError("rate limited")
-        
+            raise _make_status_error(anthropic.RateLimitError, "rate limited", 429)
+
         # Should fail after exhausting retries
         with self.assertRaises(anthropic.RateLimitError):
             always_fails()
@@ -131,7 +147,7 @@ class TestRetryWithBackoff(unittest.TestCase):
             call_times.append(time.time())
             call_count[0] += 1
             if call_count[0] < 3:
-                raise anthropic.RateLimitError("rate limited")
+                raise _make_status_error(anthropic.RateLimitError, "rate limited", 429)
             return "success"
         
         start = time.time()
@@ -153,8 +169,8 @@ class TestRetryWithBackoff(unittest.TestCase):
         @retry_with_backoff
         def many_retries():
             call_count[0] += 1
-            if call_count[0] < 5:
-                raise anthropic.RateLimitError("rate limited")
+            if call_count[0] < MAX_RETRIES:
+                raise _make_status_error(anthropic.RateLimitError, "rate limited", 429)
             return "success"
         
         start = time.time()
@@ -172,8 +188,8 @@ class TestRetryWithBackoff(unittest.TestCase):
         
         @retry_with_backoff
         def fail_with_message():
-            raise anthropic.RateLimitError(error_msg)
-        
+            raise _make_status_error(anthropic.RateLimitError, error_msg, 429)
+
         with self.assertRaises(anthropic.RateLimitError) as ctx:
             fail_with_message()
         
@@ -211,7 +227,7 @@ class TestRetryIntegration(unittest.TestCase):
         def mock_create(**kwargs):
             call_count[0] += 1
             if call_count[0] < 2:
-                raise anthropic.RateLimitError("rate limited")
+                raise _make_status_error(anthropic.RateLimitError, "rate limited", 429)
             
             # Return successful response
             resp = MagicMock()
@@ -227,6 +243,7 @@ class TestRetryIntegration(unittest.TestCase):
             return resp
         
         with patch("claude_light.llm.client.messages.create", side_effect=mock_create), \
+             patch("claude_light.llm.ENABLE_STREAMING", False), \
              patch("claude_light.llm._update_skeleton"), \
              patch("claude_light.llm.retrieve", return_value=("", [])), \
              patch("claude_light.llm._print_reply"), \

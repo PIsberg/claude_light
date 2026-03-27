@@ -250,7 +250,9 @@ class TestThreadSafety:
     def test_lock_exists(self):
         """Verify that state lock is properly initialized."""
         assert hasattr(state, 'lock')
-        assert isinstance(state.lock, threading.Lock)
+        # threading.Lock() is a factory, not a class; check the lock interface instead
+        assert hasattr(state.lock, 'acquire')
+        assert hasattr(state.lock, 'release')
 
 
 class TestStatusBarThreadSafety:

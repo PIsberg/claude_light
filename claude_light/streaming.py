@@ -48,7 +48,7 @@ class StreamingResponseHandler:
 
                 elif event.type == 'content_block_delta':
                     if hasattr(event, 'delta'):
-                        if hasattr(event.delta, 'thinking'):
+                        if self.is_thinking and hasattr(event.delta, 'thinking'):
                             self.thinking_buffer += event.delta.thinking
                             self._print_thinking_chunk(event.delta.thinking)
                         elif hasattr(event.delta, 'text'):

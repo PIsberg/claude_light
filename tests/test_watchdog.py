@@ -224,6 +224,10 @@ class TestObserverErrorHandling:
 class TestSignalHandling:
     """Test signal handler setup."""
 
+    def setup_method(self):
+        """Reset stop_event before each test."""
+        state.stop_event.clear()
+
     def test_signal_handler_setup_no_exception(self):
         """Test that signal handler setup doesn't raise."""
         from claude_light.main import _setup_signal_handlers
