@@ -40,9 +40,9 @@ jobs:
     - name: Run analytical benchmark
       run: |
         python tests/benchmarks/benchmark.py --json > tests/baseline_token_stats_new.json
-        python tests/linting/check_regression.py tokens tests/baseline_token_stats.json tests/baseline_token_stats_new.json
+        python tests/linting/check_regression.py tokens tests/fixtures/baseline_token_stats.json tests/baseline_token_stats_new.json
 
     - name: Run retrieval benchmark (offline fixture)
       run: |
         python tests/benchmarks/benchmark_retrieval.py --fixture tests/fixtures/retrieval_cases.json --output tests/baseline_retrieval_stats_new.json
-        python tests/linting/check_regression.py retrieval tests/baseline_retrieval_stats.json tests/baseline_retrieval_stats_new.json
+        python tests/linting/check_regression.py retrieval tests/fixtures/baseline_retrieval_stats.json tests/baseline_retrieval_stats_new.json
