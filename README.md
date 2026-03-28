@@ -245,3 +245,5 @@ If retrieval behavior changes intentionally, refresh the baseline with the same 
 ```bash
 python tests/benchmark_retrieval.py --fixture tests/fixtures/retrieval_cases.json --output tests/baseline_retrieval_stats.json
 ```
+
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/PIsberg/claude_light/badge)](https://scorecard.dev/viewer/?uri=github.com/PIsberg/claude_light/)
