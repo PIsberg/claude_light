@@ -46,7 +46,7 @@ def _setup_signal_handlers():
         pass
 
 
-def start_chat():
+def start_chat(auto_apply=False):
     full_refresh()
     _setup_signal_handlers()  # Setup signal handlers before starting threads
 
@@ -144,7 +144,7 @@ def start_chat():
                     continue
                 from claude_light.executor import _run_command
                 transcript = _run_command(cmd)
-                chat(f"I ran the following command and got this output. Please help me understand or fix any issues:\n\n```\n{transcript}\n```")
+                chat(f"I ran the following command and got this output. Please help me understand or fix any issues:\n\n```\n{transcript}\n```", auto_apply=auto_apply)
                 continue
             if query == "/undo":
                 from claude_light import git_manager
@@ -191,6 +191,7 @@ def main():
     parser = argparse.ArgumentParser(description="Claude Light RAG Chat")
     parser.add_argument("--test-mode", choices=["small", "medium", "large", "extra-large"],
                         help="Run in test mode with a synthetic codebase and mocked API.")
+    parser.add_argument("-y", "--yes", action="store_true", help="Automatically apply changes without asking.")
     parser.add_argument("query", nargs="*", help="Optional query for one-shot mode.")
     args, unknown = parser.parse_known_args()
 
@@ -201,11 +202,11 @@ def main():
 
     query_str = " ".join(args.query).strip()
     if query_str:
-        one_shot(query_str)
+        one_shot(query_str, auto_apply=args.yes)
     elif not sys.stdin.isatty():
-        one_shot(sys.stdin.read().strip())
+        one_shot(sys.stdin.read().strip(), auto_apply=args.yes)
     else:
-        start_chat()
+        start_chat(auto_apply=args.yes)
 
 if __name__ == "__main__":
     main()

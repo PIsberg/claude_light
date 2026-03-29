@@ -232,7 +232,7 @@ def refresh_md_file(path_str: str):
         warm_cache()
 
 
-def chat(query):
+def chat(query, auto_apply=False):
     routed_model, effort, max_tok = route_query(query)
     token_budget = _RETRIEVAL_BUDGET[effort]
 
@@ -335,7 +335,7 @@ def chat(query):
             if explanation:
                 _print_reply(explanation)
             if edits:
-                apply_edits(edits, explanation=explanation)
+                apply_edits(edits, explanation=explanation, auto_apply=auto_apply)
 
             print_stats(usage, label=f"Turn {turns}")
             break
@@ -345,7 +345,7 @@ def chat(query):
     except Exception as e:
         print(f"\n[Error] API call failed: {e}")
 
-def one_shot(prompt):
+def one_shot(prompt, auto_apply=False):
     print(f"{_T_SYS} Building context...", file=sys.stderr)
     _update_skeleton()
     index_files()
@@ -407,7 +407,7 @@ def one_shot(prompt):
             if explanation:
                 print(explanation)
             if edits:
-                apply_edits(edits, explanation=explanation)
+                apply_edits(edits, explanation=explanation, auto_apply=auto_apply)
 
             cost = calculate_cost(usage)
             _accumulate_usage(usage)

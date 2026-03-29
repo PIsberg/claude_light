@@ -161,7 +161,7 @@ def _resolve_new_content(edit):
     raise ValueError(f"SEARCH block not found in {edit['path']} (even with fuzzy sequence matching)")
 
 
-def apply_edits(edits, check_only=False, explanation=""):
+def apply_edits(edits, check_only=False, explanation="", auto_apply=False):
     """
     Apply file edits from Claude's response.
     
@@ -216,7 +216,9 @@ def apply_edits(edits, check_only=False, explanation=""):
         print(f"{_ANSI_CYAN}── {path} {_ANSI_RESET}" + "─" * max(0, 50 - len(path)))
         show_diff(path, r["_new"], old_content=r["_old"])
 
-    if not sys.stdin.isatty():
+    if auto_apply:
+        auto = True
+    elif not sys.stdin.isatty():
         auto = True
     else:
         print(f"Apply {_ANSI_BOLD}{len(applicable)}{_ANSI_RESET} change(s)? "
