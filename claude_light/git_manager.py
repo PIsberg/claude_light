@@ -45,14 +45,15 @@ def is_git_repo() -> bool:
     return code == 0
 
 
-def get_git_root() -> Optional[Path]:
+def get_git_root(path: Optional[Path] = None) -> Optional[Path]:
     """
-    Get the root directory of the git repository.
+    Get the root directory of the git repository for the given path (or CWD).
     
     Returns:
         Path to git root, or None if not in a git repo.
     """
-    stdout, code = _run_git("rev-parse", "--show-toplevel")
+    cwd = str(path.parent) if path else "."
+    stdout, code = _run_git("-C", cwd, "rev-parse", "--show-toplevel")
     if code == 0:
         return Path(stdout)
     return None
@@ -100,58 +101,72 @@ def auto_commit(
 ) -> bool:
     """
     Automatically commit file changes with a descriptive message.
-    
-    Args:
-        edited_files: List of file paths that were edited.
-        explanation: Brief explanation of changes (used to generate commit message).
-        auto: If True, commit without confirmation. If False, ask user first.
-        
-    Returns:
-        True if commit succeeded, False otherwise.
+    Handles multiple git repositories if files are spread across them.
     """
-    if not is_git_repo():
+    if not edited_files:
+        if not is_git_repo():
+            return False
+        _run_git("add", "-A")
+        return _commit_one_root(None, [], explanation)
+
+    # Group files by their respective git roots
+    roots_map = {}
+    for f in edited_files:
+        root = get_git_root(Path(f))
+        if root:
+            if root not in roots_map:
+                roots_map[root] = []
+            roots_map[root].append(f)
+    
+    if not roots_map:
         return False
+    
+    success = True
+    for root, files in roots_map.items():
+        if not _commit_one_root(root, files, explanation):
+            success = False
+    return success
+
+def _commit_one_root(root: Optional[Path], files: List[str], explanation: str) -> bool:
+    """Helper to stage and commit files for a single git root."""
+    cmd_prefix = ["-C", str(root)] if root else []
     
     # Stage files
-    if edited_files:
-        for file_path in edited_files:
-            _, code = _run_git("add", file_path)
+    if files:
+        for f in files:
+            # Make path relative to root if root is provided
+            rel_f = os.path.relpath(f, root) if root else f
+            _, code = _run_git(*(cmd_prefix + ["add", rel_f]))
             if code != 0:
-                print(f"{_T_ERR} Failed to stage {file_path}")
+                print(f"{_T_ERR} Failed to stage {f} (root: {root})")
                 return False
     else:
-        # Stage all changes if no specific files provided
-        _, code = _run_git("add", "-A")
-        if code != 0:
-            print(f"{_T_ERR} Failed to stage changes")
-            return False
-    
+        # Stage all if no specific files
+        _, code = _run_git(*(cmd_prefix + ["add", "-A"]))
+        if code != 0: return False
+
     # Check if there are staged changes
-    stdout, code = _run_git("diff", "--cached", "--quiet")
+    _, code = _run_git(*(cmd_prefix + ["diff", "--cached", "--quiet"]))
     if code == 0:
-        # No changes to commit
-        return False
-    
+        return True # No changes is technically a success (nothing to do)
+
     # Generate commit message
     files_summary = ""
-    if edited_files and len(edited_files) <= 3:
-        files_summary = f": {', '.join(Path(f).name for f in edited_files)}"
-    elif edited_files:
-        files_summary = f": {len(edited_files)} files"
+    if files and len(files) <= 3:
+        files_summary = f": {', '.join(Path(f).name for f in files)}"
+    elif files:
+        files_summary = f": {len(files)} files"
     
-    explanation_clean = explanation.strip().split("\n")[0][:60]  # First line, max 60 chars
-    if explanation_clean:
-        commit_msg = f"Claude: {explanation_clean}{files_summary}"
-    else:
-        commit_msg = f"Claude: Applied AI-generated changes{files_summary}"
+    explanation_clean = explanation.strip().split("\n")[0][:60]
+    commit_msg = f"Claude: {explanation_clean or 'Applied AI-generated changes'}{files_summary}"
     
     # Create commit
-    _, code = _run_git("commit", "-m", commit_msg)
+    _, code = _run_git(*(cmd_prefix + ["commit", "-m", commit_msg]))
     if code != 0:
-        print(f"{_T_ERR} Failed to create commit")
+        print(f"{_T_ERR} Failed to create commit in {root or 'CWD'}")
         return False
     
-    print(f"{_T_EDIT} {_ANSI_GREEN}Committed{_ANSI_RESET}: {commit_msg}")
+    print(f"{_T_EDIT} {_ANSI_GREEN}Committed{_ANSI_RESET} ({os.path.basename(root) if root else 'root'}): {commit_msg}")
     return True
 
 
