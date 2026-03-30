@@ -340,9 +340,9 @@ class TestResolveApiKey(unittest.TestCase):
             with patch.object(cl, "is_test_mode", False):
                 # Patch dotfile reads to raise OSError
                 with patch("builtins.open", side_effect=OSError):
-                    result = _resolve_api_key()
+                    api_key, auth_mode, source, auth_token = _resolve_api_key()
             # Can't guarantee empty since env may have key, just verify it's a string
-            self.assertIsInstance(result, str)
+            self.assertIsInstance(api_key, str)
         finally:
             if orig is not None:
                 os.environ["ANTHROPIC_API_KEY"] = orig
