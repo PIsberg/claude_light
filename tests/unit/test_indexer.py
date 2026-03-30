@@ -132,7 +132,7 @@ class TestLoadCache(unittest.TestCase):
             try:
                 mock_files = [MagicMock(spec=Path)]
                 mock_files[0].__str__ = lambda self: "fake.py"
-                cached, stale = _load_cache(mock_files, "all-MiniLM-L6-v2", quiet=True)
+                cached, stale = _load_cache(mock_files, "all-MiniLM-L6-v2", {}, quiet=True)
                 self.assertEqual(cached, {})
                 self.assertEqual(stale, mock_files)
             finally:
@@ -154,7 +154,7 @@ class TestLoadCache(unittest.TestCase):
                     encoding="utf-8"
                 )
                 cl.CACHE_INDEX.write_bytes(pickle.dumps({}))
-                cached, stale = _load_cache([], "new-model", quiet=True)
+                cached, stale = _load_cache([], "new-model", {}, quiet=True)
                 self.assertEqual(cached, {})
             finally:
                 os.chdir(orig)

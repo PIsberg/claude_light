@@ -3471,7 +3471,7 @@ class TestLoadCache(unittest.TestCase):
                 # No cache files exist → should return empty store + all files as stale
                 mock_files = [MagicMock(spec=Path)]
                 mock_files[0].__str__ = lambda self: "fake.py"
-                cached, stale = _load_cache(mock_files, "all-MiniLM-L6-v2", quiet=True)
+                cached, stale = _load_cache(mock_files, "all-MiniLM-L6-v2", {}, quiet=True)
                 self.assertEqual(cached, {})
                 self.assertEqual(stale, mock_files)
             finally:
@@ -3492,7 +3492,7 @@ class TestLoadCache(unittest.TestCase):
                 )
                 cl.CACHE_INDEX.write_bytes(pickle.dumps({}))
                 mock_files = []
-                cached, stale = _load_cache(mock_files, "new-model", quiet=True)
+                cached, stale = _load_cache(mock_files, "new-model", {}, quiet=True)
                 self.assertEqual(cached, {})
             finally:
                 os.chdir(orig)
@@ -3703,7 +3703,7 @@ class TestLoadCacheHit(unittest.TestCase):
                 cached_index = {"cached.py::foo": {"text": "def foo(): pass", "emb": np.zeros(3)}}
                 cl.CACHE_INDEX.write_bytes(pickle.dumps(cached_index))
 
-                cached, stale = _load_cache([f], "all-MiniLM-L6-v2", quiet=True)
+                cached, stale = _load_cache([f], "all-MiniLM-L6-v2", {"cached.py": h}, quiet=True)
                 self.assertIn("cached.py::foo", cached)
                 self.assertEqual(len(stale), 0)
             finally:
@@ -4298,7 +4298,8 @@ class TestLoadCacheStale(unittest.TestCase):
                 f1.write_text("def a(): pass\n", encoding="utf-8")
                 f2.write_text("def b(): pass\n", encoding="utf-8")
                 h1 = _file_hash(f1)
-                # Use a wrong hash for f2 to make it stale
+                h2 = _file_hash(f2)
+                # Use a wrong hash for f2 in the manifest to simulate a stale file
                 cl.CACHE_DIR.mkdir(exist_ok=True)
                 cl.CACHE_MANIFEST.write_text(
                     json.dumps({"embed_model": "all-MiniLM-L6-v2", "files": {"a.py": h1, "b.py": "wrong_hash"}}),
@@ -4309,7 +4310,7 @@ class TestLoadCacheStale(unittest.TestCase):
                 }))
 
                 with patch("builtins.print"):
-                    cached, stale = _load_cache([f1, f2], "all-MiniLM-L6-v2", quiet=False)
+                    cached, stale = _load_cache([f1, f2], "all-MiniLM-L6-v2", {"a.py": h1, "b.py": h2}, quiet=False)
                 self.assertIn("a.py::a", cached)
                 self.assertIn(f2, stale)
                 self.assertEqual(len(stale), 1)
@@ -4340,7 +4341,7 @@ class TestLoadCacheStale(unittest.TestCase):
                 cl.CACHE_INDEX.write_bytes(pickle.dumps({}))
                 printed = []
                 with patch("builtins.print", side_effect=lambda *a, **k: printed.append(a)):
-                    cached, stale = _load_cache([], "new-model", quiet=False)
+                    cached, stale = _load_cache([], "new-model", {}, quiet=False)
                 # Should have printed a miss message
                 self.assertTrue(any("Miss" in str(p) or "re-index" in str(p) for p in printed))
             finally:
@@ -6385,7 +6386,7 @@ class TestLoadCacheCorruption(unittest.TestCase):
                 cl.CACHE_DIR.mkdir(exist_ok=True)
                 cl.CACHE_MANIFEST.write_text("{not-json", encoding="utf-8")
                 cl.CACHE_INDEX.write_bytes(b"not-a-pickle")
-                cached, stale = _load_cache([f], "all-MiniLM-L6-v2", quiet=True)
+                cached, stale = _load_cache([f], "all-MiniLM-L6-v2", {}, quiet=True)
                 self.assertEqual(cached, {})
                 self.assertEqual(stale, [f])
             finally:
@@ -6409,7 +6410,7 @@ class TestLoadCacheCorruption(unittest.TestCase):
                     encoding="utf-8",
                 )
                 cl.CACHE_INDEX.write_bytes(b"corrupt-pickle")
-                cached, stale = _load_cache([f], "all-MiniLM-L6-v2", quiet=True)
+                cached, stale = _load_cache([f], "all-MiniLM-L6-v2", {"a.py": h}, quiet=True)
                 self.assertEqual(cached, {})
                 self.assertEqual(stale, [f])
             finally:

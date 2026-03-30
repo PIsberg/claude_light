@@ -1,5 +1,7 @@
 import hashlib
+import os
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 from claude_light.config import SKIP_DIRS
 import claude_light.state as state
 
@@ -8,12 +10,51 @@ _FULL_MD_LIMIT = 5_000
 _COMPACT_MD_LIMIT = 1_200
 _SMALL_MD_LIMIT = 1_500
 
+# Cached directory walk result to avoid duplicate rglob calls
+_cached_paths = None
+_cached_cwd = None
+
 def _file_hash(path: Path) -> str:
     """MD5 of file bytes — fast change detection, not cryptographic."""
     return hashlib.md5(path.read_bytes()).hexdigest()
 
+def _file_hash_parallel(paths: list[Path]) -> dict[str, str]:
+    """Compute file hashes in parallel using ThreadPoolExecutor."""
+    def hash_one(p: Path) -> tuple[str, str]:
+        return (str(p), _file_hash(p))
+    
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(executor.map(hash_one, paths))
+    
+    return dict(results)
+
 def _is_skipped(path):
     return any(p in SKIP_DIRS or p.startswith(".") for p in path.parts)
+
+def _get_cached_paths():
+    """Get cached directory paths, computing them once per session if needed."""
+    global _cached_paths, _cached_cwd
+    
+    current_cwd = os.getcwd()
+    
+    # Invalidate cache if working directory changed
+    if _cached_cwd != current_cwd:
+        _cached_paths = None
+        _cached_cwd = current_cwd
+    
+    if _cached_paths is None:
+        all_paths = []
+        for path in sorted(Path(".").rglob("*")):
+            if not _is_skipped(path):
+                all_paths.append(path)
+        _cached_paths = all_paths
+    
+    return _cached_paths
+
+def _invalidate_path_cache():
+    """Invalidate the cached paths, forcing a fresh walk on next access."""
+    global _cached_paths
+    _cached_paths = None
 
 def _build_compressed_tree(paths):
     """
@@ -22,7 +63,14 @@ def _build_compressed_tree(paths):
     root_node = {}
     root = Path(".")
     for path in paths:
-        parts = path.relative_to(root).parts
+        try:
+            parts = path.relative_to(root).parts
+        except ValueError:
+            # Path is not relative to root (e.g., "." or absolute paths)
+            continue
+        if not parts:
+            # Skip empty paths (e.g., "." relative to ".")
+            continue
         node  = root_node
         for part in parts[:-1]:
             node = node.setdefault(part, {})
@@ -151,30 +199,30 @@ def _refresh_single_md(path_str: str) -> bool:
     return True
 
 def _refresh_tree_only() -> str:
-    all_paths = [p for p in sorted(Path(".").rglob("*")) if not _is_skipped(p)]
+    all_paths = _get_cached_paths()
     state._skeleton_tree = _build_compressed_tree(all_paths)
     return _assemble_skeleton()
 
 def build_skeleton() -> str:
-    all_paths, md_files = [], []
-    for path in sorted(Path(".").rglob("*")):
-        if _is_skipped(path):
-            continue
-        all_paths.append(path)
-        if path.suffix == ".md" and path.is_file():
-            md_files.append(path)
+    all_paths = _get_cached_paths()
+    
+    # Separate files by type for skeleton tree and markdown processing
+    md_files = [p for p in all_paths if p.suffix == ".md" and p.is_file()]
 
     state._skeleton_tree = _build_compressed_tree(all_paths)
 
-    new_hashes, new_parts = {}, {}
+    # Parallel hash computation for markdown files
+    new_hashes = _file_hash_parallel(md_files) if md_files else {}
+    
+    new_parts = {}
     for path in md_files:
         path_str = str(path)
-        h = _file_hash(path)
-        new_hashes[path_str] = h
+        h = new_hashes[path_str]
         if state._skeleton_md_hashes.get(path_str) == h and path_str in state._skeleton_md_parts:
             new_parts[path_str] = state._skeleton_md_parts[path_str]
         else:
             new_parts[path_str] = _render_md_file(path)
+    
     state._skeleton_md_hashes = new_hashes
     state._skeleton_md_parts  = new_parts
 

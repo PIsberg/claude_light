@@ -11,7 +11,7 @@ from claude_light.config import (
 from claude_light.ui import _T_RAG, _T_CACHE, _T_ERR, _ANSI_GREEN, _ANSI_YELLOW, _ANSI_BOLD, _ANSI_RESET, _ANSI_CYAN
 import claude_light.state as state
 
-from claude_light.skeleton import _file_hash
+from claude_light.skeleton import _file_hash, _file_hash_parallel, _get_cached_paths, _invalidate_path_cache
 from claude_light.parsing import chunk_file
 from claude_light.executor import auto_tune
 
@@ -19,13 +19,19 @@ def _is_skipped(p):
     from claude_light.skeleton import _is_skipped
     return _is_skipped(p)
 
-def _load_cache(source_files: list, embed_model: str, quiet=False) -> tuple:
+def _load_cache(source_files: list, embed_model: str, file_hashes: dict, quiet=False) -> tuple:
     try:
         manifest      = json.loads(CACHE_MANIFEST.read_text(encoding="utf-8"))
-        if manifest.get("embed_model") != embed_model:
-            raise ValueError("embed model changed — full re-index required")
+        cached_model  = manifest.get("embed_model")
         old_hashes    = manifest["files"]
         cached_index  = pickle.loads(CACHE_INDEX.read_bytes())
+        
+        # Check if model changed - if so, all files are stale
+        # If embed_model is None/empty, use cached model (first startup with existing cache)
+        if embed_model and cached_model and cached_model != embed_model:
+            if (CACHE_MANIFEST.exists() or CACHE_INDEX.exists()) and not quiet:
+                print(f"{_T_CACHE} Miss (embed model changed); re-indexing everything.")
+            return {}, list(source_files)
     except Exception as exc:
         if (CACHE_MANIFEST.exists() or CACHE_INDEX.exists()) and not quiet:
             print(f"{_T_CACHE} Miss ({exc}); re-indexing everything.")
@@ -35,7 +41,7 @@ def _load_cache(source_files: list, embed_model: str, quiet=False) -> tuple:
     stale: list        = []
     for f in source_files:
         key    = str(f)
-        f_hash = _file_hash(f)
+        f_hash = file_hashes.get(key) or _file_hash(f)
         if f_hash == old_hashes.get(key):
             prefix = key + "::"
             for cid, val in cached_index.items():
@@ -69,9 +75,12 @@ def _save_cache(embed_model: str) -> None:
 def index_files(quiet=False):
     if not quiet:
         print(f"{_T_RAG} Scanning project files...", end="", flush=True)
+    
+    # Use cached paths from skeleton module to avoid duplicate rglob
+    all_paths = _get_cached_paths()
     source_files = [
-        p for p in Path(".").rglob("*")
-        if not _is_skipped(p) and p.is_file() and p.suffix.lower() in INDEXABLE_EXTENSIONS
+        p for p in all_paths
+        if p.is_file() and p.suffix.lower() in INDEXABLE_EXTENSIONS
     ]
     if not source_files:
         if not quiet:
@@ -81,11 +90,15 @@ def index_files(quiet=False):
         print(f"\r{_T_RAG} Found {_ANSI_BOLD}{len(source_files)}{_ANSI_RESET} source files.")
 
     state._source_files = source_files
-    state._file_hashes  = {str(f): _file_hash(f) for f in source_files}
+    # Parallel hash computation for all source files
+    state._file_hashes = _file_hash_parallel(source_files) if source_files else {}
 
-    auto_tune(source_files, quiet=quiet)
+    # Check cache status BEFORE loading model - pass hashes so auto_tune can check
+    cached_store, stale_files = _load_cache(source_files, state.EMBED_MODEL, state._file_hashes, quiet=quiet)
 
-    cached_store, stale_files = _load_cache(source_files, state.EMBED_MODEL, quiet=quiet)
+    # Always load model - needed for both indexing new chunks AND encoding queries
+    # Even with full cache hit, we need the model for retrieval
+    auto_tune(source_files, quiet=quiet, load_model=True)
 
     new_chunks: list = []
 
@@ -108,6 +121,7 @@ def index_files(quiet=False):
         pass
 
     if new_chunks:
+        # Model must be loaded at this point since we have new chunks to embed
         doc_prefix = _DOC_PREFIX.get(state.EMBED_MODEL, "")
         show_bar   = (len(new_chunks) > 100) and not quiet
         if not show_bar and not quiet:
@@ -129,7 +143,8 @@ def index_files(quiet=False):
     merged = {**cached_store, **new_store}
 
     all_chunk_texts = [{"text": v["text"]} for v in merged.values()]
-    auto_tune(source_files, chunks=all_chunk_texts, quiet=quiet)
+    # Model already loaded above if needed; just update TOP_K based on final chunk count
+    auto_tune(source_files, chunks=all_chunk_texts, quiet=quiet, load_model=False)
 
     with state.lock:
         state.chunk_store.clear()

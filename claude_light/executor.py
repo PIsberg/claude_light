@@ -1,9 +1,12 @@
 import os
 import sys
 import warnings
+import logging
 from typing import Optional
 
 os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
+os.environ.setdefault("HF_HUB_VERBOSITY", "error")
+logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
 warnings.filterwarnings(
     "ignore",
     message=".*unauthenticated requests.*",
@@ -138,7 +141,7 @@ def _run_command(cmd: str) -> str:
 
     return f"$ {cmd}\n(exit {exit_code})\n{trimmed}"
 
-def auto_tune(source_files, chunks=None, quiet=False):
+def auto_tune(source_files, chunks=None, quiet=False, load_model=True):
     n = len(source_files)
     if n < 50:
         chosen_model = "all-MiniLM-L6-v2"
@@ -147,13 +150,16 @@ def auto_tune(source_files, chunks=None, quiet=False):
     else:
         chosen_model = "nomic-ai/nomic-embed-text-v1.5"
 
-    if chosen_model != state.EMBED_MODEL or state.embedder is None:
+    # Only load model if explicitly requested AND (model changed or not loaded)
+    # This prevents loading on warm cache hits
+    if load_model and (chosen_model != state.EMBED_MODEL or state.embedder is None):
         state.EMBED_MODEL = chosen_model
-        if quiet:
-            state.embedder = _load_embedding_model(state.EMBED_MODEL, quiet=True)
-        else:
-            state.embedder = _load_embedding_model(state.EMBED_MODEL, quiet=False)
+        state.embedder = _load_embedding_model(state.EMBED_MODEL, quiet=quiet)
+        if not quiet:
             print(f"{_T_RAG} {_ANSI_GREEN}Loaded{_ANSI_RESET} {chosen_model}")
+    elif not load_model:
+        # Just update the model choice without loading
+        state.EMBED_MODEL = chosen_model
 
     if chunks:
         n_units     = len(chunks)

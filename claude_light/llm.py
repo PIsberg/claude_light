@@ -239,10 +239,10 @@ def _make_cli_subprocess_call(
     import tempfile
     import subprocess
     import json
-    
+
     # 1. Determine the 'claude' CLI binary path
     # On Windows, we use the bare command string 'claude' and shell=True.
-    # This allows the shell to find the official '.cmd' or '.ps1' shims which 
+    # This allows the shell to find the official '.cmd' or '.ps1' shims which
     # set up the Bun/NPM environment correctly. Resolving full path can bypass these shims.
     if os.name == 'nt':
         claude_bin = "claude"
@@ -250,11 +250,12 @@ def _make_cli_subprocess_call(
         claude_bin = shutil.which("claude")
         if not claude_bin:
             raise RuntimeError("Claude CLI binary not found. Please install with 'npm install -g @anthropic-ai/claude-code'")
-        
+
     # 2. Build the command
     current_os = os.name
     temp_context_file = None
-    
+    temp_system_prompt_file = None
+
     try:
         # Prepare the environment
         env = os.environ.copy()
@@ -275,25 +276,43 @@ def _make_cli_subprocess_call(
             env.setdefault('LOCALAPPDATA', os.environ.get('LOCALAPPDATA', str(Path(home_dir) / "AppData" / "Local")))
             env.setdefault('HOMEDRIVE', os.environ.get('HOMEDRIVE', 'C:'))
             env.setdefault('HOMEPATH', os.environ.get('HOMEPATH', home_dir.split(':', 1)[1] if ':' in home_dir else home_dir))
-            
-            # Note: We NO LONGER set CLAUDE_CONFIG_DIR explicitly, as it can confuse the Bun binary
-            # into looking in a non-standard location for its session keyring on some Windows setups.
-            pass
-        
-        # Windows command line length limit is 8,191 characters. 
-        # If the prompt is too long, we use the CLI's '@' feature to load context from a file.
-        if current_os == 'nt' and len(prompt) > 8000:
+
+        # Windows cmd.exe command line limit is 8,191 characters total (all args combined).
+        # On Windows, ALWAYS use temp files for both prompt and system prompt.
+        # The @file syntax is supported by the Claude CLI and bypasses cmd.exe limits.
+        cmd_prompt = prompt
+        processed_extra_flags = list(extra_flags) if extra_flags else []
+
+        if current_os == 'nt':
+            # Write main prompt to temp file
             fd, path = tempfile.mkstemp(suffix=".md", prefix="claude_light_ctx_")
             temp_context_file = path
             with os.fdopen(fd, 'w', encoding='utf-8') as f:
                 f.write(prompt)
-            
-            # Use @file syntax to bypass cmd.exe limits
-            # Ensure path uses forward slashes to avoid CLI escaping issues with Windows backslashes
             safe_path = Path(temp_context_file).as_posix()
             cmd_prompt = f"Please follow the instructions and use the codebase context provided in @{safe_path}"
-        else:
-            cmd_prompt = prompt
+
+            # Check for --system-prompt in extra_flags and move it to a temp file too
+            new_flags = []
+            i = 0
+            while i < len(processed_extra_flags):
+                flag = processed_extra_flags[i]
+                if flag == "--system-prompt" and i + 1 < len(processed_extra_flags):
+                    # Next item is the system prompt text - move it to a temp file
+                    system_prompt_text = processed_extra_flags[i + 1]
+                    fd, path = tempfile.mkstemp(suffix=".md", prefix="claude_light_sys_")
+                    temp_system_prompt_file = path
+                    with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                        f.write(system_prompt_text)
+                    safe_sys_path = Path(temp_system_prompt_file).as_posix()
+                    # Use @file syntax for system prompt
+                    new_flags.append("--system-prompt")
+                    new_flags.append(f"@\{safe_sys_path}")
+                    i += 2
+                else:
+                    new_flags.append(flag)
+                    i += 1
+            processed_extra_flags = new_flags
 
         # --bare disables the CLI system prompt for a cleaner response.
         # On Windows it also breaks Credential Manager access, so we omit it there.
@@ -304,8 +323,8 @@ def _make_cli_subprocess_call(
         command += ["-p", cmd_prompt, "--output-format", "json", "--tools", ""]
         if model:
             command += ["--model", model]
-        if extra_flags:
-            command += extra_flags
+        if processed_extra_flags:
+            command += processed_extra_flags
         
         # 3. Execute
         # Use shell=True on Windows to ensure we're in a proper terminal environment that the Bun binary expects
@@ -348,12 +367,13 @@ def _make_cli_subprocess_call(
             return result.stdout.strip(), None, None
 
     finally:
-        # Cleanup temporary file if created
-        if temp_context_file and os.path.exists(temp_context_file):
-            try:
-                os.remove(temp_context_file)
-            except OSError:
-                pass
+        # Cleanup temporary files if created
+        for temp_file in (temp_context_file, temp_system_prompt_file):
+            if temp_file and os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                except OSError:
+                    pass
 
 def _make_streaming_api_call(**create_kwargs):
     """
