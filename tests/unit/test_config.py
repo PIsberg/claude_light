@@ -21,8 +21,10 @@ class TestResolveApiKey(unittest.TestCase):
     def test_returns_env_key(self):
         print("\n  ▶ TestResolveApiKey.test_returns_env_key")
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-ant-from-env"}):
-            result = _resolve_api_key()
-        self.assertEqual(result, "sk-ant-from-env")
+            api_key, auth_mode, source, auth_token = _resolve_api_key()
+        self.assertEqual(api_key, "sk-ant-from-env")
+        self.assertEqual(auth_mode, "API_KEY")
+        self.assertEqual(source, "Environment")
 
     def test_returns_empty_string_when_no_key(self):
         print("\n  ▶ TestResolveApiKey.test_returns_empty_string_when_no_key")
@@ -31,8 +33,8 @@ class TestResolveApiKey(unittest.TestCase):
             import claude_light as cl
             with patch.object(cl, "is_test_mode", False):
                 with patch("builtins.open", side_effect=OSError):
-                    result = _resolve_api_key()
-            self.assertIsInstance(result, str)
+                    api_key, auth_mode, source, auth_token = _resolve_api_key()
+            self.assertIsInstance(api_key, str)
         finally:
             if orig is not None:
                 os.environ["ANTHROPIC_API_KEY"] = orig
