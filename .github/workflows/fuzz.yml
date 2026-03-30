@@ -1,0 +1,46 @@
+name: Fuzz Testing
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  schedule:
+    # Run fuzz tests weekly on Monday at 00:00 UTC
+    - cron: "0 0 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11"]
+
+    steps:
+    - name: Harden the runner (Audit all outbound calls)
+      uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+      with:
+        egress-policy: audit
+
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pytest hypothesis sentence-transformers numpy watchdog anthropic prompt_toolkit rich tree-sitter tree-sitter-python
+
+    - name: Run fuzz tests
+      run: |
+        python -m pytest tests/test_fuzz.py -v --tb=short
+      env:
+        HYPOTHESIS_MAX_EXAMPLES: 500
+        HYPOTHESIS_DEADLINE: 2000

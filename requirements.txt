@@ -12,3 +12,4 @@ tree-sitter-go>=0.25.0
 tree-sitter-rust>=0.24.1
 tree-sitter-javascript>=0.25.0
 tree-sitter-typescript>=0.23.2
+hypothesis>=6.100.0
