@@ -17,29 +17,48 @@ except ImportError:
 
 is_test_mode = is_test_mode_enabled()
 
-def _resolve_api_key() -> str:
-    """Return the API key from env, then ~/.anthropic, then .env in cwd."""
+def _get_pro_token() -> str:
+    """Read the official Claude CLI credentials from ~/.claude/.credentials.json."""
+    cred_path = Path.home() / ".claude" / ".credentials.json"
+    if cred_path.exists():
+        try:
+            import json
+            data = json.loads(cred_path.read_text(encoding="utf-8"))
+            return data.get("claudeAiOauth", {}).get("accessToken", "")
+        except Exception:
+            pass
+    return ""
+
+def _resolve_api_key() -> tuple[str, str, str]:
+    """Return (api_key, auth_mode, source)."""
     if is_test_mode:
-        return get_test_api_key()
+        return get_test_api_key(), "API_KEY", "Test"
+    
+    # 1. Check environment variable
     key = os.environ.get("ANTHROPIC_API_KEY", "")
     if key:
-        return key
+        return key, "API_KEY", "Environment"
+    
+    # 2. Check local dotfiles
     for dotfile in (Path.home() / ".anthropic", Path(".env")):
         try:
             for line in dotfile.read_text(encoding="utf-8").splitlines():
                 line = line.strip()
                 if line.startswith("ANTHROPIC_API_KEY=") and not line.startswith("#"):
-                    return line.split("=", 1)[1].strip().strip('"').strip("'")
+                    k = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    if k: return k, "API_KEY", f"Dotfile ({dotfile.name})"
         except OSError:
             pass
-    return ""
+            
+    # 3. Fallback to Claude CLI Pro subscription (OAuth)
+    pro_token = _get_pro_token()
+    if pro_token:
+        return pro_token, "OAUTH", "Claude CLI Config"
+        
+    return "", "OAUTH", "None"
 
-API_KEY = _resolve_api_key()
-if not API_KEY and not is_test_mode:
-    raise SystemExit(
-        "[Error] No API key found. Set ANTHROPIC_API_KEY in your environment,\n"
-        "        or add ANTHROPIC_API_KEY=sk-ant-... to ~/.anthropic or ./.env"
-    )
+API_KEY, AUTH_MODE, API_KEY_SOURCE = _resolve_api_key()
+ECONOMY_MODE = "USD" if AUTH_MODE == "API_KEY" else "TOKENS"
 
 MODEL_HAIKU             = "claude-haiku-4-5-20251001"
 MODEL_SONNET            = "claude-sonnet-4-6"

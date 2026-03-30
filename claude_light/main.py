@@ -6,7 +6,7 @@ from pathlib import Path
 from watchdog.observers import Observer
 
 import claude_light.state as state
-from claude_light.config import MODEL, CACHE_DIR, HEARTBEAT_SECS, CACHE_TTL_SECS
+from claude_light.config import MODEL, CACHE_DIR, HEARTBEAT_SECS, CACHE_TTL_SECS, AUTH_MODE, ECONOMY_MODE
 from claude_light.ui import _ANSI_BOLD, _ANSI_RESET, _ANSI_CYAN, _ANSI_DIM, _ANSI_GREEN, _ANSI_RED, _T_SYS, _T_ERR, print_session_summary
 from claude_light.llm import full_refresh, chat, one_shot, warm_cache
 from claude_light.indexer import SourceHandler
@@ -61,11 +61,8 @@ def start_chat(auto_apply=False):
     
     threading.Thread(target=heartbeat, daemon=True).start()
 
-    print(f"\n╭── {_ANSI_BOLD}❖ Claude Light{_ANSI_RESET} ──╮")
-    print(f"│ {_ANSI_CYAN}{MODEL}{_ANSI_RESET}  |  "
-          f"RAG top-{_ANSI_BOLD}{state.TOP_K}{_ANSI_RESET}  |  "
-          f"Embed: {state.EMBED_MODEL}")
-    print(f"╰{'─'*20}╯")
+    mode_str = "API Key" if AUTH_MODE == "API_KEY" else "OAuth/Pro"
+    print(f"│ {_ANSI_CYAN}{MODEL}{_ANSI_RESET}  |  Auth: {_ANSI_BOLD}{mode_str}{_ANSI_RESET}  |  RAG: {_ANSI_BOLD}top-{state.TOP_K}{_ANSI_RESET}")
     print(f"{_ANSI_DIM}Commands: /compact  /cost  /run <cmd>  /help  exit{_ANSI_RESET}\n")
 
     if _PROMPTTK_AVAILABLE:
@@ -79,12 +76,15 @@ def start_chat(auto_apply=False):
             ratio = (saved / total_in * 100) if total_in > 0 else 0.0
             repo = os.path.basename(os.getcwd())
             
-            return HTML(
+            status_text = (
                 f' <b>Repo:</b> <ansicyan>{repo}</ansicyan>  |  '
                 f'<b>Tokens:</b> {total_in:,} '
-                f'(<ansigreen>{saved:,}</ansigreen> saved, <ansigreen>{ratio:.1f}%</ansigreen>)  |  '
-                f'<b>Cost:</b> <ansiyellow>${cost:.4f}</ansiyellow>'
+                f'(<ansigreen>{saved:,}</ansigreen> saved, <ansigreen>{ratio:.1f}%</ansigreen>)'
             )
+            if ECONOMY_MODE == "USD":
+                status_text += f'  |  <b>Cost:</b> <ansiyellow>${cost:.4f}</ansiyellow>'
+            
+            return HTML(status_text)
 
         CACHE_DIR.mkdir(exist_ok=True)
         _slash_completer = _WordCompleter(
@@ -107,7 +107,10 @@ def start_chat(auto_apply=False):
                 saved = state.session_tokens["cache_read"]
                 cost = state.session_cost
             ratio = (saved / total_in * 100) if total_in > 0 else 0.0
-            print(f"\n[{os.path.basename(os.getcwd())}] Tokens: {total_in:,} ({saved:,} saved, {ratio:.1f}%) | Cost: ${cost:.4f}")
+            stat_line = f"\n[{os.path.basename(os.getcwd())}] Tokens: {total_in:,} ({saved:,} saved, {ratio:.1f}%)"
+            if ECONOMY_MODE == "USD":
+                stat_line += f" | Cost: ${cost:.4f}"
+            print(stat_line)
             return input("> ").strip()
 
     try:

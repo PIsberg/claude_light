@@ -4,7 +4,7 @@ import threading
 import difflib
 from pathlib import Path
 
-from claude_light.config import PRICE_WRITE, PRICE_READ, PRICE_INPUT, PRICE_OUTPUT
+from claude_light.config import PRICE_WRITE, PRICE_READ, PRICE_INPUT, PRICE_OUTPUT, ECONOMY_MODE
 from claude_light.testing import TEST_MODE_TAG
 import claude_light.state as state
 
@@ -65,6 +65,8 @@ class _Spinner:
         self._thread.join()
 
 def calculate_cost(usage):
+    if ECONOMY_MODE == "TOKENS":
+        return 0
     write = (getattr(usage, "cache_creation_input_tokens", 0) / 1_000_000) * PRICE_WRITE
     read  = (getattr(usage, "cache_read_input_tokens",      0) / 1_000_000) * PRICE_READ
     inp   = (usage.input_tokens  / 1_000_000) * PRICE_INPUT
@@ -93,13 +95,14 @@ def print_stats(usage, label="Stats", file=sys.stdout):
         f"new {write_tokens:,}",
         file=file,
     )
-    print(
-        f"{_ANSI_DIM}[Cost]{_ANSI_RESET}   "
-        f"{_ANSI_YELLOW}${actual_cost:.4f}{_ANSI_RESET}  |  "
-        f"saved {_ANSI_GREEN}${savings:.4f}{_ANSI_RESET} ({savings_pct:.1f}% vs no-cache)  |  "
-        f"session {_ANSI_YELLOW}${session_cost:.4f}{_ANSI_RESET}",
-        file=file,
-    )
+    if ECONOMY_MODE == "USD":
+        print(
+            f"{_ANSI_DIM}[Cost]{_ANSI_RESET}   "
+            f"{_ANSI_YELLOW}${actual_cost:.4f}{_ANSI_RESET}  |  "
+            f"saved {_ANSI_GREEN}${savings:.4f}{_ANSI_RESET} ({savings_pct:.1f}% vs no-cache)  |  "
+            f"session {_ANSI_YELLOW}${session_cost:.4f}{_ANSI_RESET}",
+            file=file,
+        )
 
 def print_session_summary():
     with state.lock:
@@ -121,32 +124,52 @@ def print_session_summary():
     def pct(n):
         return f"{n / total * 100:.1f}%" if total else "—"
 
-    col_w = [22, 12, 8, 9]
-
     _B = _ANSI_CYAN
     _R = _ANSI_RESET
     _H = _ANSI_BOLD
 
-    def row(label, tokens, cost_val, color=""):
-        cost_str = f"${cost_val:.4f}"
-        return (f"│ {color}{label:<{col_w[0]}}{_R} │ {tokens:>{col_w[1]},} │"
-                f" {pct(tokens):>{col_w[2]}} │ {_ANSI_YELLOW}{cost_str:>{col_w[3]}}{_R} │")
-
     input_base = inp + cw + cr
     hit_str    = f"{_ANSI_GREEN}{cr / input_base * 100:.1f}%{_R}" if input_base else "—"
 
-    print(f"\n{_B}┌{'─'*62}┐{_R}")
-    print(f"{_B}│{_R}{_H}{'Session Token Summary':^62}{_R}{_B}│{_R}")
-    print(f"{_B}├{'─'*24}┬{'─'*14}┬{'─'*10}┬{'─'*11}┤{_R}")
-    print(f"{_B}│{_R} {'Type':<{col_w[0]}} {_B}│{_R} {'Tokens':>{col_w[1]}} {_B}│{_R} {'%':>{col_w[2]}} {_B}│{_R} {'Cost':>{col_w[3]}} {_B}│{_R}")
-    print(f"{_B}├{'─'*24}┼{'─'*14}┼{'─'*10}┼{'─'*11}┤{_R}")
-    print(row("Input (uncached)",  inp,  cost_inp))
-    print(row("Cache write",       cw,   cost_cw))
-    print(row("Cache read",        cr,   cost_cr,  _ANSI_GREEN))
-    print(row("Output",            out,  cost_out))
-    print(f"{_B}├{'─'*24}┼{'─'*14}┼{'─'*10}┼{'─'*11}┤{_R}")
-    print(row("TOTAL",             total, cost_tot, _ANSI_BOLD))
-    print(f"{_B}└{'─'*24}┴{'─'*14}┴{'─'*10}┴{'─'*11}┘{_R}")
+    if ECONOMY_MODE == "USD":
+        col_w = [22, 12, 8, 9]
+        def row(label, tokens, cost_val, color=""):
+            cost_str = f"${cost_val:.4f}"
+            return (f"│ {color}{label:<{col_w[0]}}{_R} │ {tokens:>{col_w[1]},} │"
+                    f" {pct(tokens):>{col_w[2]}} │ {_ANSI_YELLOW}{cost_str:>{col_w[3]}}{_R} │")
+
+        print(f"\n{_B}┌{'─'*62}┐{_R}")
+        print(f"{_B}│{_R}{_H}{'Session Token Summary':^62}{_R}{_B}│{_R}")
+        print(f"{_B}├{'─'*24}┬{'─'*14}┬{'─'*10}┬{'─'*11}┤{_R}")
+        print(f"{_B}│{_R} {'Type':<{col_w[0]}} {_B}│{_R} {'Tokens':>{col_w[1]}} {_B}│{_R} {'%':>{col_w[2]}} {_B}│{_R} {'Cost':>{col_w[3]}} {_B}│{_R}")
+        print(f"{_B}├{'─'*24}┼{'─'*14}┼{'─'*10}┼{'─'*11}┤{_R}")
+        print(row("Input (uncached)",  inp,  cost_inp))
+        print(row("Cache write",       cw,   cost_cw))
+        print(row("Cache read",        cr,   cost_cr,  _ANSI_GREEN))
+        print(row("Output",            out,  cost_out))
+        print(f"{_B}├{'─'*24}┼{'─'*14}┼{'─'*10}┼{'─'*11}┤{_R}")
+        print(row("TOTAL",             total, cost_tot, _ANSI_BOLD))
+        print(f"{_B}└{'─'*24}┴{'─'*14}┴{'─'*10}┴{'─'*11}┘{_R}")
+    else:
+        # Token Economy - simplify table by removing cost column
+        col_w = [26, 15, 10]
+        def row(label, tokens, color=""):
+            return (f"│ {color}{label:<{col_w[0]}}{_R} │ {tokens:>{col_w[1]},} │"
+                    f" {pct(tokens):>{col_w[2]}} │")
+
+        print(f"\n{_B}┌{'─'*57}┐{_R}")
+        print(f"{_B}│{_R}{_H}{'Session Token Summary':^57}{_R}{_B}│{_R}")
+        print(f"{_B}├{'─'*28}┬{'─'*17}┬{'─'*10}┤{_R}")
+        print(f"{_B}│{_R} {'Type':<{col_w[0]}} {_B}│{_R} {'Tokens':>{col_w[1]}} {_B}│{_R} {'%':>{col_w[2]}} {_B}│{_R}")
+        print(f"{_B}├{'─'*28}┼{'─'*17}┼{'─'*10}┤{_R}")
+        print(row("Input (uncached)",  inp))
+        print(row("Cache write",       cw))
+        print(row("Cache read",        cr,   _ANSI_GREEN))
+        print(row("Output",            out))
+        print(f"{_B}├{'─'*28}┼{'─'*17}┼{'─'*10}┤{_R}")
+        print(row("TOTAL",             total, _ANSI_BOLD))
+        print(f"{_B}└{'─'*28}┴{'─'*17}┴{'─'*10}┘{_R}")
+
     print(f"  Turns: {_ANSI_BOLD}{turns}{_R}  |  Cache hit rate: {hit_str}")
 
 def _colorize_diff(lines):

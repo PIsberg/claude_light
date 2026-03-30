@@ -3,7 +3,7 @@ import time
 import anthropic
 
 from claude_light.config import (
-    API_KEY, MODEL, MODEL_HAIKU, MODEL_SONNET, MODEL_OPUS, SUMMARY_MODEL,
+    API_KEY, AUTH_MODE, API_KEY_SOURCE, ECONOMY_MODE, MODEL, MODEL_HAIKU, MODEL_SONNET, MODEL_OPUS, SUMMARY_MODEL,
     MAX_HISTORY_TURNS, SUMMARIZE_BATCH, _RETRIEVAL_BUDGET, SYSTEM_PROMPT,
     ENABLE_STREAMING
 )
@@ -20,8 +20,21 @@ from claude_light.editor import parse_edit_blocks, apply_edits
 from claude_light.retry import retry_with_backoff
 from claude_light.streaming import stream_chat_response, accumulate_usage_from_dict, calculate_usage_cost
 
-client = anthropic.Anthropic(api_key=API_KEY) if API_KEY != "sk-ant-test-mock-key" else None
-if not client:
+# Active Mode Announcement
+if AUTH_MODE == "API_KEY":
+    print(f"{_T_SYS} Auth: {_ANSI_BOLD}API Key{_ANSI_RESET} (Source: {API_KEY_SOURCE})", file=sys.stderr)
+elif API_KEY:
+    print(f"{_T_SYS} Auth: {_ANSI_BOLD}OAuth/Pro{_ANSI_RESET} (Source: {API_KEY_SOURCE})", file=sys.stderr)
+else:
+    print(f"\n{_T_ERR} No authentication found.", file=sys.stderr)
+    print(f"{_T_SYS} To use your Claude Pro subscription, please authorize with the official CLI:", file=sys.stderr)
+    print(f"      {_ANSI_CYAN}claude auth login{_ANSI_RESET}\n", file=sys.stderr)
+    print(f"{_T_SYS} Alternatively, set {_ANSI_BOLD}ANTHROPIC_API_KEY{_ANSI_RESET} in your environment.", file=sys.stderr)
+    sys.exit(1)
+
+if API_KEY != "sk-ant-test-mock-key":
+    client = anthropic.Anthropic(api_key=API_KEY)
+else:
     class MockClient:
         pass
     client = MockClient()
