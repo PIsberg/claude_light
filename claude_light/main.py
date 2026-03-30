@@ -1,14 +1,19 @@
 import sys
 import os
+
+# Fix for Windows: prevent Intel Fortran runtime from hijacking Ctrl+C
+if os.name == 'nt':
+    os.environ['FOR_DISABLE_CONSOLE_CTRL_HANDLER'] = '1'
+
 import threading
 import signal
 from pathlib import Path
 from watchdog.observers import Observer
 
 import claude_light.state as state
-from claude_light.config import MODEL, CACHE_DIR, HEARTBEAT_SECS, CACHE_TTL_SECS, AUTH_MODE, ECONOMY_MODE
+from claude_light.config import MODEL, CACHE_DIR, HEARTBEAT_SECS, CACHE_TTL_SECS, AUTH_MODE, ECONOMY_MODE, API_KEY_SOURCE
 from claude_light.ui import _ANSI_BOLD, _ANSI_RESET, _ANSI_CYAN, _ANSI_DIM, _ANSI_GREEN, _ANSI_RED, _T_SYS, _T_ERR, print_session_summary
-from claude_light.llm import full_refresh, chat, one_shot, warm_cache
+from claude_light.llm import full_refresh, chat, one_shot, warm_cache, ClaudeNotLoggedIn
 from claude_light.indexer import SourceHandler
 
 try:
@@ -22,6 +27,8 @@ except ImportError:
 
 
 def heartbeat():
+    if AUTH_MODE == "OAUTH":
+        return
     while not state.stop_event.is_set():
         state.stop_event.wait(HEARTBEAT_SECS)
         with state.lock:
@@ -59,32 +66,33 @@ def start_chat(auto_apply=False):
         print(f"{_T_ERR} Failed to start file watcher: {e}", file=sys.stderr)
         # Continue without file watching if it fails
     
-    threading.Thread(target=heartbeat, daemon=True).start()
+    if AUTH_MODE == "API_KEY":
+        threading.Thread(target=heartbeat, daemon=True).start()
 
-    mode_str = "API Key" if AUTH_MODE == "API_KEY" else "OAuth/Pro"
-    print(f"│ {_ANSI_CYAN}{MODEL}{_ANSI_RESET}  |  Auth: {_ANSI_BOLD}{mode_str}{_ANSI_RESET}  |  RAG: {_ANSI_BOLD}top-{state.TOP_K}{_ANSI_RESET}")
+    print(f"│ {_ANSI_CYAN}{MODEL}{_ANSI_RESET}  |  Auth: {_ANSI_BOLD}{API_KEY_SOURCE}{_ANSI_RESET}  |  RAG: {_ANSI_BOLD}top-{state.TOP_K}{_ANSI_RESET}")
     print(f"{_ANSI_DIM}Commands: /compact  /cost  /run <cmd>  /help  exit{_ANSI_RESET}\n")
 
     if _PROMPTTK_AVAILABLE:
         from prompt_toolkit import HTML
 
-        def get_status_bar():
+        def get_status_text():
             with state.lock:
                 total_in = state.session_tokens["input"] + state.session_tokens["cache_write"] + state.session_tokens["cache_read"]
                 saved = state.session_tokens["cache_read"]
                 cost = state.session_cost
             ratio = (saved / total_in * 100) if total_in > 0 else 0.0
-            repo = os.path.basename(os.getcwd())
             
-            status_text = (
-                f' <b>Repo:</b> <ansicyan>{repo}</ansicyan>  |  '
+            text = (
+                f' <b>Repo:</b> <ansicyan>{os.path.basename(os.getcwd())}</ansicyan>  |  '
                 f'<b>Tokens:</b> {total_in:,} '
                 f'(<ansigreen>{saved:,}</ansigreen> saved, <ansigreen>{ratio:.1f}%</ansigreen>)'
             )
-            if ECONOMY_MODE == "USD":
-                status_text += f'  |  <b>Cost:</b> <ansiyellow>${cost:.4f}</ansiyellow>'
-            
-            return HTML(status_text)
+            cost_label = "Cost" if ECONOMY_MODE == "USD" else "API equiv."
+            text += f'  |  <b>{cost_label}:</b> <ansiyellow>${cost:.4f}</ansiyellow>'
+            return text
+
+        def get_status_bar():
+            return HTML(get_status_text())
 
         CACHE_DIR.mkdir(exist_ok=True)
         _slash_completer = _WordCompleter(
@@ -96,9 +104,17 @@ def start_chat(auto_apply=False):
             auto_suggest=_AutoSuggest(),
             completer=_slash_completer,
             complete_while_typing=False,
-            bottom_toolbar=get_status_bar
+            # bottom_toolbar is unstable on Windows console host, switching to in-line stats
+            bottom_toolbar=None if os.name == 'nt' else get_status_bar
         )
         def _get_input():
+            if os.name == 'nt':
+                # Manually print status line before prompt on Windows to avoid ghosting.
+                # Remove HTML tags for plain text print.
+                import re
+                raw_text = get_status_text()
+                clean_text = re.sub(r'<[^>]+>', '', raw_text)
+                print(f"\n{clean_text}")
             return _session.prompt("> ").strip()
     else:
         def _get_input():
@@ -107,9 +123,8 @@ def start_chat(auto_apply=False):
                 saved = state.session_tokens["cache_read"]
                 cost = state.session_cost
             ratio = (saved / total_in * 100) if total_in > 0 else 0.0
-            stat_line = f"\n[{os.path.basename(os.getcwd())}] Tokens: {total_in:,} ({saved:,} saved, {ratio:.1f}%)"
-            if ECONOMY_MODE == "USD":
-                stat_line += f" | Cost: ${cost:.4f}"
+            cost_label = "Cost" if ECONOMY_MODE == "USD" else "API equiv."
+            stat_line = f"\n[{os.path.basename(os.getcwd())}] Tokens: {total_in:,} ({saved:,} saved, {ratio:.1f}%) | {cost_label}: ${cost:.4f}"
             print(stat_line)
             return input("> ").strip()
 
@@ -126,6 +141,7 @@ def start_chat(auto_apply=False):
                 break
             if query in ("/clear", "/compact"):
                 state.conversation_history.clear()
+                state.cli_session_id = None  # force a fresh CLI session
                 print(f"{_T_SYS} Conversation history compacted.\n")
                 continue
             if query == "/cost":
@@ -176,6 +192,50 @@ def start_chat(auto_apply=False):
                 else:
                     print(f"{_T_SYS} Cancelled.\n")
                 continue
+
+            # Standard Chat Query
+            try:
+                chat(query, auto_apply=auto_apply)
+            except ClaudeNotLoggedIn:
+                print(f"\n{_T_ERR} Claude CLI is not logged in.")
+                print(f"{_T_SYS} This often happens on Windows when the CLI keyring is restricted.")
+                print(f"[?] Perform a ONE-TIME setup of a long-lived 'Automation Token'? [y/n] ", end="", flush=True)
+                try:
+                    choice = input().strip().lower()
+                except (KeyboardInterrupt, EOFError):
+                    choice = "n"
+                
+                if choice in ("y", "yes"):
+                    import subprocess
+                    import shutil
+                    from pathlib import Path
+                    claude_bin = shutil.which("claude")
+                    if claude_bin:
+                        print(f"{_T_SYS} Launching 'claude setup-token'...")
+                        print(f"{_ANSI_DIM}Follow the browser instructions. Once finished, the CLI will display your token.{_ANSI_RESET}")
+                        subprocess.run([claude_bin, "setup-token"])
+                        
+                        print(f"\n{_ANSI_BOLD}Paste your new Automation Token here:{_ANSI_RESET} ", end="", flush=True)
+                        try:
+                            new_token = input().strip()
+                            if new_token.startswith("sk-ant-oat01"):
+                                token_path = Path.home() / ".claude_light_automation_token"
+                                token_path.write_text(new_token, encoding="utf-8")
+                                print(f"{_T_SYS} Token saved to {token_path}")
+                                
+                                # Reload config/state and retry
+                                from claude_light import config
+                                config.API_KEY, config.AUTH_MODE, config.API_KEY_SOURCE, config.AUTH_TOKEN = config._resolve_api_key()
+                                full_refresh()
+                                chat(query, auto_apply=auto_apply)
+                            else:
+                                print(f"{_T_ERR} Invalid token format. It should start with 'sk-ant-oat01'.")
+                        except (KeyboardInterrupt, EOFError):
+                            print(f"\n{_T_SYS} Cancelled.")
+                    else:
+                        print(f"{_T_ERR} Claude CLI binary not found. Please install first.")
+                else:
+                    print(f"{_T_SYS} Proceeding without login. Results may fail.")
     except KeyboardInterrupt:
         pass
     finally:

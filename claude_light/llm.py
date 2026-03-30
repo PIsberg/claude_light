@@ -1,7 +1,13 @@
 import sys
+import os
 import time
+import json
+import subprocess
+import shutil
 import anthropic
+from pathlib import Path
 
+import claude_light.config as config
 from claude_light.config import (
     API_KEY, AUTH_MODE, API_KEY_SOURCE, ECONOMY_MODE, MODEL, MODEL_HAIKU, MODEL_SONNET, MODEL_OPUS, SUMMARY_MODEL,
     MAX_HISTORY_TURNS, SUMMARIZE_BATCH, _RETRIEVAL_BUDGET, SYSTEM_PROMPT,
@@ -18,12 +24,16 @@ from claude_light.indexer import index_files
 from claude_light.retrieval import retrieve
 from claude_light.editor import parse_edit_blocks, apply_edits
 from claude_light.retry import retry_with_backoff
+
+class ClaudeNotLoggedIn(Exception):
+    """Raised when the official Claude CLI is not logged in."""
+    pass
 from claude_light.streaming import stream_chat_response, accumulate_usage_from_dict, calculate_usage_cost
 
 # Active Mode Announcement
 if AUTH_MODE == "API_KEY":
     print(f"{_T_SYS} Auth: {_ANSI_BOLD}API Key{_ANSI_RESET} (Source: {API_KEY_SOURCE})", file=sys.stderr)
-elif API_KEY:
+elif AUTH_MODE == "OAUTH" and config.AUTH_TOKEN:
     print(f"{_T_SYS} Auth: {_ANSI_BOLD}OAuth/Pro{_ANSI_RESET} (Source: {API_KEY_SOURCE})", file=sys.stderr)
 else:
     print(f"\n{_T_ERR} No authentication found.", file=sys.stderr)
@@ -32,14 +42,16 @@ else:
     print(f"{_T_SYS} Alternatively, set {_ANSI_BOLD}ANTHROPIC_API_KEY{_ANSI_RESET} in your environment.", file=sys.stderr)
     sys.exit(1)
 
-if API_KEY != "sk-ant-test-mock-key":
-    client = anthropic.Anthropic(api_key=API_KEY)
-else:
+if API_KEY == "sk-ant-test-mock-key":
     class MockClient:
         pass
     client = MockClient()
     client.messages = MockClient()
     client.messages.create = None
+else:
+    # OAuth mode still needs a client object for non-chat calls (e.g. summarisation).
+    # It is only used in API_KEY mode for actual chat — OAuth routes via CLI subprocess.
+    client = anthropic.Anthropic(api_key=API_KEY if API_KEY else "sk-ant-placeholder")
 
 def route_query(query: str) -> tuple[str, str, int]:
     import re
@@ -208,13 +220,211 @@ def _build_system_blocks(skeleton):
     ]
     return blocks
 
+
+def _make_cli_subprocess_call(
+    prompt: str,
+    model: str = "",
+    extra_flags: list | None = None,
+) -> tuple[str, any, str | None]:
+    """
+    Execute the official 'claude' CLI binary as a subprocess for OAUTH mode.
+    Returns (reply_text, usage, session_id).
+    Handles the 8,191 character limit on Windows by using temporary context files.
+    """
+    import shutil
+    import tempfile
+    import subprocess
+    import json
+    
+    # 1. Determine the 'claude' CLI binary path
+    # On Windows, we use the bare command string 'claude' and shell=True.
+    # This allows the shell to find the official '.cmd' or '.ps1' shims which 
+    # set up the Bun/NPM environment correctly. Resolving full path can bypass these shims.
+    if os.name == 'nt':
+        claude_bin = "claude"
+    else:
+        claude_bin = shutil.which("claude")
+        if not claude_bin:
+            raise RuntimeError("Claude CLI binary not found. Please install with 'npm install -g @anthropic-ai/claude-code'")
+        
+    # 2. Build the command
+    current_os = os.name
+    temp_context_file = None
+    
+    try:
+        # Prepare the environment
+        env = os.environ.copy()
+
+        # Inject the automation token on all platforms.
+        # On Linux/macOS: primary auth mechanism (no Credential Manager).
+        # On Windows: fallback — CLI prefers the Credential Manager, but will use
+        # this env var if no Credential Manager entry exists.
+        if config.AUTH_TOKEN and config.AUTH_TOKEN.startswith("sk-ant-oat01"):
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = config.AUTH_TOKEN
+
+        # On Windows, ensure critical path variables are present for the Bun-based CLI to find its profile
+        if current_os == 'nt':
+            # Ensure all common home/profile variables are present
+            home_dir = os.path.expanduser('~')
+            env.setdefault('USERPROFILE', home_dir)
+            env.setdefault('APPDATA', os.environ.get('APPDATA', str(Path(home_dir) / "AppData" / "Roaming")))
+            env.setdefault('LOCALAPPDATA', os.environ.get('LOCALAPPDATA', str(Path(home_dir) / "AppData" / "Local")))
+            env.setdefault('HOMEDRIVE', os.environ.get('HOMEDRIVE', 'C:'))
+            env.setdefault('HOMEPATH', os.environ.get('HOMEPATH', home_dir.split(':', 1)[1] if ':' in home_dir else home_dir))
+            
+            # Note: We NO LONGER set CLAUDE_CONFIG_DIR explicitly, as it can confuse the Bun binary
+            # into looking in a non-standard location for its session keyring on some Windows setups.
+            pass
+        
+        # Windows command line length limit is 8,191 characters. 
+        # If the prompt is too long, we use the CLI's '@' feature to load context from a file.
+        if current_os == 'nt' and len(prompt) > 8000:
+            fd, path = tempfile.mkstemp(suffix=".md", prefix="claude_light_ctx_")
+            temp_context_file = path
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                f.write(prompt)
+            
+            # Use @file syntax to bypass cmd.exe limits
+            # Ensure path uses forward slashes to avoid CLI escaping issues with Windows backslashes
+            safe_path = Path(temp_context_file).as_posix()
+            cmd_prompt = f"Please follow the instructions and use the codebase context provided in @{safe_path}"
+        else:
+            cmd_prompt = prompt
+
+        # --bare disables the CLI system prompt for a cleaner response.
+        # On Windows it also breaks Credential Manager access, so we omit it there.
+        # --tools "" strips built-in tool definitions from the context (saves ~5-10K tokens).
+        command = [claude_bin]
+        if current_os != 'nt':
+            command.append("--bare")
+        command += ["-p", cmd_prompt, "--output-format", "json", "--tools", ""]
+        if model:
+            command += ["--model", model]
+        if extra_flags:
+            command += extra_flags
+        
+        # 3. Execute
+        # Use shell=True on Windows to ensure we're in a proper terminal environment that the Bun binary expects
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            env=env,
+            encoding='utf-8',
+            errors='replace',
+            shell=(current_os == 'nt')
+        )
+        
+        if result.returncode != 0:
+            error_output = result.stderr or result.stdout
+            if "Not logged in" in error_output or "Invalid API key" in error_output:
+                raise ClaudeNotLoggedIn("Claude CLI: Not logged in. Please run 'claude auth login' in your terminal.")
+            raise RuntimeError(f"Claude CLI error (code {result.returncode}): {error_output}")
+            
+        # 4. Parse Output
+        try:
+            data = json.loads(result.stdout)
+            # In 'json' mode, the CLI returns an object with results
+            response_text = data.get("result", "")
+            
+            # Extract usage from the CLI's "usage" block (not "stats").
+            usage_data = data.get("usage", {})
+            class UsageObj:
+                pass
+            usage = UsageObj()
+            usage.input_tokens = usage_data.get("input_tokens", 0)
+            usage.output_tokens = usage_data.get("output_tokens", 0)
+            usage.cache_creation_input_tokens = usage_data.get("cache_creation_input_tokens", 0)
+            usage.cache_read_input_tokens = usage_data.get("cache_read_input_tokens", 0)
+
+            session_id = data.get("session_id")
+            return response_text, usage, session_id
+
+        except json.JSONDecodeError:
+            return result.stdout.strip(), None, None
+
+    finally:
+        # Cleanup temporary file if created
+        if temp_context_file and os.path.exists(temp_context_file):
+            try:
+                os.remove(temp_context_file)
+            except OSError:
+                pass
+
 def _make_streaming_api_call(**create_kwargs):
     """
     Make an API call using streaming if enabled, otherwise use non-streaming.
-
-    Returns:
-        Tuple of (reply_text, usage_dict)
+    In OAUTH mode, routes to the official Claude CLI backend via subprocess.
     """
+    from claude_light.config import AUTH_MODE
+
+    if AUTH_MODE == "OAUTH":
+        system_blocks = create_kwargs.get("system", [])
+        messages      = create_kwargs.get("messages", [])
+        model         = create_kwargs.get("model", MODEL)
+
+        if state.cli_session_id:
+            # Turn 2+: CLI already has the skeleton and history — only send the
+            # latest user message plus any freshly retrieved context that was
+            # injected as a second system block.
+            last_user = next(
+                (m for m in reversed(messages) if m["role"] == "user"), None
+            )
+            user_content = last_user["content"] if last_user else ""
+            if isinstance(user_content, list):
+                user_content = " ".join(
+                    b.get("text", "") for b in user_content if b.get("type") == "text"
+                )
+            # If there is a retrieved-context block (block index 1+), prepend it
+            # so the CLI sees fresh RAG results even without re-sending the full skeleton.
+            rag_blocks = [b for b in system_blocks[1:] if b.get("text")]
+            if rag_blocks:
+                rag_text = "\n".join(b["text"] for b in rag_blocks)
+                prompt = f"[Retrieved context for this query]\n{rag_text}\n\n{user_content}"
+            else:
+                prompt = user_content
+            extra_flags = ["--resume", state.cli_session_id]
+        else:
+            # Turn 1: send the full system prompt + history as a flat string.
+            system_text = "\n".join(b.get("text", "") for b in system_blocks)
+            history_text = ""
+            for msg in messages[:-1]:          # everything except the last user msg
+                role = msg["role"].capitalize()
+                content = msg["content"]
+                if isinstance(content, list):
+                    content = " ".join(
+                        b.get("text", "") for b in content if b.get("type") == "text"
+                    )
+                history_text += f"--- {role} ---\n{content}\n"
+            last_user = messages[-1]["content"] if messages else ""
+            if isinstance(last_user, list):
+                last_user = " ".join(
+                    b.get("text", "") for b in last_user if b.get("type") == "text"
+                )
+            prompt = (
+                f"INSTRUCTIONS:\n{system_text}\n\n"
+                + (f"CONVERSATION HISTORY:\n{history_text}\n" if history_text else "")
+                + f"USER: {last_user}"
+            )
+            extra_flags = ["--system-prompt", system_text]
+
+        print(f"{_T_SYS} Processing via Claude CLI...", end="", flush=True)
+        try:
+            reply_text, usage, session_id = _make_cli_subprocess_call(
+                prompt, model=model, extra_flags=extra_flags
+            )
+            if session_id:
+                state.cli_session_id = session_id
+            print(" done.")
+            return reply_text, usage
+        except ClaudeNotLoggedIn:
+            print(" failed (auth).")
+            raise
+        except Exception as e:
+            print(f" failed ({e}).")
+            raise
+
+    # API Key mode — use the anthropic client directly
     if ENABLE_STREAMING and hasattr(client.messages, 'stream'):
         try:
             # Use streaming
@@ -252,6 +462,8 @@ def _update_skeleton():
     _apply_skeleton(build_skeleton())
 
 def warm_cache(quiet=False):
+    if AUTH_MODE == "OAUTH":
+        return
     with state.lock:
         skeleton = state.skeleton_context
     try:
@@ -278,8 +490,9 @@ def full_refresh():
         _update_skeleton()
         spinner.update("Indexing source files")
         index_files(quiet=True)
-        spinner.update("Warming cache")
-        warm_cache(quiet=True)
+        if AUTH_MODE == "API_KEY":
+            spinner.update("Warming cache")
+            warm_cache(quiet=True)
 
 def refresh_skeleton_only():
     _apply_skeleton(_refresh_tree_only())
@@ -401,6 +614,9 @@ def chat(query, auto_apply=False):
 
     except KeyboardInterrupt:
         print("\n[Interrupted]")
+    except ClaudeNotLoggedIn:
+        # Re-raise so main.py can handle the interactive login trigger
+        raise
     except Exception as e:
         print(f"\n[Error] API call failed: {e}")
 

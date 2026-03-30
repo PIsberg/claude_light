@@ -47,13 +47,19 @@ class StreamingResponseHandler:
                             self._print_thinking_start()
 
                 elif event.type == 'content_block_delta':
-                    if hasattr(event, 'delta'):
-                        if self.is_thinking and hasattr(event.delta, 'thinking'):
-                            self.thinking_buffer += event.delta.thinking
-                            self._print_thinking_chunk(event.delta.thinking)
-                        elif hasattr(event.delta, 'text'):
-                            self.buffer += event.delta.text
-                            self._print_text_chunk(event.delta.text)
+                    delta = getattr(event, 'delta', None)
+                    if not delta: continue
+                    
+                    if self.is_thinking:
+                        thinking = getattr(delta, 'thinking', None)
+                        if thinking:
+                            self.thinking_buffer += thinking
+                            self._print_thinking_chunk(thinking)
+                    else:
+                        text = getattr(delta, 'text', None)
+                        if text:
+                            self.buffer += text
+                            self._print_text_chunk(text)
 
                 elif event.type == 'content_block_stop':
                     if self.is_thinking:
@@ -67,12 +73,12 @@ class StreamingResponseHandler:
                         pass  # End of message
 
                 elif event.type == 'message_start':
+                    # input_tokens in newer SDK versions represents the NON-CACHED part of the input.
+                    # cache_read_input_tokens and cache_creation_input_tokens represent the CACHED parts.
                     if hasattr(event, 'message'):
-                        msg = event.message
-                        if hasattr(msg, 'usage'):
-                            self.input_tokens = msg.usage.input_tokens
-                            self.cache_creation_tokens = getattr(msg.usage, 'cache_creation_input_tokens', 0)
-                            self.cache_read_tokens = getattr(msg.usage, 'cache_read_input_tokens', 0)
+                        self.input_tokens = getattr(event.message.usage, 'input_tokens', 0)
+                        self.cache_creation_tokens = getattr(event.message.usage, 'cache_creation_input_tokens', 0)
+                        self.cache_read_tokens = getattr(event.message.usage, 'cache_read_input_tokens', 0)
 
         self._print_stream_end()
         return self.buffer, self._get_usage_dict()

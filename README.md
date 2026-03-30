@@ -56,9 +56,27 @@ For a deeper dive into the implementation, see [docs/architecture.md](docs/archi
 
 ## 🚀 Getting Started
 
+`claude_light` supports two ways to authenticate. If you are a Claude Pro subscriber, it will **automatically detect your CLI session**. For the best experience on Windows, we recommend a **one-time setup** of a long-lived **Automation Token** (`claude setup-token`) which provides a permanent, headless-friendly connection.
+
 > **Note:** `sentence-transformers` pulls in PyTorch, which is approximately **1.5 GB** on the first install.
 
-### macOS
+### Quick Start
+
+1. **Install Dependencies**:
+   ```bash
+   pip install -r requirements.txt
+   ```
+2. **Authenticate (Pick One)**:
+   *   **Claude Pro**: Run `claude auth login` OR `claude setup-token` (recommended for Windows persistence).
+   *   **API Key**: Set `export ANTHROPIC_API_KEY=sk-ant-...` in your shell.
+3. **Run**:
+   ```bash
+   python claude_light.py
+   ```
+
+---
+
+### macOS (Automated)
 
 ```bash
 # Clone or download the repo, then:
@@ -100,33 +118,52 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass;
 [System.Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY","sk-ant-your-key-here","User")
 ```
 
-### Manual installation
+### Manual installation (Verified Versions)
 
-If you prefer to install packages yourself:
+If you prefer to install packages yourself, use the [requirements.txt](requirements.txt) file which contains verified, secure versions:
+
+```bash
+pip install -r requirements.txt
+```
+
+Alternatively, you can install the core packages manually:
 
 ```bash
 # Required
-pip install sentence-transformers numpy watchdog anthropic prompt_toolkit
+pip install "sentence-transformers>=5.3.0" "numpy>=2.4.3" "watchdog>=6.0.0" "anthropic>=0.86.0" "prompt_toolkit>=3.0.52"
 
 # Optional — strongly recommended
-pip install tree-sitter tree-sitter-java tree-sitter-python \
-    tree-sitter-go tree-sitter-rust tree-sitter-javascript tree-sitter-typescript \
-    rich einops
+pip install "tree-sitter>=0.25.2" "rich>=14.3.3" "einops>=0.8.2"
 ```
 
 Without tree-sitter, chunking falls back to whole-file mode. Without `rich`, output degrades gracefully to plain text formatting.
 
 ### 🔑 API key
 
-The key is resolved in this order: environment variable → `~/.anthropic` file → `.env` in the current directory.
+### 🔑 Authentication
 
-```bash
-# Linux / macOS
-export ANTHROPIC_API_KEY=sk-ant-your-key-here
+`claude_light` is designed to be flexible with how you pay for tokens. It resolves your identity in this order:
 
-# Windows PowerShell (persistent)
-[System.Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY","sk-ant-your-key-here","User")
-```
+1.  **Environment Variable**: `ANTHROPIC_API_KEY` (Standard API Key)
+2.  **Local Dotfiles**: `.anthropic` (home dir) or `.env` (project dir)
+3.  **Claude CLI Config (OAuth)**: Automatically reads your Claude Pro session from `~/.claude/.credentials.json`.
+
+#### Option A: Claude Pro Subscription (OAuth)
+If you have a **Claude Pro** or **Team** subscription and have authorized the official [Claude CLI](https://github.com/anthropics/claude-code), `claude_light` will automatically use your flat-rate subscription. 
+*   **Cost**: Included in your $20/mo subscription.
+*   **Setup**: Just run `claude auth login` once.
+
+#### Option B: Anthropic API Key
+If you prefer to pay per-token or don't have a Pro subscription:
+*   **Cost**: Usage-based (Pay-as-you-go via the Anthropic Console).
+*   **Setup**: Set the environment variable:
+    ```bash
+    # Linux / macOS
+    export ANTHROPIC_API_KEY=sk-ant-your-key-here
+
+    # Windows PowerShell (persistent)
+    [System.Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY","sk-ant-your-key-here","User")
+    ```
 
 Run the script from the root of your project — it will immediately build the skeleton, chunk your files, and auto-tune the embedding model.
 
@@ -148,7 +185,28 @@ The script automatically selects the most efficient embedding model based on the
 
 * **< 50 files:** `all-MiniLM-L6-v2` (22 MB) for fast startup.
 * **50–199 files:** `all-mpnet-base-v2` (420 MB) for better semantic depth.
-* **200+ files:** `nomic-ai/nomic-embed-text-v1.5` for optimal recall on large codebases..
+* **200+ files:** `nomic-ai/nomic-embed-text-v1.5` for optimal recall on large codebases.
+
+### 🛡️ Security & SBOM
+
+To ensure supply chain transparency and prevent dependency confusion, `claude_light` uses:
+
+*   **Pinned Versions:** All dependencies in `requirements.txt` and the installer scripts are pinned to verified, secure minimum versions.
+*   **SBOM (Software Bill of Materials):** The project maintains an industry-standard SBOM in [CycloneDX](https://cyclonedx.org/) format.
+
+#### Continuous Inventory
+A GitHub Action automatically generates a fresh `sbom.json` on every push to `main` and uploads it as a build artifact.
+
+#### Manual Generation
+You can generate the SBOM manually using the provided scripts:
+
+```bash
+# Linux / macOS
+bash scripts/generate_sbom.sh
+
+# Windows
+.\scripts\generate_sbom.ps1
+```
 
 
 ### Tests

@@ -29,7 +29,14 @@ This diagram shows the main components and their relationships within Claude Lig
 | `indexer.py` | File watcher, manages incremental indexing and cache |
 | `skeleton.py` | Builds compressed directory tree and markdown documentation |
 | `state.py` | Shared state module for thread-safe access to session data |
-| `config.py` | Configuration constants and API key resolution |
+| `config.py` | Configuration constants and dual-mode authentication resolution |
+
+### Authentication Modes
+
+`claude_light` supports two distinct authentication paths:
+
+*   **API Key Mode**: Standard developer access. Authenticates via the `x-api-key` header. Billing is usage-based (USD).
+*   **OAuth/Pro Mode**: Accesses your Claude Pro subscription via the official CLI session. Authenticates via the `Authorization: Bearer` header. Billing is flat-rate (Tokens shown, USD hidden).
 
 ### External Dependencies
 

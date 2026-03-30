@@ -23,21 +23,28 @@ Info "Using $(&$python --version)"
 
 # --- Required packages -------------------------------------------------------
 Info "Installing required packages (sentence-transformers pulls PyTorch ~1.5 GB on first run)..."
-& $python -m pip install --upgrade sentence-transformers numpy watchdog anthropic prompt_toolkit
+$required = @(
+    "sentence-transformers>=5.3.0",
+    "numpy>=2.4.3",
+    "watchdog>=6.0.0",
+    "anthropic>=0.86.0",
+    "prompt_toolkit>=3.0.52"
+)
+& $python -m pip install --upgrade $required
 if ($LASTEXITCODE -ne 0) { Fail "Failed to install required packages." }
 
 # --- Optional packages -------------------------------------------------------
 Info "Installing optional packages (tree-sitter, rich, einops)..."
 $optional = @(
-    "tree-sitter",
-    "tree-sitter-java",
-    "tree-sitter-python",
-    "tree-sitter-go",
-    "tree-sitter-rust",
-    "tree-sitter-javascript",
-    "tree-sitter-typescript",
-    "rich",
-    "einops"
+    "tree-sitter>=0.25.2",
+    "tree-sitter-java>=0.23.5",
+    "tree-sitter-python>=0.25.0",
+    "tree-sitter-go>=0.25.0",
+    "tree-sitter-rust>=0.24.1",
+    "tree-sitter-javascript>=0.25.0",
+    "tree-sitter-typescript>=0.23.2",
+    "rich>=14.3.3",
+    "einops>=0.8.2"
 )
 & $python -m pip install --upgrade $optional
 if ($LASTEXITCODE -ne 0) {

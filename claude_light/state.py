@@ -36,6 +36,7 @@ def save_global_stats():
 load_global_stats()
 global_stats["total_sessions"] += 1
 
+cli_session_id: str | None = None   # OAuth/Pro: reuse CLI session across turns
 last_interaction = time.time()
 lock = threading.Lock()
 stop_event = threading.Event()
