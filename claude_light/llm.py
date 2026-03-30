@@ -78,25 +78,29 @@ def route_query(query: str) -> tuple[str, str, int]:
         "migrate", "convert", "extend", "integrate", "logic", "algorithm"
     }
     _INFRA_SIGNALS = {
-        "list", "show", "where", "what is", "what are", "how many",
-        "print", "display", "tell me", "which file", "which files",
-        "find", "locate", "count", "search", "grep"
+        "list", "show", "where", "what is", "what are",
+        "how many", "print", "display", "tell me", "which file",
+        "which files", "find", "locate", "count", "search", "grep"
     }
 
     # 3. Calculate Base Score
     score = 0
     score += sum(4.0 for s in _ARCH_SIGNALS  if s in q)
-    score += sum(2.0 for s in _LOGIC_SIGNALS if s in q)
+    score += sum(5.0 for s in _LOGIC_SIGNALS if s in q)
     score += sum(0.5 for s in _INFRA_SIGNALS if s in q)
-    
+
     # 4. Contextual Multipliers
     # Mentioning a file path (e.g. main.py, lib/utils.py) suggests technical intent
     if re.search(r'[a-zA-Z0-9_\-/]+\.[a-zA-Z0-9]{2,4}', q):
         score += 3.0
-    
-    # Large word count implies complexity
+
+    # Word count implies complexity
     if word_count > 30:
-        score += 3.0
+        score += 5.0
+    elif word_count > 10:
+        score += 2.0
+    elif word_count > 4:
+        score += 1.5
     
     # Conversation depth - deeper history requires better instruction following
     history_depth = len(state.conversation_history) // 2
