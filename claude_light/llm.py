@@ -124,11 +124,30 @@ def _extract_text(content_blocks) -> str:
     )
 
 def _accumulate_usage(usage):
+    from claude_light.config import PRICE_INPUT, PRICE_READ
+    input_tokens = usage.input_tokens
+    cache_read = getattr(usage, "cache_read_input_tokens", 0)
+    cache_write = getattr(usage, "cache_creation_input_tokens", 0)
+    output_tokens = usage.output_tokens
+
     with state.lock:
-        state.session_tokens["input"]       += usage.input_tokens
-        state.session_tokens["cache_write"] += getattr(usage, "cache_creation_input_tokens", 0)
-        state.session_tokens["cache_read"]  += getattr(usage, "cache_read_input_tokens", 0)
-        state.session_tokens["output"]      += usage.output_tokens
+        state.session_tokens["input"]       += input_tokens
+        state.session_tokens["cache_write"] += cache_write
+        state.session_tokens["cache_read"]  += cache_read
+        state.session_tokens["output"]      += output_tokens
+        
+        # Update Global Stats
+        # Saved tokens = everything that hit the cache (read)
+        # Full tokens = everything that didn't hit the cache (input + write)
+        state.global_stats["total_tokens_full"]  += (input_tokens + cache_write)
+        state.global_stats["total_tokens_saved"] += cache_read
+        
+        # Dollars saved = tokens * (Full Price - Cache Read Price)
+        dollars_saved = (cache_read / 1_000_000.0) * (PRICE_INPUT - PRICE_READ)
+        state.global_stats["total_dollars_saved"] += dollars_saved
+    
+    # Persist after every interaction
+    state.save_global_stats()
 
 def _summarize_turns(messages: list) -> tuple:
     lines = []

@@ -137,19 +137,6 @@ Run the script from the root of your project — it will immediately build the s
 ### 1. Interactive Loop (Default)
 `python3 claude_light.py`
 
-### 2. One-Shot Mode
-`python3 claude_light.py "What does OrderService do?"`
-| Command | Description |
-| :--- | :--- |
-| `<prompt>` | Instructs Claude to return complete files with your requested changes. The script will automatically generate a colored diff and ask for your confirmation before writing the files to disk. |
-| `/clear` | Resets the conversation history. |
-| `/cost` | Shows the total session spend so far. |
-| `/help` | Displays the help menu. |
-| `exit` / `quit` | Exits the application. |
-
----
-
-## 🧠 Architecture & Auto-Tuning
 The script runs three concurrent threads to keep your workflow seamless:
 
 * **Main Thread:** Handles the input loop, retrieves relevant chunks per query, and manages the conversation history.

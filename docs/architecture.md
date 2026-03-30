@@ -132,6 +132,7 @@ note right of State
   - chunk_store (embeddings)
   - conversation_history
   - session_tokens
+  - global_stats (lifetime savings)
   - skeleton_context
   - file_hashes
 end note
@@ -175,7 +176,7 @@ This sequence diagram illustrates the complete flow from user query to response,
 | Command | Description |
 |---------|-------------|
 | `/compact` or `/clear` | Reset conversation history |
-| `/cost` | Show session spend so far |
+| `/cost` | Show session spend and global lifetime savings |
 | `/run <cmd>` | Run shell command and feed output to Claude |
 | `/undo` | Undo the last git commit (revert AI changes) |
 | `/help` | Display help menu |
@@ -262,6 +263,7 @@ deactivate Editor
 
 LLM -> LLM : Update conversation_history\n(strip code blocks)
 LLM -> LLM : Update session_tokens & cost
+LLM -> LLM : Persist global_stats to HOME
 LLM --> Main : Response complete
 deactivate LLM
 

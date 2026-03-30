@@ -172,6 +172,27 @@ def print_session_summary():
 
     print(f"  Turns: {_ANSI_BOLD}{turns}{_R}  |  Cache hit rate: {hit_str}")
 
+    # --- Global Lifetime Savings ---
+    gs = state.global_stats
+    full_t  = gs.get("total_tokens_full", 0)
+    saved_t = gs.get("total_tokens_saved", 0)
+    total_t = full_t + saved_t
+    saved_d  = gs.get("total_dollars_saved", 0.0)
+    sessions = gs.get("total_sessions", 0)
+    
+    overall_pct = (saved_t / total_t * 100) if total_t > 0 else 0.0
+    
+    print(f"\n{_B}┌{'─'*57}┐{_R}")
+    print(f"{_B}│{_R}{_H}{'Global Lifetime Savings':^57}{_R}{_B}│{_R}")
+    print(f"{_B}├{'─'*28}┬{'─'*28}┤{_R}")
+    if ECONOMY_MODE == "USD":
+        print(f"{_B}│{_R} Total Dollars Saved:         {_B}│{_R} {_ANSI_GREEN}${saved_d:<26.2f}{_R} {_B}│{_R}")
+    print(f"{_B}│{_R} Total Tokens Saved:          {_B}│{_R} {saved_t:<27,} {_B}│{_R}")
+    print(f"{_B}│{_R} Overall Savings:             {_B}│{_R} {_ANSI_GREEN}{overall_pct:<25.1f}%{_R} {_B}│{_R}")
+    print(f"{_B}├{'─'*28}┴{'─'*28}┤{_R}")
+    print(f"{_B}│{_R} Sessions: {sessions:<47} {_B}│{_R}")
+    print(f"{_B}└{'─'*57}┘{_R}")
+
 def _colorize_diff(lines):
     result = []
     for line in lines:

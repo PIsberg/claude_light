@@ -145,8 +145,9 @@ For a deeper dive into the implementation, see [architecture.md](architecture.md
 **Thread-Safe State Management** (`claude_light/state.py`, `claude_light/llm.py`, `claude_light/ui.py`):
 - All access to shared state (`session_cost`, `session_tokens`, `conversation_history`) is protected by `threading.Lock`
 - Prevents race conditions when multiple threads read/write session data simultaneously
-- Critical sections: state updates in `_accumulate_usage()`, `/cost` command reading, status bar updates
-- Ensures consistent token counts and cost calculations under concurrent access
+- Critical sections: state updates in `_accumulate_usage()` and `save_global_stats()`.
+- Global lifecycle: `load_global_stats()` on startup; `save_global_stats()` on every usage update.
+- Storage: `~/.claude_light_stats.json` for persistence across all projects.
 
 **Streaming Response Output** (`claude_light/streaming.py`):
 - Real-time token streaming from the Anthropic API
@@ -169,6 +170,7 @@ For a deeper dive into the implementation, see [architecture.md](architecture.md
 | `TARGET_RETRIEVED_TOKENS` | Token budget for retrieved context per query (default 6 000) |
 | `MIN_SCORE` | Minimum cosine similarity to include a chunk (default 0.45) |
 | `MAX_HISTORY_TURNS` | Sliding-window size for conversation history (default 6) |
+| `GLOBAL_STATS_FILE` | Path to global savings persistence (`~/.claude_light_stats.json`) |
 | `HEARTBEAT_SECS` | How often the heartbeat thread wakes (default 30) |
 | `CACHE_TTL_SECS` | Idle seconds before heartbeat warms the cache (default 240) |
 | `MODEL_HAIKU` / `MODEL_SONNET` / `MODEL_OPUS` | Model ID constants used by the router |

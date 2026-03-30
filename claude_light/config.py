@@ -81,6 +81,9 @@ SKIP_DIRS      = {
     ".idea", "__pycache__", ".mvn", ".gradle",
 }
 
+# Global Stats - stored in home directory to persist across all repositories
+GLOBAL_STATS_FILE = Path.home() / ".claude_light_stats.json"
+
 # Disk cache — stored in a hidden dir so _is_skipped() ignores it automatically
 CACHE_DIR      = Path(".claude_light_cache")
 CACHE_INDEX    = CACHE_DIR / "index.pkl"
