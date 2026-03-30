@@ -123,7 +123,7 @@ Without tree-sitter, chunking falls back to whole-file mode. Without rich/prompt
 - `_build_compressed_tree(paths)` — builds the skeleton directory tree with single-child chain collapse and sibling brace grouping
 - `_render_compressed_node(node, lines, indent)` — recursive renderer for the compressed tree
 - `_dedup_retrieved_context(top_pairs)` — assembles retrieved context, emitting the per-file preamble once when multiple chunks from the same file are retrieved
-- `route_query(query)` — heuristic classifier; returns `(model_id, effort_label, max_tokens)` and prints routing decision to stderr
+- `route_query(query)` — weighted scoring router; classifies intent (Arch vs Logic vs Infra), detects file paths (regex), and accounts for conversation depth to select `(model_id, effort_label, max_tokens)`
 - `_extract_text(content_blocks)` — joins text blocks from API response, skipping thinking blocks (used when `effort="max"` triggers extended thinking)
 
 **Interactive commands**: `/clear`, `/compact`, `/cost`, `/help`, `/run <cmd>`, `/undo`, `exit`/`quit`, `Ctrl+C`.

@@ -159,7 +159,7 @@ This sequence diagram illustrates the complete flow from user query to response,
 ### Key Phases
 
 1. **Session Initialization** - Build skeleton, index files, warm cache
-2. **Query Routing** - Classify effort level and select model
+2. **Query Routing** - Weighted scoring of intent, complexity, and context to select the most efficient model.
 3. **Chunk Retrieval** - Find relevant code via embedding similarity
 4. **Context Assembly** - Build message with cache breakpoints
 5. **API Call** - Stream response from Claude
@@ -377,7 +377,7 @@ The Retrieval-Augmented Generation pipeline finds and injects only relevant code
 
 ### Key Optimizations
 
-1. **Dynamic Model Routing** - Simple queries use Haiku ($0.80/M), complex ones use Sonnet/Opus
+1. **Smarter Query Routing** - Weighted scoring (Arch vs Logic vs Infra) + context awareness
 2. **Effort-Based Budget** - Low effort = 1.5K tokens, Max effort = 9K tokens
 3. **Two-Stage Filtering** - Absolute floor (0.45) + Relative floor (60% of top score)
 4. **Deduplication** - Shared preamble emitted once for multi-method results
@@ -403,15 +403,17 @@ start
 
 :User enters query;
 partition "1. Query Routing" {
-  :Analyze query keywords;
-  if (Contains MAX signals?\n(architect, optimize, trade-off)) then (yes, 2+ hits)
+  :Analyze query keywords (weighted);
+  :Detect technical intent (regex);
+  :Check conversation depth (context);
+  if (Score >= 12.0?\n(High Arch/Logic + History)) then (yes)
     :effort = max\nmodel = Opus\nmax_tokens = 16,000;
-  elseif (Contains HIGH signals?\n(implement, refactor, fix)) then (yes, 1+ hits)
+  elseif (Score >= 5.0?\n(Edit intent + Path)) then (yes)
     :effort = high\nmodel = Sonnet\nmax_tokens = 8,192;
-  elseif (Contains LOW signals only?\n(list, show, where)) then (yes)
-    :effort = low\nmodel = Haiku\nmax_tokens = 2,048;
-  else (default/uncertain)
+  elseif (Score >= 1.5 or WordCount > 15?) then (yes)
     :effort = medium\nmodel = Sonnet\nmax_tokens = 4,096;
+  else (low/greeting)
+    :effort = low\nmodel = Haiku\nmax_tokens = 2,048;
   endif
   :Set retrieval budget:\nlow=1.5K, med=3K, high=6K, max=9K tokens;
 }

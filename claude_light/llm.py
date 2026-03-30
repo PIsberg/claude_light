@@ -42,40 +42,67 @@ else:
     client.messages.create = None
 
 def route_query(query: str) -> tuple[str, str, int]:
+    import re
     q = query.lower()
     words = q.split()
     word_count = len(words)
-
-    _LOW_SIGNALS = {
-        "list", "show", "where", "what is", "what are", "how many",
-        "print", "display", "tell me", "which file", "which files",
-        "find", "locate", "count",
-    }
-    _HIGH_SIGNALS = {
-        "implement", "write", "create", "add", "refactor", "fix", "debug",
-        "build", "develop", "generate", "update", "change", "modify",
-        "migrate", "convert", "extend", "integrate",
-    }
-    _MAX_SIGNALS = {
+    
+    # 1. Hard Bounds & Quick Routes
+    _META_SIGNALS = {"hi", "hello", "help", "who are you", "what are you", "clear history", "compact"}
+    if word_count < 5 and any(s in q for s in _META_SIGNALS):
+        # Extremely simple/meta queries → Haiku
+        return _route_result("low", MODEL_HAIKU, 2_048)
+    
+    # 2. Define Weighted Signals
+    _ARCH_SIGNALS = {
         "architect", "architecture", "design system", "deeply", "deep analysis",
         "performance", "optimize", "security", "scalability", "trade-off",
         "trade off", "tradeoff", "cross-cutting", "evaluate", "compare",
-        "strategy", "reasoning", "step by step", "comprehensive",
+        "strategy", "reasoning", "step by step", "comprehensive", "deadlock", "race condition"
+    }
+    _LOGIC_SIGNALS = {
+        "implement", "write", "create", "add", "refactor", "fix", "debug",
+        "build", "develop", "generate", "update", "change", "modify",
+        "migrate", "convert", "extend", "integrate", "logic", "algorithm"
+    }
+    _INFRA_SIGNALS = {
+        "list", "show", "where", "what is", "what are", "how many",
+        "print", "display", "tell me", "which file", "which files",
+        "find", "locate", "count", "search", "grep"
     }
 
-    low_hits  = sum(1 for s in _LOW_SIGNALS  if s in q)
-    high_hits = sum(1 for s in _HIGH_SIGNALS if s in q)
-    max_hits  = sum(1 for s in _MAX_SIGNALS  if s in q)
+    # 3. Calculate Base Score
+    score = 0
+    score += sum(4.0 for s in _ARCH_SIGNALS  if s in q)
+    score += sum(2.0 for s in _LOGIC_SIGNALS if s in q)
+    score += sum(0.5 for s in _INFRA_SIGNALS if s in q)
+    
+    # 4. Contextual Multipliers
+    # Mentioning a file path (e.g. main.py, lib/utils.py) suggests technical intent
+    if re.search(r'[a-zA-Z0-9_\-/]+\.[a-zA-Z0-9]{2,4}', q):
+        score += 3.0
+    
+    # Large word count implies complexity
+    if word_count > 30:
+        score += 3.0
+    
+    # Conversation depth - deeper history requires better instruction following
+    history_depth = len(state.conversation_history) // 2
+    score += (history_depth * 0.5)
 
-    if max_hits >= 2 or (max_hits >= 1 and word_count > 35):
+    # 5. Determine Effort Level
+    if score >= 12.0:
         effort, model, max_tokens = "max",    MODEL_OPUS,   16_000
-    elif high_hits >= 1 or word_count > 30:
+    elif score >= 5.0:
         effort, model, max_tokens = "high",   MODEL_SONNET,  8_192
-    elif low_hits >= 1 and high_hits == 0 and word_count <= 20:
-        effort, model, max_tokens = "low",    MODEL_HAIKU,   2_048
-    else:
+    elif score >= 1.5 or (word_count > 15):
         effort, model, max_tokens = "medium", MODEL_SONNET,  4_096
+    else:
+        effort, model, max_tokens = "low",    MODEL_HAIKU,   2_048
 
+    return _route_result(effort, model, max_tokens)
+
+def _route_result(effort, model, max_tokens) -> tuple[str, str, int]:
     _effort_color = {
         "low":    _ANSI_GREEN,
         "medium": _ANSI_CYAN,

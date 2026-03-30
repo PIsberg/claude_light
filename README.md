@@ -139,36 +139,6 @@ Run the script from the root of your project — it will immediately build the s
 
 ### 2. One-Shot Mode
 `python3 claude_light.py "What does OrderService do?"`
-
-### 3. Piped Input
-`echo "List all REST endpoints" | python3 claude_light.py`
-
----
-
-## 🔀 Dynamic Model & Effort Routing
-
-Before every query, a lightweight router classifies the prompt and selects the most cost-efficient model and effort level automatically:
-
-| Effort | Model | Typical use case |
-| :--- | :--- | :--- |
-| `low` | Claude Haiku | Simple lookups, listings, "where is X", "how many Y" |
-| `medium` | Claude Sonnet | Explanations, summaries, moderate analysis |
-| `high` | Claude Sonnet | Code generation, multi-step changes, refactoring |
-| `max` | Claude Opus (+ extended thinking) | Architecture, deep cross-cutting analysis, trade-offs |
-
-The router prints its decision before each call:
-
-```
-[Router] effort=high  model=sonnet
-```
-
-Routing is heuristic-based (keyword signals + prompt length). The router is deliberately conservative — it defaults to `high/sonnet` when uncertain, favouring quality over micro-savings. `max/opus` is reserved for prompts that contain at least two strong architectural signals (e.g. "evaluate the scalability trade-offs of…").
-
----
-
-## ⌨️ Interactive Commands
-While in the interactive chat loop, you can use the following commands:
-
 | Command | Description |
 | :--- | :--- |
 | `<prompt>` | Instructs Claude to return complete files with your requested changes. The script will automatically generate a colored diff and ask for your confirmation before writing the files to disk. |
