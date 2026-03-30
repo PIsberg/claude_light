@@ -48,6 +48,6 @@ jobs:
 
     - name: Upload SBOM to Release
       if: github.event_name == 'release'
-      uses: softprops/action-gh-release@e7a8f85e1c674dfb5e0fb21681ebc6063a99a7aa # v2.2.2
+      uses: softprops/action-gh-release@v2.1.0
       with:
         files: sbom.json
