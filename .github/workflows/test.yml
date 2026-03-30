@@ -6,8 +6,8 @@ on:
   pull_request:
     branches: [ "main" ]
 
-permissions:
-  contents: read
+# Declare default permissions as read only.
+permissions: read-all
 
 jobs:
   test:
