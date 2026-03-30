@@ -41,7 +41,7 @@ def _get_pro_token() -> str:
 def _resolve_api_key() -> tuple[str, str, str, str]:
     """Return (api_key, auth_mode, source, auth_token)."""
     if is_test_mode:
-        return get_test_api_key(), "API_KEY", "Test"
+        return get_test_api_key(), "API_KEY", "Test", get_test_api_key()
     
     # 1. Check environment variable
     key = os.environ.get("ANTHROPIC_API_KEY", "")

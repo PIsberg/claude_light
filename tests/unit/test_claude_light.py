@@ -6231,13 +6231,16 @@ class TestStartChatLoop(unittest.TestCase):
 
         mock_obs.stop.assert_called_once()
 
-        # The get_status_bar closure is passed as bottom_toolbar to _PromptSession.
-        # Invoke it now to cover lines 1937-1944.
+        # bottom_toolbar is disabled on Windows (set to None) to avoid console issues.
         call_kwargs = mock_ps_class.call_args.kwargs if mock_ps_class.called else {}
         status_bar_fn = call_kwargs.get('bottom_toolbar')
-        self.assertIsNotNone(status_bar_fn, "bottom_toolbar callback was not passed")
-        result = status_bar_fn()
-        self.assertIsNotNone(result)
+        import os as _os
+        if _os.name != 'nt':
+            self.assertIsNotNone(status_bar_fn, "bottom_toolbar callback was not passed")
+            result = status_bar_fn()
+            self.assertIsNotNone(result)
+        else:
+            self.assertIsNone(status_bar_fn)
 
 
 # ---------------------------------------------------------------------------
@@ -6276,7 +6279,7 @@ class TestMainRouting(unittest.TestCase):
              patch.object(main_mod, "start_chat") as mock_start_chat:
             main_mod.main()
 
-        mock_one_shot.assert_called_once_with("question from stdin")
+        mock_one_shot.assert_called_once_with("question from stdin", auto_apply=False)
         mock_start_chat.assert_not_called()
 
     def test_main_test_mode_starts_mock_manager(self):
@@ -6293,7 +6296,7 @@ class TestMainRouting(unittest.TestCase):
 
         mock_manager_cls.assert_called_once_with("small")
         mock_manager.start.assert_called_once()
-        mock_one_shot.assert_called_once_with("describe repo")
+        mock_one_shot.assert_called_once_with("describe repo", auto_apply=False)
         mock_start_chat.assert_not_called()
 
 
@@ -6440,12 +6443,19 @@ class TestMockManagerStart(unittest.TestCase):
                 patchers_started.append(getattr(mm, attr))
             self.assertTrue(mm.preset == "small")
         finally:
-            # Stop all patchers to restore claude_light module state
-            for p in patchers_started:
+            # Stop all path patchers (path_patchers list) plus other patchers
+            for p in getattr(mm, 'path_patchers', []):
                 try:
                     p.stop()
                 except Exception:
                     pass
+            for attr in ('api_patcher', 'stats_patcher', 'embedder_patcher'):
+                p = getattr(mm, attr, None)
+                if p:
+                    try:
+                        p.stop()
+                    except Exception:
+                        pass
             sys.modules['__main__'] = old_main
 
     def test_start_patches_sentence_transformer(self):
@@ -6465,7 +6475,12 @@ class TestMockManagerStart(unittest.TestCase):
             # SentenceTransformer should now be the mock class
             self.assertIsNot(cl.SentenceTransformer, orig_st)
         finally:
-            for attr in ('path_patcher', 'api_patcher', 'stats_patcher', 'embedder_patcher'):
+            for p in getattr(mm, 'path_patchers', []):
+                try:
+                    p.stop()
+                except Exception:
+                    pass
+            for attr in ('api_patcher', 'stats_patcher', 'embedder_patcher'):
                 p = getattr(mm, attr, None)
                 if p:
                     try:
