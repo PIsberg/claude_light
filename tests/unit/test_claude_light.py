@@ -4773,7 +4773,8 @@ class TestResolveApiKeyDotfile(unittest.TestCase):
 
                         result = _resolve_api_key()
                     # Either found the key or returned empty (depending on patch depth)
-                    self.assertIsInstance(result, str)
+                    api_key, auth_mode, source, auth_token = result
+                    self.assertIsInstance(api_key, str)
         finally:
             if orig_key is not None:
                 os.environ["ANTHROPIC_API_KEY"] = orig_key
@@ -4783,8 +4784,8 @@ class TestResolveApiKeyDotfile(unittest.TestCase):
         import claude_light as cl
         with patch.object(cl, "is_test_mode", False):
             with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-ant-env-test"}):
-                result = _resolve_api_key()
-        self.assertEqual(result, "sk-ant-env-test")
+                api_key, auth_mode, source, auth_token = _resolve_api_key()
+        self.assertEqual(api_key, "sk-ant-env-test")
 
 
 # ---------------------------------------------------------------------------
@@ -5395,8 +5396,8 @@ class TestResolveApiKeyTestMode(unittest.TestCase):
     def test_test_mode_returns_mock_key(self):
         import claude_light as cl
         with patch.object(cl, "is_test_mode", True):
-            result = _resolve_api_key()
-        self.assertEqual(result, "sk-ant-test-mock-key")
+            api_key, auth_mode, source, auth_token = _resolve_api_key()
+        self.assertEqual(api_key, "sk-ant-test-mock-key")
 
 
 # ---------------------------------------------------------------------------
