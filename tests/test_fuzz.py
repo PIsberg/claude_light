@@ -6,6 +6,7 @@ in the core functionality of claude_light.
 """
 
 import pytest
+from pathlib import Path
 from hypothesis import given, strategies as st, settings, HealthCheck
 
 # Import functions to test - adjust based on actual module structure
@@ -41,7 +42,9 @@ class TestFuzzCompressedTree:
     def test_build_compressed_tree_with_random_paths(self, paths):
         """Test that _build_compressed_tree handles arbitrary path lists."""
         try:
-            result = _build_compressed_tree(paths)
+            # Convert strings to Path objects as expected by the function
+            path_objects = [Path(p) for p in paths]
+            result = _build_compressed_tree(path_objects)
             # Result should be a string
             assert isinstance(result, str)
             # Result should not be excessively long
@@ -78,7 +81,6 @@ class TestFuzzDedupContext:
         st.lists(
             st.tuples(
                 st.text(min_size=1, max_size=100),  # chunk_id
-                st.text(min_size=0, max_size=500),  # content
                 st.floats(min_value=0.0, max_value=1.0)  # score
             ),
             min_size=0,
