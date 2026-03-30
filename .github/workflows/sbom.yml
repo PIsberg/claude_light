@@ -5,6 +5,8 @@ on:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
+  release:
+    types: [published]
   workflow_dispatch:
 
 # Declare default permissions as read only.
@@ -43,3 +45,9 @@ jobs:
       with:
         name: sbom
         path: sbom.json
+
+    - name: Upload SBOM to Release
+      if: github.event_name == 'release'
+      uses: softprops/action-gh-release@e7a8f85e1c674dfb5e0fb21681ebc6063a99a7aa # v2.2.2
+      with:
+        files: sbom.json
