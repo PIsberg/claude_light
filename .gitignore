@@ -9,3 +9,4 @@ __pycache__/
 test_ts.py
 dummy.py
 .qwen/
+.hypothesis/

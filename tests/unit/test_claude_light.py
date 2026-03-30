@@ -305,8 +305,8 @@ class TestResolveApiKey(unittest.TestCase):
 
     def test_returns_env_key(self):
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-ant-from-env"}):
-            result = _resolve_api_key()
-        self.assertEqual(result, "sk-ant-from-env")
+            api_key, auth_mode, source, auth_token = _resolve_api_key()
+        self.assertEqual(api_key, "sk-ant-from-env")
 
     def test_reads_from_dotenv_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
