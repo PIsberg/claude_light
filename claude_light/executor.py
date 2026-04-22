@@ -10,6 +10,17 @@ from typing import Optional
 os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
 os.environ.setdefault("HF_HUB_VERBOSITY", "error")
 logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+
+# Silence the transformers "LOAD REPORT" table (e.g. "embeddings.position_ids
+# | UNEXPECTED") emitted from transformers.utils.loading_report via
+# logger.warning(). transformers installs its own library-root logger and
+# resets the level on first use, so plain logging.getLogger(...).setLevel()
+# has no effect — use their official API.
+try:
+    import transformers.utils.logging as _tf_logging
+    _tf_logging.set_verbosity_error()
+except Exception:
+    pass
 warnings.filterwarnings(
     "ignore",
     message=".*unauthenticated requests.*",
