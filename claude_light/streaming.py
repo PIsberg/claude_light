@@ -9,7 +9,7 @@ import sys
 import anthropic
 from typing import Iterator, Tuple, Dict, Any
 from claude_light.config import PRICE_INPUT, PRICE_WRITE, PRICE_READ, PRICE_OUTPUT
-from claude_light.ui import _ANSI_RESET, _ANSI_CYAN, _ANSI_DIM
+from claude_light.ui import _ANSI_RESET, _ANSI_CYAN, _ANSI_DIM, _ANSI_GREEN, _ANSI_BOLD, _SYM_RESP, _UNICODE
 import claude_light.state as state
 
 
@@ -24,17 +24,14 @@ class StreamingResponseHandler:
         self.cache_read_tokens = 0
         self.thinking_buffer = ""
         self.is_thinking = False
+        self._thinking_chars = 0
 
     def process_stream(self, stream: Iterator) -> Tuple[str, Dict[str, int]]:
         """
         Process a streaming response from the API.
 
-        Args:
-            stream: Iterator of delta events from client.messages.stream()
-
         Returns:
             Tuple of (full_response_text, usage_dict)
-            where usage_dict contains token counts for later processing
         """
         self._print_stream_start()
 
@@ -48,8 +45,9 @@ class StreamingResponseHandler:
 
                 elif event.type == 'content_block_delta':
                     delta = getattr(event, 'delta', None)
-                    if not delta: continue
-                    
+                    if not delta:
+                        continue
+
                     if self.is_thinking:
                         thinking = getattr(delta, 'thinking', None)
                         if thinking:
@@ -70,11 +68,9 @@ class StreamingResponseHandler:
                     if hasattr(event, 'usage'):
                         self.output_tokens = event.usage.output_tokens
                     if hasattr(event, 'delta') and hasattr(event.delta, 'stop_reason'):
-                        pass  # End of message
+                        pass
 
                 elif event.type == 'message_start':
-                    # input_tokens in newer SDK versions represents the NON-CACHED part of the input.
-                    # cache_read_input_tokens and cache_creation_input_tokens represent the CACHED parts.
                     if hasattr(event, 'message'):
                         self.input_tokens = getattr(event.message.usage, 'input_tokens', 0)
                         self.cache_creation_tokens = getattr(event.message.usage, 'cache_creation_input_tokens', 0)
@@ -84,7 +80,6 @@ class StreamingResponseHandler:
         return self.buffer, self._get_usage_dict()
 
     def _get_usage_dict(self) -> Dict[str, int]:
-        """Get usage metrics as a dict."""
         return {
             'input_tokens': self.input_tokens,
             'output_tokens': self.output_tokens,
@@ -93,25 +88,29 @@ class StreamingResponseHandler:
         }
 
     def _print_stream_start(self):
-        """Print visual indicator that streaming is starting."""
-        print()  # Blank line before response
+        """Print the ◆ Claude response header before streaming begins."""
+        print(f"\n{_ANSI_CYAN}{_ANSI_BOLD}{_SYM_RESP}{_ANSI_RESET} ", end="", flush=True)
 
     def _print_stream_end(self):
-        """Print visual indicator that streaming is complete."""
-        print()  # Blank line after response
+        """Print a blank line after the response."""
+        print()
 
     def _print_thinking_start(self):
-        """Print thinking mode indicator."""
-        print(f"{_ANSI_DIM}[Thinking...]{_ANSI_RESET}", end="", flush=True)
+        """Show a compact thinking indicator."""
+        ellipsis = "…" if _UNICODE else "..."
+        print(f"\r\033[K  {_ANSI_DIM}*  Thinking{ellipsis}{_ANSI_RESET}", end="", flush=True)
+        self._thinking_chars = 0
 
     def _print_thinking_chunk(self, chunk: str):
-        """Print a chunk of thinking text (usually hidden from user, just for feedback)."""
-        # Thinking is typically not shown to the user, just indicate it's happening
-        pass
+        """Advance the thinking indicator (dot every ~50 chars)."""
+        self._thinking_chars += len(chunk)
+        if self._thinking_chars >= 50:
+            print(".", end="", flush=True)
+            self._thinking_chars = 0
 
     def _print_thinking_stop(self):
-        """Print thinking completion indicator."""
-        print(f"\n", end="", flush=True)
+        """Clear the thinking line before the response."""
+        print(f"\r\033[K\n{_ANSI_CYAN}{_ANSI_BOLD}{_SYM_RESP}{_ANSI_RESET} ", end="", flush=True)
 
     def _print_text_chunk(self, chunk: str):
         """Print a chunk of response text in real-time."""
@@ -122,21 +121,8 @@ def stream_chat_response(client, **create_kwargs) -> Tuple[str, Dict[str, int]]:
     """
     Execute a streaming chat request and return full response with usage.
 
-    Args:
-        client: Anthropic client instance
-        **create_kwargs: Arguments to pass to client.messages.stream()
-
     Returns:
         Tuple of (response_text, usage_dict)
-
-    Usage:
-        response_text, usage = stream_chat_response(
-            client,
-            model="claude-opus-4-1",
-            max_tokens=4096,
-            system=system_blocks,
-            messages=messages
-        )
     """
     handler = StreamingResponseHandler()
 

@@ -3,7 +3,7 @@ import re
 import difflib
 from pathlib import Path
 
-from claude_light.ui import _T_EDIT, _T_ERR, _ANSI_CYAN, _ANSI_GREEN, _ANSI_RED, _ANSI_BOLD, _ANSI_RESET, show_diff
+from claude_light.ui import _T_EDIT, _T_ERR, _ANSI_CYAN, _ANSI_GREEN, _ANSI_RED, _ANSI_BOLD, _ANSI_DIM, _ANSI_RESET, show_diff
 from claude_light.linter import _lint_content
 from claude_light import git_manager
 
@@ -176,7 +176,7 @@ def apply_edits(edits, check_only=False, explanation="", auto_apply=False):
     """
     if not edits:
         if not check_only:
-            print(f"{_T_EDIT} No file blocks found in response.")
+            print(f"  {_T_EDIT}  No file blocks found in response.")
         return [] if check_only else None
 
     resolved = []
@@ -193,7 +193,7 @@ def apply_edits(edits, check_only=False, explanation="", auto_apply=False):
             if check_only:
                 lint_errors.append(f"Edit failed for {e['path']}: {ex}")
             else:
-                print(f"{_T_ERR} {ex}")
+                print(f"  {_T_ERR}  {ex}")
             resolved.append({**e, "_skip": True})
 
     if check_only:
@@ -201,19 +201,19 @@ def apply_edits(edits, check_only=False, explanation="", auto_apply=False):
 
     applicable = [r for r in resolved if not r.get("_skip")]
     if not applicable:
-        print(f"{_T_EDIT} No applicable changes.\n")
+        print(f"  {_T_EDIT}  No applicable changes.\n")
         return None
 
-    print(f"\n{_ANSI_BOLD}{'═'*56}{_ANSI_RESET}")
+    print()
     for r in applicable:
         is_new = r["type"] == "new" and not Path(r["path"]).exists()
-        tag = f"{_ANSI_GREEN}NEW{_ANSI_RESET}" if is_new else f"{_ANSI_CYAN}EDIT{_ANSI_RESET}"
-        print(f"  [{tag}] {r['path']}")
-    print(f"{_ANSI_BOLD}{'═'*56}{_ANSI_RESET}\n")
+        tag = f"{_ANSI_GREEN}new file{_ANSI_RESET}" if is_new else f"{_ANSI_CYAN}edited{_ANSI_RESET}"
+        print(f"  {_T_EDIT}  {r['path']}  {_ANSI_DIM}({tag}){_ANSI_RESET}")
+    print()
 
     for r in applicable:
         path = r["path"]
-        print(f"{_ANSI_CYAN}── {path} {_ANSI_RESET}" + "─" * max(0, 50 - len(path)))
+        print(f"  {_ANSI_DIM}── {path}{_ANSI_RESET}")
         show_diff(path, r["_new"], old_content=r["_old"])
 
     if auto_apply:
@@ -221,7 +221,7 @@ def apply_edits(edits, check_only=False, explanation="", auto_apply=False):
     elif not sys.stdin.isatty():
         auto = True
     else:
-        print(f"Apply {_ANSI_BOLD}{len(applicable)}{_ANSI_RESET} change(s)? "
+        print(f"  Apply {_ANSI_BOLD}{len(applicable)}{_ANSI_RESET} change(s)? "
               f"[{_ANSI_GREEN}y{_ANSI_RESET}/{_ANSI_RED}n{_ANSI_RESET}] ", end="", flush=True)
         try:
             auto = input().strip().lower() in ("y", "yes")
@@ -229,7 +229,7 @@ def apply_edits(edits, check_only=False, explanation="", auto_apply=False):
             auto = False
 
     if not auto:
-        print(f"{_T_EDIT} Cancelled.\n")
+        print(f"  {_T_EDIT}  Cancelled.\n")
         return
 
     written = 0
@@ -239,13 +239,13 @@ def apply_edits(edits, check_only=False, explanation="", auto_apply=False):
             p = Path(r["path"])
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(r["_new"], encoding="utf-8")
-            print(f"{_T_EDIT} Wrote {_ANSI_CYAN}{r['path']}{_ANSI_RESET}")
+            print(f"  {_T_EDIT}  {_ANSI_CYAN}{r['path']}{_ANSI_RESET}")
             written += 1
             written_files.append(r["path"])
         except Exception as ex:
-            print(f"{_T_ERR} Failed to write {r['path']}: {ex}")
+            print(f"  {_T_ERR}  Failed to write {r['path']}: {ex}")
 
-    print(f"{_T_EDIT} {_ANSI_GREEN}{written}/{len(applicable)}{_ANSI_RESET} change(s) applied.\n")
+    print(f"  {_T_EDIT}  {_ANSI_GREEN}{written}/{len(applicable)}{_ANSI_RESET} change(s) applied.\n")
     
     # Attempt auto-commit if in a git repo
     if written_files and git_manager.is_git_repo():

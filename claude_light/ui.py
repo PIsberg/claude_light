@@ -27,17 +27,36 @@ _ANSI_BOLD    = "\033[1m"
 _ANSI_DIM     = "\033[2m"
 _ANSI_RESET   = "\033[0m"
 
-_T_RAG    = f"{_ANSI_CYAN}[RAG]{_ANSI_RESET}"
-_T_CACHE  = f"{_ANSI_YELLOW}[Cache]{_ANSI_RESET}"
-_T_SYS    = f"{_ANSI_MAGENTA}[System]{_ANSI_RESET}"
-_T_EDIT   = f"{_ANSI_CYAN}[Edit]{_ANSI_RESET}"
-_T_ERR    = f"{_ANSI_RED}[Error]{_ANSI_RESET}"
+# Detect Unicode capability (falls back to ASCII on legacy Windows consoles)
+def _stdout_is_utf8() -> bool:
+    try:
+        enc = (getattr(sys.stdout, 'encoding', '') or '').lower().replace('-', '')
+        return enc in ('utf8', 'utf16', 'utf32')
+    except Exception:
+        return False
+
+_UNICODE = _stdout_is_utf8()
+
+# Symbols — Unicode when supported, ASCII fallback otherwise
+_SYM_MARK  = "◆" if _UNICODE else ">"
+_SYM_TOOL  = "⏺" if _UNICODE else "*"
+_SYM_EDIT  = "⊕" if _UNICODE else "+"
+_SYM_ERR   = "✗" if _UNICODE else "!"
+_SYM_RESP  = "◆" if _UNICODE else ">"
+_SPIN_FRAMES = "⣾⣽⣻⢿⡿⣟⣯⣷" if _UNICODE else r"-\|/"
+
+# Claude Code-style indicators (symbols instead of [BRACKETS])
+_T_RAG    = f"{_ANSI_CYAN}{_SYM_TOOL}{_ANSI_RESET}"
+_T_CACHE  = f"{_ANSI_DIM}{_SYM_MARK}{_ANSI_RESET}"
+_T_SYS    = f"{_ANSI_DIM}{_SYM_MARK}{_ANSI_RESET}"
+_T_EDIT   = f"{_ANSI_GREEN}{_SYM_EDIT}{_ANSI_RESET}"
+_T_ERR    = f"{_ANSI_RED}{_SYM_ERR}{_ANSI_RESET}"
 _T_TEST   = TEST_MODE_TAG
-_T_ROUTE  = f"{_ANSI_MAGENTA}[Router]{_ANSI_RESET}"
+_T_ROUTE  = f"{_ANSI_DIM}{_SYM_MARK}{_ANSI_RESET}"
+
 
 class _Spinner:
-    """Animated braille spinner for long-running operations."""
-    _FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    """Animated spinner for long-running operations."""
 
     def __init__(self, label: str):
         self.label = label
@@ -46,9 +65,11 @@ class _Spinner:
 
     def _spin(self):
         i = 0
+        ellipsis = "…" if _UNICODE else "..."
         while not self._stop.is_set():
-            frame = self._FRAMES[i % len(self._FRAMES)]
-            print(f"\r\033[K{_ANSI_CYAN}{frame}{_ANSI_RESET} {self.label}...", end="", flush=True)
+            frame = _SPIN_FRAMES[i % len(_SPIN_FRAMES)]
+            print(f"\r\033[K  {_ANSI_GREEN}{frame}{_ANSI_RESET}  {_ANSI_DIM}{self.label}{ellipsis}{_ANSI_RESET}",
+                  end="", flush=True)
             i += 1
             time.sleep(0.1)
         print("\r\033[K", end="", flush=True)
@@ -64,6 +85,24 @@ class _Spinner:
         self._stop.set()
         self._thread.join()
 
+
+def print_banner(model: str, top_k: int, access_mode: str):
+    """Print the Claude Code-style welcome banner."""
+    cwd = Path.cwd()
+    home = Path.home()
+    try:
+        display_path = "~/" + str(cwd.relative_to(home)).replace("\\", "/")
+    except ValueError:
+        display_path = str(cwd).replace("\\", "/")
+
+    model_short = model.replace("claude-", "").replace("-20251001", "")
+
+    print(f"\n  {_ANSI_CYAN}{_ANSI_BOLD}{_SYM_MARK} claude light{_ANSI_RESET}")
+    print(f"  {_ANSI_DIM}{display_path}{_ANSI_RESET}\n")
+    print(f"  {_ANSI_DIM}{model_short}  ·  RAG top-{top_k}  ·  {access_mode}{_ANSI_RESET}")
+    print(f"  {_ANSI_DIM}/help for commands  ·  Ctrl+C to exit{_ANSI_RESET}\n")
+
+
 def calculate_cost(usage):
     """Always returns the API-equivalent cost regardless of auth mode."""
     write = (getattr(usage, "cache_creation_input_tokens", 0) / 1_000_000) * PRICE_WRITE
@@ -71,6 +110,7 @@ def calculate_cost(usage):
     inp   = (usage.input_tokens  / 1_000_000) * PRICE_INPUT
     out   = (usage.output_tokens / 1_000_000) * PRICE_OUTPUT
     return write + read + inp + out
+
 
 def print_stats(usage, label="Stats", file=sys.stdout):
     write_tokens = getattr(usage, "cache_creation_input_tokens", 0)
@@ -88,23 +128,18 @@ def print_stats(usage, label="Stats", file=sys.stdout):
     with state.lock:
         session_cost = state.session_cost
 
-    # New tokens = regular input (un-cached query) + cache creation (one-time pay)
-    new_tokens   = usage.input_tokens + write_tokens
-
-    print(
-        f"{_ANSI_DIM}[{label}]{_ANSI_RESET}  {total_input:,} tokens  |  "
-        f"cached {_ANSI_GREEN}{read_tokens:,}{_ANSI_RESET} ({hit_pct:.1f}%)  |  "
-        f"new {new_tokens:,}",
-        file=file,
-    )
     cost_label = "Cost" if ECONOMY_MODE == "USD" else "API equiv."
+
+    sep = "·"
     print(
-        f"{_ANSI_DIM}[{cost_label}]{_ANSI_RESET}  "
-        f"{_ANSI_YELLOW}${actual_cost:.4f}{_ANSI_RESET}  |  "
-        f"saved {_ANSI_GREEN}${savings:.4f}{_ANSI_RESET} ({savings_pct:.1f}% vs no-cache)  |  "
-        f"session {_ANSI_YELLOW}${session_cost:.4f}{_ANSI_RESET}",
+        f"  {_ANSI_DIM}{_SYM_MARK} {label}"
+        f"  {sep}  {total_input:,} tokens"
+        f"  {sep}  cached {read_tokens:,} ({hit_pct:.1f}%)"
+        f"  {sep}  saved ${savings:.4f} ({savings_pct:.1f}%)"
+        f"  {sep}  {cost_label} ${actual_cost:.4f}{_ANSI_RESET}",
         file=file,
     )
+
 
 def print_session_summary():
     with state.lock:
@@ -135,6 +170,7 @@ def print_session_summary():
 
     cost_col_hdr = "Cost" if ECONOMY_MODE == "USD" else "API equiv."
     col_w = [22, 12, 8, 9]
+
     def row(label, tokens, cost_val, color=""):
         cost_str = f"${cost_val:.4f}"
         return (f"│ {color}{label:<{col_w[0]}}{_R} │ {tokens:>{col_w[1]},} │"
@@ -153,7 +189,7 @@ def print_session_summary():
     print(row("TOTAL",             total, cost_tot, _ANSI_BOLD))
     print(f"{_B}└{'─'*24}┴{'─'*14}┴{'─'*10}┴{'─'*11}┘{_R}")
 
-    print(f"  Turns: {_ANSI_BOLD}{turns}{_R}  |  Cache hit rate: {hit_str}")
+    print(f"  Turns: {_ANSI_BOLD}{turns}{_R}  ·  Cache hit rate: {hit_str}")
 
     # --- Global Lifetime Savings ---
     gs = state.global_stats
@@ -162,21 +198,20 @@ def print_session_summary():
     total_t = full_t + saved_t
     saved_d  = gs.get("total_dollars_saved", 0.0)
     sessions = gs.get("total_sessions", 0)
-    
+
     overall_pct = (saved_t / total_t * 100) if total_t > 0 else 0.0
-    
+
     print(f"\n{_B}┌{'─'*57}┐{_R}")
     print(f"{_B}│{_R}{_H}{'Global Lifetime Savings':^57}{_R}{_B}│{_R}")
     print(f"{_B}├{'─'*28}┬{'─'*28}┤{_R}")
     dollars_label = "Total Dollars Saved:" if ECONOMY_MODE == "USD" else "Total API-Equiv. Saved:"
     print(f"{_B}│{_R} {dollars_label:<29}{_B}│{_R} {_ANSI_GREEN}${saved_d:<26.2f}{_R} {_B}│{_R}")
-    
-    # Show tokens and the percentage on the same line for a denser look
     token_str = f"{saved_t:,} ({overall_pct:.1f}%)"
     print(f"{_B}│{_R} Total Tokens Saved:          {_B}│{_R} {_ANSI_GREEN}{token_str:<26}{_R} {_B}│{_R}")
     print(f"{_B}├{'─'*28}┴{'─'*28}┤{_R}")
     print(f"{_B}│{_R} Sessions: {sessions:<47} {_B}│{_R}")
     print(f"{_B}└{'─'*57}┘{_R}")
+
 
 def _colorize_diff(lines):
     result = []
@@ -190,6 +225,7 @@ def _colorize_diff(lines):
         else:
             result.append(line)
     return result
+
 
 def show_diff(path, new_content, old_content=None):
     p = Path(path)
@@ -209,6 +245,7 @@ def show_diff(path, new_content, old_content=None):
     else:
         preview = new_content[:600] + ("…" if len(new_content) > 600 else "")
         print(f"{_ANSI_GREEN}  [NEW FILE]{_ANSI_RESET} {path}\n{preview}\n")
+
 
 def _print_reply(text):
     """Render Claude's reply — rich Markdown when available, plain text otherwise."""

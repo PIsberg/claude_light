@@ -316,7 +316,7 @@ class TestChat(unittest.TestCase):
         return usage
 
     def _mock_api(self, text="Hello there!"):
-        return patch("claude_light.llm._make_streaming_api_call", return_value=(text, self._make_usage()))
+        return patch("claude_light.llm._make_streaming_api_call", return_value=(text, self._make_usage(), False))
 
     def test_chat_simple_query(self):
         print("\n  ▶ TestChat.test_chat_simple_query")

@@ -4,21 +4,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Project Does
 
-`claude_light.py` is an interactive CLI chat tool for querying and editing a multi-language codebase using Claude. It uses a hybrid RAG + prompt caching strategy: project docs and directory structure are cached as a system prompt, while source files are split into method/function-level chunks via tree-sitter, embedded, and retrieved per-query.
+`claude_light` is an interactive CLI chat tool for querying and editing a multi-language codebase using Claude. It uses a hybrid RAG + prompt caching strategy: project docs and directory structure are cached as a system prompt, while source files are split into method/function-level chunks via tree-sitter, embedded, and retrieved per-query.
 
 ## Repository Layout
 
-| File | Purpose |
+| Path | Purpose |
 |---|---|
-| `claude_light.py` | Main tool — the entire application in one file |
-| `install.sh` | Linux installer (pip, API key reminder) |
-| `install_macos.sh` | macOS installer (Homebrew, venv, zsh profile, `run.sh` wrapper) |
-| `install.ps1` | Windows PowerShell installer (pure ASCII, PS 5.1+) |
-| `benchmark.py` | Analytical token-savings benchmark — no API key, no network |
-| `benchmark_retrieval.py` | RAG retrieval quality benchmark using SWE-bench Lite |
-| `benchmark_cost.py` | Real-world cost benchmark — runs claude_light.py as subprocess against real repos |
-| `architecture.md` | In-depth implementation walkthrough with source line references |
-| `BENCHMARKS.md` | Documentation for all three benchmark scripts |
+| `claude_light/` | Main package — all application code |
+| `claude_light.py` | Thin shim that delegates to `claude_light/__main__.py` |
+| `installers/` | OS-specific installers (`install.sh`, `install_macos.sh`, `install.ps1`) |
+| `tests/unit/` | Unit tests for each module |
+| `tests/integration/` | Integration tests (git, benchmarks) |
+| `tests/utilities/` | Utility/mock tests |
+| `tests/linting/` | Syntax and regression linting checks |
+| `tests/benchmarks/` | Benchmark scripts (not run by default pytest) |
+| `tests/fixtures/` | Static fixture data (excluded from pytest discovery) |
+| `docs/architecture.md` | In-depth implementation walkthrough |
+| `docs/BENCHMARKS.md` | Benchmark methodology and interpretation |
+| `scripts/` | SBOM generation scripts |
 
 ## Running
 
@@ -39,30 +42,26 @@ python3 claude_light.py --test-mode extra-large  # 1000 files, 20 methods each
 Run from the root of a project. Exits with an error if no authentication is found (unless using `--test-mode`).
 
 **Authentication resolution order:**
-1.  **Environment Variable**: `ANTHROPIC_API_KEY=sk-ant-...`
-2.  **Local Dotfiles**: `~/.anthropic` or project-local `./.env`
-3.  **Automation Token**: `~/.claude_light_automation_token` (recommended for Windows).
-4.  **Claude CLI OAuth**: `~/.claude/.credentials.json` (detected via standard `claude auth login`).
+1. **Environment Variable**: `ANTHROPIC_API_KEY=sk-ant-...`
+2. **Local Dotfiles**: `~/.anthropic` or project-local `./.env`
+3. **Automation Token**: `~/.claude_light_automation_token` (recommended for Windows)
+4. **Claude CLI OAuth**: `~/.claude/.credentials.json` (detected via standard `claude auth login`)
 
 The tool supports both **API Keys** (usage-based billing) and **Claude Pro Subscriptions** (flat-rate). It determines the mode dynamically based on the key found.
 
 ## Installation
 
-Use the appropriate installer for the target OS:
-
 ```bash
 # Linux
-bash install.sh
+bash installers/install.sh
 
 # macOS (creates .venv + run.sh wrapper, handles Homebrew + zsh)
-bash install_macos.sh
+bash installers/install_macos.sh
 
 # Windows PowerShell 5.1+
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\install.ps1
+.\installers\install.ps1
 ```
-
-All installers install the same packages. The macOS installer also creates a `.venv` virtual environment and a `run.sh` convenience wrapper.
 
 ## Dependencies
 
@@ -89,9 +88,56 @@ pip install \
 
 Without tree-sitter, chunking falls back to whole-file mode. Without rich/prompt_toolkit, the tool degrades gracefully to plain text output and basic `input()`.
 
+## Tests
+
+```bash
+# Run all tests (unit + integration + utilities + linting)
+pytest
+
+# Single test file
+pytest tests/unit/test_retrieval.py
+
+# Single test function
+pytest tests/unit/test_retrieval.py::test_retrieve_top_k
+
+# Benchmarks (excluded from default run, require sentence-transformers)
+python tests/benchmarks/benchmark.py
+python tests/benchmarks/benchmark_retrieval.py --split dev
+python tests/benchmarks/benchmark_cost.py --dry-run
+```
+
+`conftest.py` sets `ANTHROPIC_API_KEY=sk-ant-test-mock-key` so unit tests never make real API calls. `pytest.ini` excludes `tests/fixtures/` and `tests/benchmarks/` from collection.
+
+## Package Architecture
+
+The `claude_light/` package is organized by responsibility:
+
+| Module | Role |
+|---|---|
+| `config.py` | All constants, API key resolution, tree-sitter language loading, pricing |
+| `state.py` | Shared mutable state (`chunk_store`, `conversation_history`, `embedder`, etc.) protected by `threading.Lock` |
+| `main.py` | Entry point; chat loop, signal handlers, heartbeat thread, watchdog lifecycle |
+| `llm.py` | API calls, response streaming, query routing, skeleton/history management |
+| `retrieval.py` | Cosine similarity search (`embs @ q_emb`), dedup of multi-chunk files |
+| `indexer.py` | File watcher (`SourceHandler`), incremental re-embed, disk cache (`.claude_light_cache/`) |
+| `skeleton.py` | Compressed directory tree + `.md` file assembly for the cached system prompt |
+| `parsing.py` | Tree-sitter AST traversal, method-level chunk extraction for all supported languages |
+| `editor.py` | Parses `SEARCH/REPLACE` blocks from Claude responses, applies and diffs edits |
+| `linter.py` | Pre-apply syntax validation (Python `ast`, tree-sitter for other languages) |
+| `git_manager.py` | Auto-commit of AI edits; `/undo` reverts to the previous commit |
+| `executor.py` | Loads `SentenceTransformer` model, runs `auto_tune()`, executes `/run <cmd>` |
+| `streaming.py` | Real-time token streaming, thinking-block handling, usage accumulation |
+| `retry.py` | Exponential backoff (2s→4s→8s, max 3 attempts) for transient API errors |
+| `session_manager.py` | Persists conversation history to `.claude_light_cache/session.json` |
+| `ui.py` | ANSI colour, rich markdown rendering, diff display, cost formatting |
+| `testing.py` | Test-mode helpers (synthetic file/chunk generation, mock API key) |
+| `__init__.py` | Re-exports all public symbols; wraps callables to sync shared state across modules |
+
+**`__init__.py` design note:** Because modules import each other's globals at load time, `__init__.py` uses a `_wrap()` decorator that calls `_sync_bindings()` before and `_refresh_exports()` after every public function call. This keeps all modules' references to shared state (e.g. `state.embedder`, `state.chunk_store`) consistent without circular imports.
+
 ## Architecture
 
-**Hybrid RAG + prompt caching.** Two tiers:
+**Hybrid RAG + prompt caching. Two tiers:**
 
 | Tier | Content | Strategy |
 |---|---|---|
@@ -101,16 +147,16 @@ Without tree-sitter, chunking falls back to whole-file mode. Without rich/prompt
 **Three concurrent threads:**
 
 1. **Main thread** — input loop; retrieves relevant chunks per query via `retrieve()`, injects them as a second cached system block, stores only the clean query in `conversation_history`
-2. **Watchdog** (`SourceHandler`) — source file change → `reindex_file()` (re-chunks + re-embeds that file, cancels any pending timer first via 1.5 s debounce); `.md` change → `refresh_skeleton_only()`
+2. **Watchdog** (`SourceHandler`) — source file change → `reindex_file()` (re-chunks + re-embeds that file, cancels any pending timer first via 1.5 s debounce); `.md` change → `refresh_md_file()`
 3. **Heartbeat daemon** — checks every 30 s; if idle > 4 min (`CACHE_TTL_SECS`), calls `warm_cache()` to keep the ephemeral cache alive
 
-**Multi-language support** (`_WANTED_LANGS`): tree-sitter grammars extract method/function nodes from `.java`, `.py`, `.js`, `.go`, `.rs`, `.ts`, `.tsx`. Falls back to whole-file chunking if tree-sitter is unavailable or a grammar is missing. Python decorators are included in their function chunk.
+**Multi-language support** (`_WANTED_LANGS` in `config.py`): tree-sitter grammars extract method/function nodes from `.java`, `.py`, `.js`, `.go`, `.rs`, `.ts`, `.tsx`. Falls back to whole-file chunking if tree-sitter is unavailable or a grammar is missing. Python decorators are included in their function chunk.
 
-**Method-level chunking** (`chunk_java_file` / tree-sitter path): Each chunk includes a file path comment and the class preamble (package + imports + class header) so it is self-contained. Overloaded method names get numeric suffixes. Chunk IDs use `filepath::methodName` (`::` is not valid in source identifiers). Falls back to whole-file if no methods are found.
+**Method-level chunking** (`parsing.py`): Each chunk includes a file path comment and the class preamble (package + imports + class header) so it is self-contained. Overloaded method names get numeric suffixes. Chunk IDs use `filepath::methodName` (`::` is not valid in source identifiers). Falls back to whole-file if no methods are found.
 
-**Disk cache** (`.claude_light_cache/`): Embeddings are persisted to `index.pkl` between runs; a `manifest.json` tracks per-file MD5 hashes and the embedding model used. Only changed or new files are re-embedded on restart. Command history (prompt_toolkit) is also stored here.
+**Disk cache** (`.claude_light_cache/`): Embeddings are persisted to `index.pkl` between runs; a `manifest.json` tracks per-file MD5 hashes and the embedding model used. Only changed or new files are re-embedded on restart. Command history (prompt_toolkit) and session state are also stored here.
 
-**Auto-tuning** (`auto_tune`): called twice in `index_files()` — first to select and load the embedding model (based on file count), then again after chunking to set `TOP_K` based on actual chunk sizes, targeting `TARGET_RETRIEVED_TOKENS` of context per query.
+**Auto-tuning** (`auto_tune` in `executor.py`): called twice in `index_files()` — first to select and load the embedding model (based on file count), then again after chunking to set `TOP_K` based on actual chunk sizes, targeting `TARGET_RETRIEVED_TOKENS` of context per query.
 
 | File count | Embedding model |
 |---|---|
@@ -118,111 +164,69 @@ Without tree-sitter, chunking falls back to whole-file mode. Without rich/prompt
 | 50–199 | `all-mpnet-base-v2` (420 MB) |
 | 200+ | `nomic-ai/nomic-embed-text-v1.5` (requires `einops`) |
 
-**Scoring**: `retrieve()` uses a single matrix multiply (`embs @ q_emb`) over all chunk embeddings — no per-chunk loop. Chunks below `MIN_SCORE` (0.45) are dropped before sending.
+**Scoring**: `retrieve()` uses a single matrix multiply (`embs @ q_emb`) over all chunk embeddings — no per-chunk loop. Two filters: `MIN_SCORE` (0.45, absolute floor) and `RELATIVE_SCORE_FLOOR` (0.60, fraction of the top chunk's score). Per-effort token budgets in `_RETRIEVAL_BUDGET` scale the context window from 1 500 (low) to 9 000 (max) tokens.
 
 **Token optimisations:**
 - Skeleton cached; retrieved chunks also cached (second `cache_control` block) — repeated queries over the same code pay $0.30/M instead of $3.00/M
-- Conversation history capped at `MAX_HISTORY_TURNS` (6) via sliding window
-- `build_skeleton()` does a single `rglob("*")` pass to collect paths and `.md` content (`.md` files > 5 000 chars are truncated except `CLAUDE.md` / `agents.md`), then calls `_build_compressed_tree()` to render the directory tree with two compressions: (1) single-child directory chains collapsed into one line (`main/java/com/example/`), (2) sibling files sharing an extension grouped with brace notation (`{OrderService,UserService}.java`). Typical savings: 30–50 % of skeleton tokens.
+- Conversation history capped at `MAX_HISTORY_TURNS` (6) via sliding window; old turns are summarised in batches of `SUMMARIZE_BATCH` (3) using the cheap Haiku model
+- `build_skeleton()` renders the directory tree with two compressions: (1) single-child directory chains collapsed (`main/java/com/example/`), (2) sibling files sharing an extension grouped with brace notation (`{OrderService,UserService}.java`). Typical savings: 30–50% of skeleton tokens.
 
-**Key helpers:**
-- `_build_system_blocks(skeleton, retrieved_ctx=None)` — constructs the system prompt list for all API calls
-- `_update_skeleton()` — rebuilds skeleton and updates shared state under lock
-- `_chunks_for_file(filepath)` — returns all chunk IDs for a file (used by `reindex_file`)
-- `_print_reply(text)` — renders Claude's response as rich markdown when available, plain text otherwise
-- `_build_compressed_tree(paths)` — builds the skeleton directory tree with single-child chain collapse and sibling brace grouping
-- `_render_compressed_node(node, lines, indent)` — recursive renderer for the compressed tree
-- `_dedup_retrieved_context(top_pairs)` — assembles retrieved context, emitting the per-file preamble once when multiple chunks from the same file are retrieved
-- `route_query(query)` — weighted scoring router; classifies intent (Arch vs Logic vs Infra), detects file paths (regex), and accounts for conversation depth to select `(model_id, effort_label, max_tokens)`
-- `_extract_text(content_blocks)` — joins text blocks from API response, skipping thinking blocks (used when `effort="max"` triggers extended thinking)
+**Key functions by module:**
+- `llm.py`: `route_query()` — weighted intent classifier (Arch/Logic/Infra) selects model + effort; `_build_system_blocks()` — constructs the system prompt list; `_update_skeleton()` — rebuilds skeleton under lock; `_extract_text()` — joins text blocks, skips thinking blocks
+- `skeleton.py`: `_build_compressed_tree()` / `_render_compressed_node()` — tree with chain collapse + brace grouping
+- `retrieval.py`: `_dedup_retrieved_context()` — emits per-file preamble once when multiple chunks from the same file are retrieved
+- `indexer.py`: `_chunks_for_file()` — all chunk IDs for a file path
 
 **Interactive commands**: `/clear`, `/compact`, `/cost`, `/help`, `/run <cmd>`, `/undo`, `exit`/`quit`, `Ctrl+C`.
 
-**Auto-commit safety net**: When Claude makes file changes, the tool automatically commits them to git with a descriptive message (`Claude: [summary of changes]`). If you don't like what was done, just type `/undo` to revert to the previous state — no work lost, completely safe for AI refactoring. (Requires: `.git` repository; gracefully skipped if not in a git repo.)
+**Auto-commit safety net**: When Claude makes file changes, the tool automatically commits them to git (`Claude: [summary]`). `/undo` reverts the last commit. Gracefully skipped if not in a git repo.
 
-Every prompt is handled the same way — Claude decides whether to answer in prose or return file edits. When the response contains ` ```lang:path ``` ` blocks, the script diffs (with ANSI colour), confirms, and writes them automatically. One-shot and piped modes auto-apply without confirmation.
-
-For a deeper dive into the implementation, see [architecture.md](architecture.md).
+For a deeper dive, see [docs/architecture.md](docs/architecture.md).
 
 ## Reliability Features
 
-**Auto-Retry with Exponential Backoff** (`claude_light/retry.py`): 
-- Automatically retries transient API errors (429 rate limits, 5xx server errors, connection errors)
-- Exponential backoff: 2s → 4s → 8s (capped at 60s)
-- Non-retriable errors (401, 403, 404, 400) fail immediately
-- Max 3 attempts per request
+**Auto-Retry** (`retry.py`): exponential backoff 2s→4s→8s (capped at 60s), max 3 attempts. Non-retriable errors (401/403/404/400) fail immediately.
 
-**Thread-Safe State Management** (`claude_light/state.py`, `claude_light/llm.py`, `claude_light/ui.py`):
-- All access to shared state (`session_cost`, `session_tokens`, `conversation_history`) is protected by `threading.Lock`
-- Prevents race conditions when multiple threads read/write session data simultaneously
-- Critical sections: state updates in `_accumulate_usage()` and `save_global_stats()`.
-- Global lifecycle: `load_global_stats()` on startup; `save_global_stats()` on every usage update.
-- Storage: `~/.claude_light_stats.json` for persistence across all projects.
+**Thread-Safe State** (`state.py`): all shared state protected by `threading.Lock`. Global stats (`~/.claude_light_stats.json`) loaded on startup, saved on every usage update.
 
-**Streaming Response Output** (`claude_light/streaming.py`):
-- Real-time token streaming from the Anthropic API
-- Responses appear incrementally instead of all at once — better UX for long outputs
-- Proper handling of thinking blocks (shown as progress indicator, not in user output)
-- Accurate token tracking from streaming events for cost calculations
-- Graceful fallback to non-streaming if API doesn't support it
+**Streaming** (`streaming.py`): real-time token streaming; thinking blocks shown as a progress indicator; accurate token tracking from streaming events.
 
-**Watchdog Resource Management** (`claude_light/main.py`):
-- Properly stops and joins file observer thread on session exit
-- Handles observer startup failures gracefully (continues without file watching)
-- Signal handlers for SIGINT (Ctrl+C) and SIGTERM enable clean shutdown
-- Timeout on observer.join() (5 seconds) prevents hanging on exit
-- Thread-safe cleanup ensures no orphaned processes
+**Watchdog Lifecycle** (`main.py`): observer stopped and joined on exit (5 s timeout); SIGINT/SIGTERM handlers set `stop_event`; startup failures handled gracefully.
 
-## Key Config (top of script)
+## Key Config (`claude_light/config.py`)
 
 | Variable | Purpose |
 |---|---|
 | `TARGET_RETRIEVED_TOKENS` | Token budget for retrieved context per query (default 6 000) |
-| `MIN_SCORE` | Minimum cosine similarity to include a chunk (default 0.45) |
-| `MAX_HISTORY_TURNS` | Sliding-window size for conversation history (default 6) |
+| `MIN_SCORE` | Absolute cosine similarity floor to include a chunk (default 0.45) |
+| `RELATIVE_SCORE_FLOOR` | Drop chunks below this fraction of the top chunk's score (default 0.60) |
+| `_RETRIEVAL_BUDGET` | Per-effort token budgets: low=1500, medium=3000, high=6000, max=9000 |
+| `MAX_HISTORY_TURNS` | Compress+cap when stored turns exceed this (default 6) |
+| `SUMMARIZE_BATCH` | Old turns collapsed per summary call (default 3) |
 | `GLOBAL_STATS_FILE` | Path to global savings persistence (`~/.claude_light_stats.json`) |
 | `HEARTBEAT_SECS` | How often the heartbeat thread wakes (default 30) |
 | `CACHE_TTL_SECS` | Idle seconds before heartbeat warms the cache (default 240) |
 | `MODEL_HAIKU` / `MODEL_SONNET` / `MODEL_OPUS` | Model ID constants used by the router |
-| `MODEL` | Default model (set to `MODEL_SONNET`); overridden per-turn by `route_query()` |
-| `PRICE_INPUT` / `PRICE_WRITE` / `PRICE_READ` / `PRICE_OUTPUT` | Token pricing constants ($3.00 / $3.75 / $0.30 / $15.00 per M) |
-| `SKIP_DIRS` | Directory names excluded from indexing (e.g. `.git`, `node_modules`) |
+| `SUMMARY_MODEL` | Model used for history compression (set to `MODEL_HAIKU`) |
+| `PRICE_INPUT` / `PRICE_WRITE` / `PRICE_READ` / `PRICE_OUTPUT` | Token pricing ($3.00 / $3.75 / $0.30 / $15.00 per M) |
+| `SKIP_DIRS` | Directory names excluded from indexing |
 | `EMBED_MODEL`, `TOP_K` | Set at runtime by `auto_tune()` — do not set manually |
-| `SBOM` | Software Bill of Materials in CycloneDX format (`sbom.json`) |
 
-## SBOM (Software Bill of Materials)
+## SBOM
 
-To improve security transparency, the project maintains an SBOM in [CycloneDX](https://cyclonedx.org/) format.
-
-**Generate manually:**
 ```bash
-# Linux / macOS
-bash scripts/generate_sbom.sh
-
-# Windows
-.\scripts\generate_sbom.ps1
+bash scripts/generate_sbom.sh   # Linux / macOS
+.\scripts\generate_sbom.ps1    # Windows
 ```
 
-The SBOM is also automatically generated and uploaded as a GitHub Action artifact on every push to `main`.
+Also generated automatically as a GitHub Actions artifact on every push to `main`.
 
 ## Benchmarks
 
-Three standalone benchmark scripts ship with the tool. See [BENCHMARKS.md](BENCHMARKS.md) for full methodology and how to interpret results.
+See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for full methodology.
 
 | Script | What it tests | API key needed |
 |---|---|---|
-| `benchmark.py` | Analytical token savings (synthetic data, no network) | No |
-| `benchmark_retrieval.py` | RAG retrieval quality — Hit@K, MRR on SWE-bench Lite | No |
-| `benchmark_cost.py` | Real-world cost vs naive baseline on 4 Python repos | Yes |
-
-```bash
-# Analytical (free)
-python benchmark.py
-
-# Retrieval quality (free, needs sentence-transformers + datasets)
-python benchmark_retrieval.py --split dev
-
-# Real-world cost (requires API key, ~$0.10-0.20 for a full run)
-python benchmark_cost.py --dry-run   # preview without API calls
-python benchmark_cost.py             # live run
-```
+| `tests/benchmarks/benchmark.py` | Analytical token savings (synthetic) | No |
+| `tests/benchmarks/benchmark_retrieval.py` | RAG quality — Hit@K, MRR on SWE-bench Lite | No |
+| `tests/benchmarks/benchmark_cost.py` | Real-world cost vs naive baseline | Yes (~$0.10–0.20) |
