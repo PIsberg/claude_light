@@ -2,6 +2,17 @@ import os
 import sys
 from pathlib import Path
 
+# Configure UTF-8 output as early as possible (config is the first module
+# imported by __init__.py) so that ui.py's _UNICODE detection sees UTF-8
+# rather than the cp1252 default on Windows.
+if os.name == 'nt':
+    for _s in (sys.stdout, sys.stderr):
+        try:
+            if hasattr(_s, 'reconfigure'):
+                _s.reconfigure(encoding='utf-8', errors='replace')
+        except Exception:
+            pass
+
 from claude_light.testing import is_test_mode_enabled, get_test_api_key
 
 try:
