@@ -86,7 +86,7 @@ class _Spinner:
         self._thread.join()
 
 
-def print_banner(model: str, top_k: int, auth_source: str):
+def print_banner(model: str, top_k: int, access_mode: str):
     """Print the Claude Code-style welcome banner."""
     cwd = Path.cwd()
     home = Path.home()
@@ -99,7 +99,7 @@ def print_banner(model: str, top_k: int, auth_source: str):
 
     print(f"\n  {_ANSI_CYAN}{_ANSI_BOLD}{_SYM_MARK} claude light{_ANSI_RESET}")
     print(f"  {_ANSI_DIM}{display_path}{_ANSI_RESET}\n")
-    print(f"  {_ANSI_DIM}{model_short}  ·  RAG top-{top_k}  ·  {auth_source}{_ANSI_RESET}")
+    print(f"  {_ANSI_DIM}{model_short}  ·  RAG top-{top_k}  ·  {access_mode}{_ANSI_RESET}")
     print(f"  {_ANSI_DIM}/help for commands  ·  Ctrl+C to exit{_ANSI_RESET}\n")
 
 
