@@ -119,16 +119,19 @@ def util():
         self.assertEqual(edits[0]["content"].strip(), "def util():\n    pass")
 
     def test_parse_edit_blocks_missing_tag(self):
+        # Without an explicit "```lang:path" marker (or SEARCH/REPLACE
+        # markers), a fenced block is treated as an illustrative code
+        # example, not a new-file edit — even if the first line looks like
+        # a filename comment.
         text = '''Here is the new file:
 ```python
 # src/feature.py
 def feature(): pass
 ```'''
         edits = parse_edit_blocks(text)
-        self.assertEqual(len(edits), 1)
-        self.assertEqual(edits[0]["type"], "new")
-        self.assertEqual(edits[0]["path"], "src/feature.py")
-        
+        self.assertEqual(edits, [])
+
+
     def test_parse_edit_blocks_conversational(self):
         text = '''You can just call it like this:
 ```python
@@ -1145,11 +1148,10 @@ new_b
         edits = parse_edit_blocks(text)
         self.assertEqual(edits[0]["path"], "src/foo.py")
 
-    def test_c_style_comment_path_extraction(self):
+    def test_c_style_comment_in_code_example_ignored(self):
         text = '```javascript\n// src/util.js\nfunction util() {}\n```'
         edits = parse_edit_blocks(text)
-        self.assertEqual(len(edits), 1)
-        self.assertEqual(edits[0]["path"], "src/util.js")
+        self.assertEqual(edits, [])
 
     def test_no_path_conversational_ignored(self):
         text = '```\nsome random snippet\n```'
@@ -3137,11 +3139,10 @@ class TestLoadLanguages(unittest.TestCase):
 
 class TestParseEditBlocksHTMLComment(unittest.TestCase):
 
-    def test_html_comment_path(self):
+    def test_html_comment_in_code_example_ignored(self):
         text = '```html\n<!-- index.html -->\n<h1>Hello</h1>\n```'
         edits = parse_edit_blocks(text)
-        self.assertEqual(len(edits), 1)
-        self.assertEqual(edits[0]["path"], "index.html")
+        self.assertEqual(edits, [])
 
 
 # ---------------------------------------------------------------------------
