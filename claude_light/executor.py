@@ -1,5 +1,7 @@
 import os
 import sys
+import io
+import contextlib
 import warnings
 import logging
 from typing import Optional
@@ -71,8 +73,8 @@ def _load_embedding_model(model_name: str, quiet: bool = False) -> SentenceTrans
     model_size_mb = _MODEL_SIZES.get(model_name, 100)
     
     if quiet or is_cached:
-        # No progress needed for cached models or quiet mode
-        return SentenceTransformer(model_name, trust_remote_code=True)
+        with contextlib.redirect_stderr(io.StringIO()):
+            return SentenceTransformer(model_name, trust_remote_code=True)
     
     # Show download progress for first-time model loads
     if _TQDM_AVAILABLE:
@@ -86,9 +88,8 @@ def _load_embedding_model(model_name: str, quiet: bool = False) -> SentenceTrans
             ncols=80,
             bar_format="{desc}: {percentage:3.0f}% {bar}",
         ) as pbar:
-            # The download happens during model initialization
-            # We simulate progress since HuggingFace's progress isn't directly exposed
-            model = SentenceTransformer(model_name, trust_remote_code=True)
+            with contextlib.redirect_stderr(io.StringIO()):
+                model = SentenceTransformer(model_name, trust_remote_code=True)
             pbar.update(100)  # Mark as complete
         
         print(f"{_T_RAG} {_ANSI_GREEN}Downloaded{_ANSI_RESET} {model_name}\n")
@@ -96,7 +97,8 @@ def _load_embedding_model(model_name: str, quiet: bool = False) -> SentenceTrans
         # Fallback without tqdm
         print(f"\n{_T_RAG} Downloading {_ANSI_BOLD}{model_name}{_ANSI_RESET} ({model_size_mb} MB)...")
         print(f"  (This may take a minute on first run...)")
-        model = SentenceTransformer(model_name, trust_remote_code=True)
+        with contextlib.redirect_stderr(io.StringIO()):
+            model = SentenceTransformer(model_name, trust_remote_code=True)
         print(f"{_T_RAG} {_ANSI_GREEN}Downloaded{_ANSI_RESET} {model_name}\n")
     
     return model
