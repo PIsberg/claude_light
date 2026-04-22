@@ -131,11 +131,15 @@ def print_stats(usage, label="Stats", file=sys.stdout):
     cost_label = "Cost" if ECONOMY_MODE == "USD" else "API equiv."
 
     sep = "·"
+    if savings >= 0:
+        savings_str = f"saved ${savings:.4f} ({savings_pct:.1f}%)"
+    else:
+        savings_str = f"overhead ${-savings:.4f} ({-savings_pct:.1f}%)"
     print(
         f"  {_ANSI_DIM}{_SYM_MARK} {label}"
         f"  {sep}  {total_input:,} tokens"
         f"  {sep}  cached {read_tokens:,} ({hit_pct:.1f}%)"
-        f"  {sep}  saved ${savings:.4f} ({savings_pct:.1f}%)"
+        f"  {sep}  {savings_str}"
         f"  {sep}  {cost_label} ${actual_cost:.4f}{_ANSI_RESET}",
         file=file,
     )
