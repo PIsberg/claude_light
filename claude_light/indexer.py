@@ -13,7 +13,7 @@ import claude_light.state as state
 
 from claude_light.skeleton import _file_hash, _file_hash_parallel, _get_cached_paths, _invalidate_path_cache
 from claude_light.parsing import chunk_file
-from claude_light.executor import auto_tune
+from claude_light.executor import auto_tune, start_embedder_background_load
 
 def _is_skipped(p):
     from claude_light.skeleton import _is_skipped
@@ -96,9 +96,15 @@ def index_files(quiet=False):
     # Check cache status BEFORE loading model - pass hashes so auto_tune can check
     cached_store, stale_files = _load_cache(source_files, state.EMBED_MODEL, state._file_hashes, quiet=quiet)
 
-    # Always load model - needed for both indexing new chunks AND encoding queries
-    # Even with full cache hit, we need the model for retrieval
-    auto_tune(source_files, quiet=quiet, load_model=True)
+    if stale_files:
+        # Must load model synchronously — we're about to embed new chunks.
+        auto_tune(source_files, quiet=quiet, load_model=True)
+    else:
+        # Full cache hit. Pick the model + set TOP_K synchronously, then
+        # defer the actual model load to a background thread. Query encoding
+        # (state.embedder.encode in retrieve()) will wait on embedder_ready.
+        auto_tune(source_files, quiet=quiet, load_model=False)
+        start_embedder_background_load(quiet=quiet)
 
     new_chunks: list = []
 

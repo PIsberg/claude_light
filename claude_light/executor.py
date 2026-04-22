@@ -1,5 +1,8 @@
 import os
 import sys
+import io
+import threading
+import contextlib
 import warnings
 import logging
 from typing import Optional
@@ -7,6 +10,17 @@ from typing import Optional
 os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
 os.environ.setdefault("HF_HUB_VERBOSITY", "error")
 logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+
+# Silence the transformers "LOAD REPORT" table (e.g. "embeddings.position_ids
+# | UNEXPECTED") emitted from transformers.utils.loading_report via
+# logger.warning(). transformers installs its own library-root logger and
+# resets the level on first use, so plain logging.getLogger(...).setLevel()
+# has no effect — use their official API.
+try:
+    import transformers.utils.logging as _tf_logging
+    _tf_logging.set_verbosity_error()
+except Exception:
+    pass
 warnings.filterwarnings(
     "ignore",
     message=".*unauthenticated requests.*",
@@ -56,23 +70,57 @@ def _check_model_cached(model_name: str) -> bool:
     return model_path.exists()
 
 
+def _detect_device() -> tuple[str, str]:
+    """Return (device, hint). Hint is non-empty when torch is CPU-only
+    on a machine that has CUDA-capable hardware — the user can install
+    the CUDA wheel for a large speedup."""
+    try:
+        import torch
+    except ImportError:
+        return "cpu", ""
+
+    if torch.cuda.is_available():
+        return "cuda", ""
+
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return "mps", ""
+
+    hint = ""
+    try:
+        import shutil
+        if getattr(torch.version, "cuda", None) is None and shutil.which("nvidia-smi"):
+            hint = (
+                "NVIDIA GPU detected but PyTorch is CPU-only — "
+                "embedding will run on CPU. For a 20-100x speedup:\n"
+                "    pip install torch --index-url https://download.pytorch.org/whl/cu121"
+            )
+    except Exception:
+        pass
+    return "cpu", hint
+
+
 def _load_embedding_model(model_name: str, quiet: bool = False) -> SentenceTransformer:
     """
     Load embedding model with optional download progress display.
-    
+
     Args:
         model_name: HuggingFace model identifier
         quiet: If True, suppress progress output
-    
+
     Returns:
         Loaded SentenceTransformer instance
     """
+    if state.device is None:
+        state.device, _device_hint = _detect_device()
+        if _device_hint and not quiet:
+            print(f"{_T_RAG} {_ANSI_YELLOW}{_device_hint}{_ANSI_RESET}")
+
     is_cached = _check_model_cached(model_name)
     model_size_mb = _MODEL_SIZES.get(model_name, 100)
-    
+
     if quiet or is_cached:
-        # No progress needed for cached models or quiet mode
-        return SentenceTransformer(model_name, trust_remote_code=True)
+        with contextlib.redirect_stderr(io.StringIO()):
+            return SentenceTransformer(model_name, trust_remote_code=True, device=state.device)
     
     # Show download progress for first-time model loads
     if _TQDM_AVAILABLE:
@@ -86,9 +134,8 @@ def _load_embedding_model(model_name: str, quiet: bool = False) -> SentenceTrans
             ncols=80,
             bar_format="{desc}: {percentage:3.0f}% {bar}",
         ) as pbar:
-            # The download happens during model initialization
-            # We simulate progress since HuggingFace's progress isn't directly exposed
-            model = SentenceTransformer(model_name, trust_remote_code=True)
+            with contextlib.redirect_stderr(io.StringIO()):
+                model = SentenceTransformer(model_name, trust_remote_code=True, device=state.device)
             pbar.update(100)  # Mark as complete
         
         print(f"{_T_RAG} {_ANSI_GREEN}Downloaded{_ANSI_RESET} {model_name}\n")
@@ -96,7 +143,8 @@ def _load_embedding_model(model_name: str, quiet: bool = False) -> SentenceTrans
         # Fallback without tqdm
         print(f"\n{_T_RAG} Downloading {_ANSI_BOLD}{model_name}{_ANSI_RESET} ({model_size_mb} MB)...")
         print(f"  (This may take a minute on first run...)")
-        model = SentenceTransformer(model_name, trust_remote_code=True)
+        with contextlib.redirect_stderr(io.StringIO()):
+            model = SentenceTransformer(model_name, trust_remote_code=True, device=state.device)
         print(f"{_T_RAG} {_ANSI_GREEN}Downloaded{_ANSI_RESET} {model_name}\n")
     
     return model
@@ -155,9 +203,13 @@ def auto_tune(source_files, chunks=None, quiet=False, load_model=True):
     if load_model and (chosen_model != state.EMBED_MODEL or state.embedder is None):
         state.EMBED_MODEL = chosen_model
         state.embedder = _load_embedding_model(state.EMBED_MODEL, quiet=quiet)
+        state.embedder_ready.set()
         if not quiet:
             print(f"{_T_RAG} {_ANSI_GREEN}Loaded{_ANSI_RESET} {chosen_model}")
-    elif not load_model:
+    elif load_model:
+        # Already loaded — just mark ready (idempotent for callers)
+        state.embedder_ready.set()
+    else:
         # Just update the model choice without loading
         state.EMBED_MODEL = chosen_model
 
@@ -177,3 +229,27 @@ def auto_tune(source_files, chunks=None, quiet=False, load_model=True):
             f"{_T_RAG} Auto-tune → {_ANSI_BOLD}{n} files{_ANSI_RESET} → {unit_label} | "
             f"~{avg_tokens} tok/chunk | TOP_K={_ANSI_BOLD}{state.TOP_K}{_ANSI_RESET} | model={state.EMBED_MODEL}"
         )
+
+
+def start_embedder_background_load(quiet: bool = False) -> threading.Thread:
+    """Load state.EMBED_MODEL in a daemon thread; set state.embedder_ready when done.
+
+    Used on full cache hits: the model is only needed for query encoding, so we
+    return control to the caller immediately and let retrieve() block on the
+    event if the user's first query arrives before the load finishes.
+    """
+    state.embedder_ready.clear()
+    state.embedder_load_error = None
+    model_name = state.EMBED_MODEL
+
+    def _load():
+        try:
+            state.embedder = _load_embedding_model(model_name, quiet=True)
+        except Exception as exc:
+            state.embedder_load_error = exc
+        finally:
+            state.embedder_ready.set()
+
+    t = threading.Thread(target=_load, daemon=True, name="claude-light-embedder")
+    t.start()
+    return t

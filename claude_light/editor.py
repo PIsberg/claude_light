@@ -19,23 +19,22 @@ def parse_edit_blocks(text):
         raw_path = m.group(1)
         path = raw_path.strip() if raw_path else ""
         body = m.group(2)
-        
-        if not path:
-            lines = body.lstrip().splitlines()
-            for line in lines[:3]:
-                import re
-                mt = re.match(r"^(?:#|//|/\*+|<!--)\s*([\w./\\-]+\.\w+)\s*(?:\*/|-->)?\s*$", line.strip())
-                if mt:
-                    path = mt.group(1)
-                    break
-                    
+
+        # Only treat a fenced block as a file edit when the fence explicitly
+        # carries a "path:" marker (e.g. ```python:src/foo.py). Previously a
+        # leading "# src/foo.py"-style comment inside the body was also
+        # accepted as a filename hint, but that misclassifies any quoted code
+        # example in an answer (book excerpts, docs snippets) as a new-file
+        # creation — which then triggers spurious lint-error retries and
+        # strips the response text. The system prompt already instructs
+        # Claude to use the explicit "path:" form.
         if not path:
             continue
-            
+
         path = path.lstrip("/\\")
         while path.startswith("./") or path.startswith(".\\"):
             path = path[2:]
-            
+
         sr = _SR_PATTERN.match(body)
         if sr:
             edits.append({"type": "edit", "path": path,

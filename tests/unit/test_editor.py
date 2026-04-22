@@ -56,17 +56,19 @@ def util():
         self.assertEqual(edits[0]["path"], "src/utils.py")
         self.assertEqual(edits[0]["content"].strip(), "def util():\n    pass")
 
-    def test_missing_tag_comment_path(self):
-        print("\n  ▶ TestParseEditBlocks.test_missing_tag_comment_path")
+    def test_missing_tag_comment_path_not_treated_as_new_file(self):
+        print("\n  ▶ TestParseEditBlocks.test_missing_tag_comment_path_not_treated_as_new_file")
+        # A fenced block with no "path:" marker and no SEARCH/REPLACE is an
+        # illustrative code example, not an edit — even if the first line
+        # looks like a filename. New files require the explicit
+        # "```lang:path" form.
         text = '''Here is the new file:
 ```python
 # src/feature.py
 def feature(): pass
 ```'''
         edits = parse_edit_blocks(text)
-        self.assertEqual(len(edits), 1)
-        self.assertEqual(edits[0]["type"], "new")
-        self.assertEqual(edits[0]["path"], "src/feature.py")
+        self.assertEqual(len(edits), 0)
 
     def test_conversational_block_ignored(self):
         print("\n  ▶ TestParseEditBlocks.test_conversational_block_ignored")
@@ -114,19 +116,38 @@ new_b
         edits = parse_edit_blocks(text)
         self.assertEqual(edits[0]["path"], "src/foo.py")
 
-    def test_c_style_comment_path_extraction(self):
-        print("\n  ▶ TestParseEditBlocks.test_c_style_comment_path_extraction")
+    def test_c_style_comment_in_code_example_ignored(self):
+        print("\n  ▶ TestParseEditBlocks.test_c_style_comment_in_code_example_ignored")
+        # Quoted JS snippet — no "path:" marker, no SEARCH/REPLACE — is just an
+        # example, not an edit.
         text = '```javascript\n// src/util.js\nfunction util() {}\n```'
         edits = parse_edit_blocks(text)
-        self.assertEqual(len(edits), 1)
-        self.assertEqual(edits[0]["path"], "src/util.js")
+        self.assertEqual(len(edits), 0)
 
-    def test_html_comment_path(self):
-        print("\n  ▶ TestParseEditBlocks.test_html_comment_path")
+    def test_html_comment_in_code_example_ignored(self):
+        print("\n  ▶ TestParseEditBlocks.test_html_comment_in_code_example_ignored")
         text = '```html\n<!-- index.html -->\n<h1>Hello</h1>\n```'
         edits = parse_edit_blocks(text)
-        self.assertEqual(len(edits), 1)
-        self.assertEqual(edits[0]["path"], "index.html")
+        self.assertEqual(len(edits), 0)
+
+    def test_book_style_example_response_ignored(self):
+        print("\n  ▶ TestParseEditBlocks.test_book_style_example_response_ignored")
+        # Regression: an answer that quotes code examples (like a Q&A over a
+        # book of MCP examples) must not be parsed as file-creation edits.
+        text = '''The book explains MCP. A typical server looks like:
+```python
+# server.py
+from mcp import Server
+server = Server()
+```
+And a client like:
+```typescript
+// client.ts
+import { Client } from "mcp";
+```
+Both demonstrate the protocol.'''
+        edits = parse_edit_blocks(text)
+        self.assertEqual(edits, [])
 
     def test_go_new_file(self):
         print("\n  ▶ TestParseEditBlocks.test_go_new_file")

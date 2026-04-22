@@ -195,6 +195,12 @@ def retrieve(query, token_budget=None, effort="medium"):
         ids  = list(state.chunk_store.keys())
         embs = np.stack([state.chunk_store[cid]["emb"] for cid in ids])
 
+    # On full-cache-hit startup the embedder loads in a background thread —
+    # block here (typically already done) before the first query encode.
+    state.embedder_ready.wait()
+    if state.embedder_load_error is not None:
+        raise state.embedder_load_error
+
     query_prefix = _QUERY_PREFIX.get(state.EMBED_MODEL, "")
     q_emb        = state.embedder.encode(query_prefix + query, normalize_embeddings=True)
     scores       = embs @ q_emb

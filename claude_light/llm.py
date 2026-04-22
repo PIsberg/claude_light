@@ -322,17 +322,31 @@ def _make_cli_subprocess_call(
             command += processed_extra_flags
         
         # 3. Execute
-        # Use shell=True on Windows to ensure we're in a proper terminal environment that the Bun binary expects
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            env=env,
-            encoding='utf-8',
-            errors='replace',
-            shell=(current_os == 'nt')
-        )
-        
+        # - stdin=DEVNULL so the child can never block waiting on an
+        #   inherited stdin (observed as silent "Processing..." hangs).
+        # - timeout bounds the wait; on expiry we surface captured stderr so
+        #   the user can see what the CLI was doing instead of hanging forever.
+        # - shell=True on Windows ensures the Bun-based CLI finds its shim.
+        _CLI_TIMEOUT_SECS = 180
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                env=env,
+                encoding='utf-8',
+                errors='replace',
+                shell=(current_os == 'nt'),
+                stdin=subprocess.DEVNULL,
+                timeout=_CLI_TIMEOUT_SECS,
+            )
+        except subprocess.TimeoutExpired as exc:
+            stderr_tail = (exc.stderr or b"")[-2000:].decode("utf-8", errors="replace") if isinstance(exc.stderr, (bytes, bytearray)) else (exc.stderr or "")[-2000:]
+            raise RuntimeError(
+                f"Claude CLI timed out after {_CLI_TIMEOUT_SECS}s. "
+                f"Last stderr: {stderr_tail.strip() or '(empty)'}"
+            )
+
         if result.returncode != 0:
             error_output = result.stderr or result.stdout
             if "Not logged in" in error_output or "Invalid API key" in error_output:
@@ -382,58 +396,43 @@ def _make_streaming_api_call(**create_kwargs):
         messages      = create_kwargs.get("messages", [])
         model         = create_kwargs.get("model", MODEL)
 
-        if state.cli_session_id:
-            # Turn 2+: CLI already has the skeleton and history — only send the
-            # latest user message plus any freshly retrieved context that was
-            # injected as a second system block.
-            last_user = next(
-                (m for m in reversed(messages) if m["role"] == "user"), None
-            )
-            user_content = last_user["content"] if last_user else ""
-            if isinstance(user_content, list):
-                user_content = " ".join(
-                    b.get("text", "") for b in user_content if b.get("type") == "text"
+        # Every turn: pass the full system prompt via --system-prompt and
+        # serialize our own conversation history into the prompt body. We
+        # used to use --resume <session_id> for Turn 2+ to reuse CLI-side
+        # session state, but that path hangs on large sessions and
+        # sometimes resumes an unrelated session from another project.
+        # The Anthropic cache still hits on the re-sent skeleton
+        # (5-minute TTL, content-hashed), so cost is unchanged in practice.
+        def _text_of(content):
+            if isinstance(content, list):
+                return "\n".join(
+                    b.get("text", "") for b in content if b.get("type") == "text"
                 )
-            # If there is a retrieved-context block (block index 1+), prepend it
-            # so the CLI sees fresh RAG results even without re-sending the full skeleton.
-            rag_blocks = [b for b in system_blocks[1:] if b.get("text")]
-            if rag_blocks:
-                rag_text = "\n".join(b["text"] for b in rag_blocks)
-                prompt = f"[Retrieved context for this query]\n{rag_text}\n\n{user_content}"
-            else:
-                prompt = user_content
-            extra_flags = ["--resume", state.cli_session_id]
-        else:
-            # Turn 1: send the full system prompt + history as a flat string.
-            system_text = "\n".join(b.get("text", "") for b in system_blocks)
-            history_text = ""
-            for msg in messages[:-1]:          # everything except the last user msg
-                role = msg["role"].capitalize()
-                content = msg["content"]
-                if isinstance(content, list):
-                    content = " ".join(
-                        b.get("text", "") for b in content if b.get("type") == "text"
-                    )
-                history_text += f"--- {role} ---\n{content}\n"
-            last_user = messages[-1]["content"] if messages else ""
-            if isinstance(last_user, list):
-                last_user = " ".join(
-                    b.get("text", "") for b in last_user if b.get("type") == "text"
-                )
-            prompt = (
-                f"INSTRUCTIONS:\n{system_text}\n\n"
-                + (f"CONVERSATION HISTORY:\n{history_text}\n" if history_text else "")
-                + f"USER: {last_user}"
-            )
-            extra_flags = ["--system-prompt", system_text]
+            return content or ""
+
+        system_text = "\n".join(
+            b.get("text", "") for b in system_blocks if b.get("text")
+        )
+
+        history_parts = []
+        for msg in messages[:-1]:
+            role = msg["role"].capitalize()
+            history_parts.append(f"--- {role} ---\n{_text_of(msg.get('content'))}")
+        history_text = "\n".join(history_parts)
+
+        last_user_text = _text_of(messages[-1]["content"]) if messages else ""
+
+        prompt = (
+            (f"CONVERSATION HISTORY:\n{history_text}\n\n" if history_text else "")
+            + f"USER: {last_user_text}"
+        )
+        extra_flags = ["--system-prompt", system_text]
 
         print(f"  {_ANSI_DIM}⏺  Processing…{_ANSI_RESET}", end="", flush=True)
         try:
-            reply_text, usage, session_id = _make_cli_subprocess_call(
+            reply_text, usage, _session_id = _make_cli_subprocess_call(
                 prompt, model=model, extra_flags=extra_flags
             )
-            if session_id:
-                state.cli_session_id = session_id
             print(f"\r\033[K", end="", flush=True)
             return reply_text, usage, False  # not streamed — caller should call _print_reply
         except ClaudeNotLoggedIn:
