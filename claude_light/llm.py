@@ -30,16 +30,12 @@ class ClaudeNotLoggedIn(Exception):
     pass
 from claude_light.streaming import stream_chat_response, accumulate_usage_from_dict, calculate_usage_cost
 
-# Active Mode Announcement
-if AUTH_MODE == "API_KEY":
-    print(f"{_T_SYS} Auth: {_ANSI_BOLD}API Key{_ANSI_RESET} (Source: {API_KEY_SOURCE})", file=sys.stderr)
-elif AUTH_MODE == "OAUTH" and config.AUTH_TOKEN:
-    print(f"{_T_SYS} Auth: {_ANSI_BOLD}OAuth/Pro{_ANSI_RESET} (Source: {API_KEY_SOURCE})", file=sys.stderr)
-else:
-    print(f"\n{_T_ERR} No authentication found.", file=sys.stderr)
-    print(f"{_T_SYS} To use your Claude Pro subscription, please authorize with the official CLI:", file=sys.stderr)
-    print(f"      {_ANSI_CYAN}claude auth login{_ANSI_RESET}\n", file=sys.stderr)
-    print(f"{_T_SYS} Alternatively, set {_ANSI_BOLD}ANTHROPIC_API_KEY{_ANSI_RESET} in your environment.", file=sys.stderr)
+# Auth check — only abort if nothing was found
+if not AUTH_MODE or (AUTH_MODE == "OAUTH" and not config.AUTH_TOKEN and not API_KEY):
+    print(f"\n  {_T_ERR}  No authentication found.", file=sys.stderr)
+    print(f"  {_T_SYS}  To use your Claude Pro subscription:", file=sys.stderr)
+    print(f"          {_ANSI_CYAN}claude auth login{_ANSI_RESET}\n", file=sys.stderr)
+    print(f"  {_T_SYS}  Or set {_ANSI_BOLD}ANTHROPIC_API_KEY{_ANSI_RESET} in your environment.", file=sys.stderr)
     sys.exit(1)
 
 if API_KEY == "sk-ant-test-mock-key":
@@ -126,10 +122,9 @@ def _route_result(effort, model, max_tokens) -> tuple[str, str, int]:
         "max":    _ANSI_MAGENTA,
     }
     color = _effort_color[effort]
-    model_short = model.split("-")[1]
+    model_short = model.replace("claude-", "").replace("-20251001", "")
     print(
-        f"{_T_ROUTE} effort={color}{effort}{_ANSI_RESET}  "
-        f"model={_ANSI_BOLD}{model_short}{_ANSI_RESET}",
+        f"  {_ANSI_DIM}◆  {model_short}  ·  {color}{effort}{_ANSI_RESET}",
         file=sys.stderr,
     )
     return model, effort, max_tokens
@@ -202,7 +197,7 @@ def _maybe_compress_history():
     to_summarize = state.conversation_history[:batch_msgs]
     remaining    = state.conversation_history[batch_msgs:]
     try:
-        print(f"{_T_SYS} Compressing {SUMMARIZE_BATCH} old turns...", end="", flush=True)
+        print(f"  {_T_SYS}  Compressing history…", end="", flush=True)
         summary_text, usage = _summarize_turns(to_summarize)
         _accumulate_usage(usage)
         with state.lock:
@@ -212,9 +207,9 @@ def _maybe_compress_history():
             {"role": "assistant", "content": "Understood, I have context from our earlier discussion."},
         ]
         state.conversation_history = summary_pair + remaining
-        print(f" done ({usage.input_tokens}→{usage.output_tokens} tok)")
+        print(f" done")
     except Exception as e:
-        print(f"\n{_T_ERR} History compression failed ({e}) — truncating instead.")
+        print(f"\n  {_T_ERR}  History compression failed ({e}) — truncating.")
         state.conversation_history = state.conversation_history[-(MAX_HISTORY_TURNS * 2):]
 
 def _build_system_blocks(skeleton):
@@ -307,7 +302,7 @@ def _make_cli_subprocess_call(
                     safe_sys_path = Path(temp_system_prompt_file).as_posix()
                     # Use @file syntax for system prompt
                     new_flags.append("--system-prompt")
-                    new_flags.append(f"@\{safe_sys_path}")
+                    new_flags.append(f"@\\{safe_sys_path}")
                     i += 2
                 else:
                     new_flags.append(flag)
@@ -432,28 +427,26 @@ def _make_streaming_api_call(**create_kwargs):
             )
             extra_flags = ["--system-prompt", system_text]
 
-        print(f"{_T_SYS} Processing via Claude CLI...", end="", flush=True)
+        print(f"  {_ANSI_DIM}⏺  Processing…{_ANSI_RESET}", end="", flush=True)
         try:
             reply_text, usage, session_id = _make_cli_subprocess_call(
                 prompt, model=model, extra_flags=extra_flags
             )
             if session_id:
                 state.cli_session_id = session_id
-            print(" done.")
-            return reply_text, usage
+            print(f"\r\033[K", end="", flush=True)
+            return reply_text, usage, False  # not streamed — caller should call _print_reply
         except ClaudeNotLoggedIn:
-            print(" failed (auth).")
+            print(f"\r\033[K", end="", flush=True)
             raise
         except Exception as e:
-            print(f" failed ({e}).")
+            print(f"\r\033[K  {_T_ERR}  failed ({e})", flush=True)
             raise
 
     # API Key mode — use the anthropic client directly
     if ENABLE_STREAMING and hasattr(client.messages, 'stream'):
         try:
-            # Use streaming
             reply_text, usage_dict = stream_chat_response(client, **create_kwargs)
-            # Convert usage dict to response.usage-like object for compatibility
             class UsageObj:
                 pass
             usage = UsageObj()
@@ -461,21 +454,19 @@ def _make_streaming_api_call(**create_kwargs):
             usage.output_tokens = usage_dict.get('output_tokens', 0)
             usage.cache_creation_input_tokens = usage_dict.get('cache_creation_tokens', 0)
             usage.cache_read_input_tokens = usage_dict.get('cache_read_tokens', 0)
-            return reply_text, usage
+            return reply_text, usage, True  # already streamed to stdout
         except (AttributeError, NotImplementedError):
-            # Fallback to non-streaming if stream not available
             @retry_with_backoff
             def _call_api():
                 return client.messages.create(**create_kwargs)
             response = _call_api()
-            return _extract_text(response.content), response.usage
+            return _extract_text(response.content), response.usage, False
     else:
-        # Non-streaming path
         @retry_with_backoff
         def _call_api():
             return client.messages.create(**create_kwargs)
         response = _call_api()
-        return _extract_text(response.content), response.usage
+        return _extract_text(response.content), response.usage, False
 
 def _apply_skeleton(new_skeleton):
     with state.lock:
@@ -503,9 +494,7 @@ def warm_cache(quiet=False):
             state.session_cost += cost
 
         if not quiet:
-            print(f"\n{_ANSI_DIM}{'═'*56}{_ANSI_RESET}")
-            print_stats(response.usage, label="Cache")
-            print(f"{_ANSI_DIM}{'═'*56}{_ANSI_RESET}\n")
+            print_stats(response.usage, label="Cache warm")
     except Exception as e:
         print(f"{_T_ERR} Cache warm failed: {e}")
 
@@ -536,10 +525,8 @@ def chat(query, auto_apply=False):
     retrieved_ctx, hits = retrieve(query, token_budget=token_budget, effort=effort)
 
     if hits:
-        names      = ", ".join(_chunk_label(p) for p, _ in hits)
-        scores_str = "  ".join(f"{_chunk_label(p)} {s:.2f}" for p, s in hits)
-        print(f"{_T_RAG} {_ANSI_CYAN}{names}{_ANSI_RESET}")
-        print(f"      {_ANSI_DIM}{scores_str}{_ANSI_RESET}")
+        names = "  ".join(_chunk_label(p) for p, _ in hits)
+        print(f"  {_T_RAG}  {_ANSI_DIM}{names}{_ANSI_RESET}")
 
     with state.lock:
         skeleton = state.skeleton_context
@@ -580,11 +567,10 @@ def chat(query, auto_apply=False):
 
     try:
         for attempt in range(3):
-            # Use streaming or non-streaming API call
-            reply, usage = _make_streaming_api_call(**create_kwargs)
-            
+            reply, usage, was_streamed = _make_streaming_api_call(**create_kwargs)
+
             edits = parse_edit_blocks(reply)
-            
+
             if edits:
                 lint_errs = apply_edits(edits, check_only=True)
                 if lint_errs:
@@ -593,20 +579,19 @@ def chat(query, auto_apply=False):
                     with state.lock:
                         state.session_cost += cost
 
-                    print(f"\n{_T_ERR} {_ANSI_RED}Auto-detected errors in AI's code:{_ANSI_RESET}")
+                    print(f"\n  {_T_ERR}  {_ANSI_RED}Syntax errors detected — requesting correction (attempt {attempt+1}/3)…{_ANSI_RESET}")
                     for err in lint_errs:
-                        err_clean = err.strip().replace('\n', ' ')
-                        print(f"  {err_clean}")
-                    print(f"[{_ANSI_CYAN}Auto-correction{_ANSI_RESET}] Requesting fix from Claude (attempt {attempt+1}/3)...")
-                    
+                        print(f"    {_ANSI_DIM}{err.strip().replace(chr(10), ' ')}{_ANSI_RESET}")
+
                     err_msg = "[Error] The code you provided failed with the following errors:\n" + "\n".join(lint_errs) + "\nPlease provide corrected SEARCH/REPLACE blocks."
-                    
+
                     create_kwargs["messages"].append({"role": "assistant", "content": reply})
                     create_kwargs["messages"].append({"role": "user", "content": [{"type": "text", "text": err_msg}]})
-                    
+
                     for m in create_kwargs["messages"][:-1]:
                         if isinstance(m["content"], list):
-                            for b in m["content"]: b.pop("cache_control", None)
+                            for b in m["content"]:
+                                b.pop("cache_control", None)
                     continue
 
             state.conversation_history.append({"role": "user", "content": query})
@@ -628,7 +613,7 @@ def chat(query, auto_apply=False):
             turns = len(state.conversation_history) // 2
 
             explanation = _ANY_BLOCK.sub("", reply).strip() if edits else reply
-            if explanation:
+            if explanation and not was_streamed:
                 _print_reply(explanation)
             if edits:
                 apply_edits(edits, explanation=explanation, auto_apply=auto_apply)
@@ -657,8 +642,8 @@ def one_shot(prompt, auto_apply=False):
     from claude_light.editor import _ANY_BLOCK
     
     if hits:
-        names = ", ".join(_chunk_label(p) for p, _ in hits)
-        print(f"{_T_RAG} {_ANSI_CYAN}{names}{_ANSI_RESET}", file=sys.stderr)
+        names = "  ".join(_chunk_label(p) for p, _ in hits)
+        print(f"  {_T_RAG}  {_ANSI_DIM}{names}{_ANSI_RESET}", file=sys.stderr)
 
     with state.lock:
         skeleton = state.skeleton_context
@@ -674,9 +659,8 @@ def one_shot(prompt, auto_apply=False):
         create_kwargs["thinking"] = {"type": "enabled", "budget_tokens": 10_000}
     try:
         for attempt in range(3):
-            # Use streaming or non-streaming API call
-            reply, usage = _make_streaming_api_call(**create_kwargs)
-            
+            reply, usage, was_streamed = _make_streaming_api_call(**create_kwargs)
+
             edits = parse_edit_blocks(reply)
 
             if edits:
@@ -687,23 +671,22 @@ def one_shot(prompt, auto_apply=False):
                     with state.lock:
                         state.session_cost += cost
 
-                    print(f"\n{_T_ERR} Auto-detected errors:", file=sys.stderr)
+                    print(f"  {_T_ERR}  Syntax errors — correcting (attempt {attempt+1}/3)…", file=sys.stderr)
                     for err in lint_errs:
-                        err_clean = err.strip().replace('\n', ' ')
-                        print(f"  {err_clean}", file=sys.stderr)
-                    print(f"[Auto-correction] Requesting fix from Claude (attempt {attempt+1}/3)...", file=sys.stderr)
-                    
+                        print(f"    {err.strip().replace(chr(10), ' ')}", file=sys.stderr)
+
                     err_msg = "[Error] The code you provided failed with the following errors:\n" + "\n".join(lint_errs) + "\nPlease provide corrected SEARCH/REPLACE blocks."
                     create_kwargs["messages"].append({"role": "assistant", "content": reply})
                     create_kwargs["messages"].append({"role": "user", "content": [{"type": "text", "text": err_msg}]})
-                    
+
                     for m in create_kwargs["messages"][:-1]:
                         if isinstance(m["content"], list):
-                            for b in m["content"]: b.pop("cache_control", None)
+                            for b in m["content"]:
+                                b.pop("cache_control", None)
                     continue
 
             explanation = _ANY_BLOCK.sub("", reply).strip() if edits else reply
-            if explanation:
+            if explanation and not was_streamed:
                 print(explanation)
             if edits:
                 apply_edits(edits, explanation=explanation, auto_apply=auto_apply)
