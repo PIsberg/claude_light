@@ -322,17 +322,31 @@ def _make_cli_subprocess_call(
             command += processed_extra_flags
         
         # 3. Execute
-        # Use shell=True on Windows to ensure we're in a proper terminal environment that the Bun binary expects
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            env=env,
-            encoding='utf-8',
-            errors='replace',
-            shell=(current_os == 'nt')
-        )
-        
+        # - stdin=DEVNULL so the child can never block waiting on an
+        #   inherited stdin (observed as silent "Processing..." hangs).
+        # - timeout bounds the wait; on expiry we surface captured stderr so
+        #   the user can see what the CLI was doing instead of hanging forever.
+        # - shell=True on Windows ensures the Bun-based CLI finds its shim.
+        _CLI_TIMEOUT_SECS = 180
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                env=env,
+                encoding='utf-8',
+                errors='replace',
+                shell=(current_os == 'nt'),
+                stdin=subprocess.DEVNULL,
+                timeout=_CLI_TIMEOUT_SECS,
+            )
+        except subprocess.TimeoutExpired as exc:
+            stderr_tail = (exc.stderr or b"")[-2000:].decode("utf-8", errors="replace") if isinstance(exc.stderr, (bytes, bytearray)) else (exc.stderr or "")[-2000:]
+            raise RuntimeError(
+                f"Claude CLI timed out after {_CLI_TIMEOUT_SECS}s. "
+                f"Last stderr: {stderr_tail.strip() or '(empty)'}"
+            )
+
         if result.returncode != 0:
             error_output = result.stderr or result.stdout
             if "Not logged in" in error_output or "Invalid API key" in error_output:
