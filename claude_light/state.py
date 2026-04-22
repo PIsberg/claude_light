@@ -51,3 +51,9 @@ EMBED_MODEL = None
 TOP_K = None
 embedder = None
 device: str | None = None   # "cuda" | "mps" | "cpu" — detected on first model load
+
+# Set once the embedder is actually loaded into state.embedder. When we can
+# defer model load (full cache hit), index_files() starts a background thread
+# and retrieve() waits on this before using state.embedder.
+embedder_ready = threading.Event()
+embedder_load_error: Exception | None = None

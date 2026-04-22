@@ -1,6 +1,7 @@
 import os
 import sys
 import io
+import threading
 import contextlib
 import warnings
 import logging
@@ -191,9 +192,13 @@ def auto_tune(source_files, chunks=None, quiet=False, load_model=True):
     if load_model and (chosen_model != state.EMBED_MODEL or state.embedder is None):
         state.EMBED_MODEL = chosen_model
         state.embedder = _load_embedding_model(state.EMBED_MODEL, quiet=quiet)
+        state.embedder_ready.set()
         if not quiet:
             print(f"{_T_RAG} {_ANSI_GREEN}Loaded{_ANSI_RESET} {chosen_model}")
-    elif not load_model:
+    elif load_model:
+        # Already loaded — just mark ready (idempotent for callers)
+        state.embedder_ready.set()
+    else:
         # Just update the model choice without loading
         state.EMBED_MODEL = chosen_model
 
@@ -213,3 +218,27 @@ def auto_tune(source_files, chunks=None, quiet=False, load_model=True):
             f"{_T_RAG} Auto-tune → {_ANSI_BOLD}{n} files{_ANSI_RESET} → {unit_label} | "
             f"~{avg_tokens} tok/chunk | TOP_K={_ANSI_BOLD}{state.TOP_K}{_ANSI_RESET} | model={state.EMBED_MODEL}"
         )
+
+
+def start_embedder_background_load(quiet: bool = False) -> threading.Thread:
+    """Load state.EMBED_MODEL in a daemon thread; set state.embedder_ready when done.
+
+    Used on full cache hits: the model is only needed for query encoding, so we
+    return control to the caller immediately and let retrieve() block on the
+    event if the user's first query arrives before the load finishes.
+    """
+    state.embedder_ready.clear()
+    state.embedder_load_error = None
+    model_name = state.EMBED_MODEL
+
+    def _load():
+        try:
+            state.embedder = _load_embedding_model(model_name, quiet=True)
+        except Exception as exc:
+            state.embedder_load_error = exc
+        finally:
+            state.embedder_ready.set()
+
+    t = threading.Thread(target=_load, daemon=True, name="claude-light-embedder")
+    t.start()
+    return t
