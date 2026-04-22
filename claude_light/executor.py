@@ -58,23 +58,57 @@ def _check_model_cached(model_name: str) -> bool:
     return model_path.exists()
 
 
+def _detect_device() -> tuple[str, str]:
+    """Return (device, hint). Hint is non-empty when torch is CPU-only
+    on a machine that has CUDA-capable hardware — the user can install
+    the CUDA wheel for a large speedup."""
+    try:
+        import torch
+    except ImportError:
+        return "cpu", ""
+
+    if torch.cuda.is_available():
+        return "cuda", ""
+
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return "mps", ""
+
+    hint = ""
+    try:
+        import shutil
+        if getattr(torch.version, "cuda", None) is None and shutil.which("nvidia-smi"):
+            hint = (
+                "NVIDIA GPU detected but PyTorch is CPU-only — "
+                "embedding will run on CPU. For a 20-100x speedup:\n"
+                "    pip install torch --index-url https://download.pytorch.org/whl/cu121"
+            )
+    except Exception:
+        pass
+    return "cpu", hint
+
+
 def _load_embedding_model(model_name: str, quiet: bool = False) -> SentenceTransformer:
     """
     Load embedding model with optional download progress display.
-    
+
     Args:
         model_name: HuggingFace model identifier
         quiet: If True, suppress progress output
-    
+
     Returns:
         Loaded SentenceTransformer instance
     """
+    if state.device is None:
+        state.device, _device_hint = _detect_device()
+        if _device_hint and not quiet:
+            print(f"{_T_RAG} {_ANSI_YELLOW}{_device_hint}{_ANSI_RESET}")
+
     is_cached = _check_model_cached(model_name)
     model_size_mb = _MODEL_SIZES.get(model_name, 100)
-    
+
     if quiet or is_cached:
         with contextlib.redirect_stderr(io.StringIO()):
-            return SentenceTransformer(model_name, trust_remote_code=True)
+            return SentenceTransformer(model_name, trust_remote_code=True, device=state.device)
     
     # Show download progress for first-time model loads
     if _TQDM_AVAILABLE:
@@ -89,7 +123,7 @@ def _load_embedding_model(model_name: str, quiet: bool = False) -> SentenceTrans
             bar_format="{desc}: {percentage:3.0f}% {bar}",
         ) as pbar:
             with contextlib.redirect_stderr(io.StringIO()):
-                model = SentenceTransformer(model_name, trust_remote_code=True)
+                model = SentenceTransformer(model_name, trust_remote_code=True, device=state.device)
             pbar.update(100)  # Mark as complete
         
         print(f"{_T_RAG} {_ANSI_GREEN}Downloaded{_ANSI_RESET} {model_name}\n")
@@ -98,7 +132,7 @@ def _load_embedding_model(model_name: str, quiet: bool = False) -> SentenceTrans
         print(f"\n{_T_RAG} Downloading {_ANSI_BOLD}{model_name}{_ANSI_RESET} ({model_size_mb} MB)...")
         print(f"  (This may take a minute on first run...)")
         with contextlib.redirect_stderr(io.StringIO()):
-            model = SentenceTransformer(model_name, trust_remote_code=True)
+            model = SentenceTransformer(model_name, trust_remote_code=True, device=state.device)
         print(f"{_T_RAG} {_ANSI_GREEN}Downloaded{_ANSI_RESET} {model_name}\n")
     
     return model

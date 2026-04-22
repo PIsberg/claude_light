@@ -50,3 +50,4 @@ _skeleton_md_parts = {}
 EMBED_MODEL = None
 TOP_K = None
 embedder = None
+device: str | None = None   # "cuda" | "mps" | "cpu" — detected on first model load

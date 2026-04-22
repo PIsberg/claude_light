@@ -78,7 +78,7 @@ def start_chat(auto_apply=False):
     if AUTH_MODE == "API_KEY":
         threading.Thread(target=heartbeat, daemon=True).start()
 
-    print_banner(MODEL, state.TOP_K, API_KEY_SOURCE)
+    print_banner(MODEL, state.TOP_K, API_KEY_SOURCE, device=state.device)
 
     if _PROMPTTK_AVAILABLE:
         from prompt_toolkit import HTML
