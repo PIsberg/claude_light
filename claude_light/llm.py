@@ -16,7 +16,7 @@ from claude_light.config import (
 from claude_light.ui import (
     _T_ROUTE, _T_SYS, _T_ERR, _T_RAG, _T_CACHE,
     _ANSI_GREEN, _ANSI_CYAN, _ANSI_YELLOW, _ANSI_MAGENTA, _ANSI_BOLD, _ANSI_DIM, _ANSI_RESET, _ANSI_RED,
-    print_stats, _Spinner, calculate_cost, _print_reply
+    _SYM_RESP, print_stats, _Spinner, calculate_cost, _print_reply
 )
 import claude_light.state as state
 from claude_light.skeleton import build_skeleton, _refresh_tree_only, _assemble_skeleton, _refresh_single_md
@@ -614,7 +614,9 @@ def chat(query, auto_apply=False):
 
             explanation = _ANY_BLOCK.sub("", reply).strip() if edits else reply
             if explanation and not was_streamed:
+                print(f"\n{_ANSI_CYAN}{_ANSI_BOLD}{_SYM_RESP}{_ANSI_RESET} ", end="", flush=True)
                 _print_reply(explanation)
+                sys.stdout.flush()
             if edits:
                 apply_edits(edits, explanation=explanation, auto_apply=auto_apply)
 
@@ -687,7 +689,9 @@ def one_shot(prompt, auto_apply=False):
 
             explanation = _ANY_BLOCK.sub("", reply).strip() if edits else reply
             if explanation and not was_streamed:
+                print(f"\n{_ANSI_CYAN}{_ANSI_BOLD}{_SYM_RESP}{_ANSI_RESET} ", end="", flush=True)
                 print(explanation)
+                sys.stdout.flush()
             if edits:
                 apply_edits(edits, explanation=explanation, auto_apply=auto_apply)
 

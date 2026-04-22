@@ -143,7 +143,6 @@ _MODULE_ATTR_MAP = {
     "retrieve": [(llm, "retrieve")],
     "index_files": [(llm, "index_files")],
     "_run_command": [(executor, "_run_command")],
-    "_save_cache": [(indexer, "_save_cache")],
     "_debounce": [(indexer, "_debounce")],
     "_remove_file_from_index": [(indexer, "_remove_file_from_index")],
     "_WANTED_LANGS": [(config, "_WANTED_LANGS")],
@@ -235,7 +234,6 @@ build_skeleton = _wrap(skeleton.build_skeleton)
 _assemble_skeleton = _wrap(skeleton._assemble_skeleton)
 _refresh_single_md = _wrap(skeleton._refresh_single_md)
 _load_cache = _wrap(indexer._load_cache)
-_save_cache = _wrap(indexer._save_cache)
 _chunk_with_treesitter = _wrap(parsing._chunk_with_treesitter)
 
 
