@@ -513,7 +513,10 @@ def _make_cli_subprocess_call(
         returncode = proc.wait()
 
         if header_printed:
-            print()  # newline after streamed output
+            # flush=True because stdout is block-buffered when piped, so the
+            # trailing \n would otherwise stay in-buffer and print_stats()
+            # would land on the same line as the final response text.
+            print(flush=True)
 
         if timed_out.is_set():
             try:
