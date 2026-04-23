@@ -328,6 +328,7 @@ def _make_cli_subprocess_call(
     current_os = os.name
     temp_context_file = None
     temp_system_prompt_file = None
+    isolated_home = None  # temp dir used to neutralize CLAUDE.md auto-discovery
 
     try:
         # Prepare the environment
@@ -340,15 +341,44 @@ def _make_cli_subprocess_call(
         if config.AUTH_TOKEN and config.AUTH_TOKEN.startswith("sk-ant-oat01"):
             env["CLAUDE_CODE_OAUTH_TOKEN"] = config.AUTH_TOKEN
 
+        # Isolate HOME/USERPROFILE so the Claude CLI's CLAUDE.md auto-discovery
+        # cannot pull in the user's personal ~/.claude/CLAUDE.md. Without this,
+        # instructions like "always prefer ctx_read/ctx_shell MCP tools" leak
+        # into the model's context and it hallucinates <tool_call> blocks we
+        # cannot honor (we pass --tools "" so no real tool exists). The `--bare`
+        # CLI flag would also disable this, but `--bare` forbids OAuth reads
+        # even when CLAUDE_CODE_OAUTH_TOKEN is set, so it breaks subscription
+        # users. This HOME-override sidesteps that: we keep OAuth auth via the
+        # env var (or by copying the real .credentials.json into the fake HOME)
+        # while neutralizing user-memory leakage.
+        import tempfile as _tempfile
+        import shutil as _shutil
+        isolated_home = _tempfile.mkdtemp(prefix="claude_light_home_")
+        fake_claude_dir = Path(isolated_home) / ".claude"
+        fake_claude_dir.mkdir(parents=True, exist_ok=True)
+        (fake_claude_dir / "CLAUDE.md").write_text("", encoding="utf-8")
+        # Copy real credentials.json so OAuth still resolves when the env-var
+        # token path isn't available (e.g., user only has .credentials.json,
+        # not the sk-ant-oat01 automation token).
+        real_creds = Path(os.path.expanduser("~")) / ".claude" / ".credentials.json"
+        if real_creds.is_file():
+            try:
+                _shutil.copy2(str(real_creds), str(fake_claude_dir / ".credentials.json"))
+            except OSError:
+                pass
+        env["HOME"] = isolated_home
+        env["USERPROFILE"] = isolated_home
+
         # On Windows, ensure critical path variables are present for the Bun-based CLI to find its profile
         if current_os == 'nt':
-            # Ensure all common home/profile variables are present
-            home_dir = os.path.expanduser('~')
-            env.setdefault('USERPROFILE', home_dir)
-            env.setdefault('APPDATA', os.environ.get('APPDATA', str(Path(home_dir) / "AppData" / "Roaming")))
-            env.setdefault('LOCALAPPDATA', os.environ.get('LOCALAPPDATA', str(Path(home_dir) / "AppData" / "Local")))
+            # Note: USERPROFILE was just overridden above to isolated_home.
+            # APPDATA/LOCALAPPDATA/HOMEDRIVE/HOMEPATH intentionally remain the
+            # real user's values so things like Node caches keep working.
+            real_home = os.path.expanduser('~')  # real user HOME for app caches
+            env.setdefault('APPDATA', os.environ.get('APPDATA', str(Path(real_home) / "AppData" / "Roaming")))
+            env.setdefault('LOCALAPPDATA', os.environ.get('LOCALAPPDATA', str(Path(real_home) / "AppData" / "Local")))
             env.setdefault('HOMEDRIVE', os.environ.get('HOMEDRIVE', 'C:'))
-            env.setdefault('HOMEPATH', os.environ.get('HOMEPATH', home_dir.split(':', 1)[1] if ':' in home_dir else home_dir))
+            env.setdefault('HOMEPATH', os.environ.get('HOMEPATH', real_home.split(':', 1)[1] if ':' in real_home else real_home))
 
         # Windows cmd.exe command line limit is 8,191 characters total (all args combined).
         # On Windows, ALWAYS use temp files for both prompt and system prompt.
@@ -394,6 +424,13 @@ def _make_cli_subprocess_call(
         # token content_block_delta events so we can echo text as the model
         # generates it, instead of the old blocking subprocess.run() that
         # showed nothing but "Processing…" for up to 3 minutes.
+        #
+        # Note on tools: `--tools ""` is a no-op in CLI 2.1.118 — the built-in
+        # Read/Edit/Bash tools remain available. Experiments with explicit
+        # `--disallowed-tools` made the model refuse to answer instead of
+        # falling back to SEARCH/REPLACE blocks, so we let the CLI run as the
+        # agent it's designed to be. Edits made directly via its Edit tool
+        # land in the working tree; callers can detect them via git status.
         command = [claude_bin]
         if current_os != 'nt':
             command.append("--bare")
@@ -576,6 +613,15 @@ def _make_cli_subprocess_call(
                     os.remove(temp_file)
                 except OSError:
                     pass
+
+        # Cleanup the isolated HOME directory (contains only the empty
+        # CLAUDE.md and a copy of .credentials.json — safe to remove).
+        if isolated_home and os.path.isdir(isolated_home):
+            try:
+                import shutil as _shutil
+                _shutil.rmtree(isolated_home, ignore_errors=True)
+            except Exception:
+                pass
 
 def _make_streaming_api_call(**create_kwargs):
     """

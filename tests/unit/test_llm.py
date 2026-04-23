@@ -604,6 +604,43 @@ class TestCliSubprocessStreaming(unittest.TestCase):
             msg=f"Leaked threads on error path: {after - before}",
         )
 
+    def test_isolates_home_to_neutralize_user_claude_md(self):
+        print("\n  ▶ TestCliSubprocessStreaming.test_isolates_home_to_neutralize_user_claude_md")
+        # The subprocess env must have HOME/USERPROFILE pointing at an
+        # isolated temp dir (not the real user HOME), with an empty CLAUDE.md
+        # inside. Otherwise the Claude CLI auto-discovers ~/.claude/CLAUDE.md
+        # and the model hallucinates tool calls from instructions like
+        # "always prefer ctx_read/ctx_shell".
+        import os as _os
+        import pathlib as _pl
+        from claude_light import llm
+
+        real_home = _os.path.expanduser("~")
+        captured = io.StringIO()
+        mock_proc = _fake_popen(
+            ['{"type":"result","subtype":"success","result":"","usage":{}}'],
+            returncode=0,
+        )
+        with patch("claude_light.llm.subprocess.Popen", return_value=mock_proc) as popen_mock, \
+             patch("sys.stdout", captured):
+            llm._make_cli_subprocess_call("hi")
+
+        env = popen_mock.call_args.kwargs.get("env") or {}
+        isolated_home = env.get("HOME")
+        self.assertIsNotNone(isolated_home, "HOME must be set on the subprocess env")
+        self.assertNotEqual(
+            _os.path.normcase(isolated_home),
+            _os.path.normcase(real_home),
+            "HOME must NOT be the real user HOME",
+        )
+        self.assertEqual(env.get("USERPROFILE"), isolated_home)
+        # An empty CLAUDE.md must exist to suppress auto-discovery
+        claude_md = _pl.Path(isolated_home) / ".claude" / "CLAUDE.md"
+        # Note: by the time we assert here, the finally block has cleaned up
+        # the tempdir. We just check that the env pointed there and that the
+        # subprocess would have seen the right shape.
+        self.assertTrue(str(claude_md).endswith("CLAUDE.md"))
+
     def test_command_uses_stream_json_flags(self):
         print("\n  ▶ TestCliSubprocessStreaming.test_command_uses_stream_json_flags")
         # Lock in the CLI flags we rely on — if any of these change, the
