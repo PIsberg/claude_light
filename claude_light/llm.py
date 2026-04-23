@@ -954,11 +954,14 @@ def chat(query, auto_apply=False):
             elif AUTH_MODE == "OAUTH":
                 # No SEARCH/REPLACE block but the CLI agent may have edited
                 # files itself. Diff against the pre-call snapshot; commit
-                # anything new so /undo can revert it.
+                # anything new so /undo can revert it. Use the user's
+                # original query as the commit message — the agent's reply
+                # is narration ("Let me first check…") and makes for a
+                # noisy commit log.
                 post_modified = _git_modified_snapshot()
                 agent_edits = post_modified - pre_modified
                 if agent_edits:
-                    _commit_agent_edits(agent_edits, explanation or query, auto_apply=auto_apply)
+                    _commit_agent_edits(agent_edits, query, auto_apply=auto_apply)
 
             print_stats(usage, label=f"Turn {turns}")
             break
@@ -1043,10 +1046,11 @@ def one_shot(prompt, auto_apply=False):
             if edits:
                 apply_edits(edits, explanation=explanation, auto_apply=auto_apply)
             elif AUTH_MODE == "OAUTH":
+                # See chat() — use the prompt, not the agent's narration.
                 post_modified = _git_modified_snapshot()
                 agent_edits = post_modified - pre_modified
                 if agent_edits:
-                    _commit_agent_edits(agent_edits, explanation or prompt, auto_apply=auto_apply)
+                    _commit_agent_edits(agent_edits, prompt, auto_apply=auto_apply)
 
             cost = calculate_cost(usage)
             _accumulate_usage(usage)
