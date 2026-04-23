@@ -1,3 +1,5 @@
+> See also: CLAUDE.md at the repo root for quick-reference
+
 # Claude Light Architecture
 
 This document provides a visual overview of the Claude Light architecture using PlantUML diagrams. Claude Light is an interactive CLI chat tool that combines Anthropic's prompt caching with a hybrid RAG (Retrieval-Augmented Generation) pipeline to drastically reduce API costs while maintaining full context of your codebase.
