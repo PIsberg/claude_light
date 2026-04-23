@@ -24,6 +24,7 @@ from claude_light.indexer import index_files
 from claude_light.retrieval import retrieve
 from claude_light.editor import parse_edit_blocks, apply_edits
 from claude_light.retry import retry_with_backoff
+from claude_light.compressor import compress_context
 
 class ClaudeNotLoggedIn(Exception):
     """Raised when the official Claude CLI is not logged in."""
@@ -158,6 +159,27 @@ def _accumulate_usage(usage):
         state.global_stats["total_dollars_saved"] += dollars_saved
     
     # Persist after every interaction
+    state.save_global_stats()
+
+def _accumulate_compression_stats(info: dict) -> None:
+    """Record tokens saved by LLMLingua-2 in global_stats.
+
+    Priced at PRICE_WRITE: the retrieved-context block is new on nearly every
+    query (unique top-K chunks), so its first trip through the API is a cache
+    write. Pricing at PRICE_INPUT would overstate savings; PRICE_READ would
+    understate them. PRICE_WRITE is the honest middle path.
+    """
+    if not info or info.get("skipped"):
+        return
+    from claude_light.config import PRICE_WRITE
+    delta = max(0, info["tokens_before"] - info["tokens_after"])
+    if delta == 0:
+        return
+    dollars = (delta / 1_000_000.0) * PRICE_WRITE
+    with state.lock:
+        state.global_stats["total_tokens_pre_compress"]    += info["tokens_before"]
+        state.global_stats["total_tokens_post_compress"]   += info["tokens_after"]
+        state.global_stats["total_dollars_saved_llmlingua"] += dollars
     state.save_global_stats()
 
 def _summarize_turns(messages: list) -> tuple:
@@ -523,6 +545,18 @@ def chat(query, auto_apply=False):
     from claude_light.indexer import _chunk_label
     retrieved_ctx, hits = retrieve(query, token_budget=token_budget, effort=effort)
 
+    compression_info = None
+    if retrieved_ctx and config.LLMLINGUA_ENABLED:
+        retrieved_ctx, compression_info = compress_context(retrieved_ctx)
+        _accumulate_compression_stats(compression_info)
+        if compression_info and not compression_info.get("skipped"):
+            pct = compression_info["ratio"] * 100
+            print(
+                f"  {_T_RAG}  {_ANSI_DIM}LLMLingua "
+                f"{compression_info['tokens_before']:,}→{compression_info['tokens_after']:,} "
+                f"({pct:.0f}%, {compression_info['elapsed_ms']:.0f} ms){_ANSI_RESET}"
+            )
+
     if hits:
         names = "  ".join(_chunk_label(p) for p, _ in hits)
         print(f"  {_T_RAG}  {_ANSI_DIM}{names}{_ANSI_RESET}")
@@ -637,11 +671,15 @@ def one_shot(prompt, auto_apply=False):
 
     routed_model, effort, max_tok = route_query(prompt)
     retrieved_ctx, hits = retrieve(prompt, token_budget=_RETRIEVAL_BUDGET[effort], effort=effort)
-    
+
+    if retrieved_ctx and config.LLMLINGUA_ENABLED:
+        retrieved_ctx, info = compress_context(retrieved_ctx)
+        _accumulate_compression_stats(info)
+
     from claude_light.indexer import _chunk_label
     import re
     from claude_light.editor import _ANY_BLOCK
-    
+
     if hits:
         names = "  ".join(_chunk_label(p) for p, _ in hits)
         print(f"  {_T_RAG}  {_ANSI_DIM}{names}{_ANSI_RESET}", file=sys.stderr)

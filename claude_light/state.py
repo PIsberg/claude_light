@@ -13,7 +13,11 @@ global_stats = {
     "total_tokens_full": 0,   # Tokens that were billed at 100%
     "total_tokens_saved": 0,  # Tokens that were billed at 10% (cache hits)
     "total_dollars_saved": 0.0,
-    "total_sessions": 0
+    "total_sessions": 0,
+    # LLMLingua-2 compression stats (additive with the cache savings above)
+    "total_tokens_pre_compress": 0,
+    "total_tokens_post_compress": 0,
+    "total_dollars_saved_llmlingua": 0.0,
 }
 
 def load_global_stats():

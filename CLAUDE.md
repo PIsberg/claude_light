@@ -88,6 +88,17 @@ pip install \
 
 Without tree-sitter, chunking falls back to whole-file mode. Without rich/prompt_toolkit, the tool degrades gracefully to plain text output and basic `input()`.
 
+**Optional (prompt compression):**
+```bash
+pip install llmlingua
+```
+
+Enables LLMLingua-2 compression of the retrieved RAG context before the API call. See [`docs/architecture.md`](docs/architecture.md#llmlingua-2-prompt-compression-optional) for what/why/how, and [`docs/llmlingua_plan.md`](docs/llmlingua_plan.md) for the design doc.
+
+**On by default** once the package is installed. First use downloads a ~280 MB BERT model and runs on CPU; subsequent compressions take 100–400 ms per query. If `llmlingua` isn't installed, the tool silently skips compression with no behaviour change — so nothing breaks on fresh machines.
+
+To opt out: `export CLAUDE_LIGHT_LLMLINGUA=0` (or set `LLMLINGUA_ENABLED=False` in `config.py`).
+
 ## Tests
 
 ```bash
@@ -128,6 +139,7 @@ The `claude_light/` package is organized by responsibility:
 | `executor.py` | Loads `SentenceTransformer` model, runs `auto_tune()`, executes `/run <cmd>` |
 | `streaming.py` | Real-time token streaming, thinking-block handling, usage accumulation |
 | `retry.py` | Exponential backoff (2s→4s→8s, max 3 attempts) for transient API errors |
+| `compressor.py` | Optional LLMLingua-2 prompt compression of the retrieved RAG context. Lazy singleton, never raises into the hot path |
 | `session_manager.py` | Persists conversation history to `.claude_light_cache/session.json` |
 | `ui.py` | ANSI colour, rich markdown rendering, diff display, cost formatting |
 | `testing.py` | Test-mode helpers (synthetic file/chunk generation, mock API key) |
@@ -170,6 +182,7 @@ The `claude_light/` package is organized by responsibility:
 - Skeleton cached; retrieved chunks also cached (second `cache_control` block) — repeated queries over the same code pay $0.30/M instead of $3.00/M
 - Conversation history capped at `MAX_HISTORY_TURNS` (6) via sliding window; old turns are summarised in batches of `SUMMARIZE_BATCH` (3) using the cheap Haiku model
 - `build_skeleton()` renders the directory tree with two compressions: (1) single-child directory chains collapsed (`main/java/com/example/`), (2) sibling files sharing an extension grouped with brace notation (`{OrderService,UserService}.java`). Typical savings: 30–50% of skeleton tokens.
+- **LLMLingua-2** *(on by default when `pip install llmlingua` is present; silent no-op otherwise)* — post-retrieval BERT-based token pruning of the retrieved-context block. Closes the gap left by caching: the retrieved block changes per query and rarely hits the cross-query cache, so halving it halves the cache-write cost on that block. Skeleton, history, and the user query are **not** compressed. See `compressor.py` and the architecture doc's [LLMLingua-2 section](docs/architecture.md#llmlingua-2-prompt-compression-optional) for the full rationale.
 
 **Key functions by module:**
 - `llm.py`: `route_query()` — weighted intent classifier (Arch/Logic/Infra) selects model + effort; `_build_system_blocks()` — constructs the system prompt list; `_update_skeleton()` — rebuilds skeleton under lock; `_extract_text()` — joins text blocks, skips thinking blocks
@@ -211,6 +224,11 @@ For a deeper dive, see [docs/architecture.md](docs/architecture.md).
 | `PRICE_INPUT` / `PRICE_WRITE` / `PRICE_READ` / `PRICE_OUTPUT` | Token pricing ($3.00 / $3.75 / $0.30 / $15.00 per M) |
 | `SKIP_DIRS` | Directory names excluded from indexing |
 | `EMBED_MODEL`, `TOP_K` | Set at runtime by `auto_tune()` — do not set manually |
+| `LLMLINGUA_ENABLED` | **On** by default (silent no-op if `llmlingua` isn't installed). Opt out via `CLAUDE_LIGHT_LLMLINGUA=0` |
+| `LLMLINGUA_MODEL` | Default `microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank` (~280 MB). Override with `CLAUDE_LIGHT_LLMLINGUA_MODEL` |
+| `LLMLINGUA_TARGET_RATE` | Fraction of tokens to **keep** (default 0.5 = halve). Override with `CLAUDE_LIGHT_LLMLINGUA_RATE` |
+| `LLMLINGUA_MIN_TOKENS` | Skip compression below this size — overhead > savings (default 800) |
+| `LLMLINGUA_FORCE_TOKENS` | Tokens preserved verbatim (default `["\n", "```", "::", "//"]` so chunk structure survives) |
 
 ## SBOM
 

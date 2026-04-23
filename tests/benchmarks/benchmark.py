@@ -33,6 +33,11 @@ PRICE_OUTPUT = 15.00   # $/M output tokens
 
 TARGET_RETRIEVED_TOKENS = 6_000   # denominator in retrieve() k formula
 
+# LLMLingua-2 projected compression of the retrieved-context block.
+# Skeleton is NOT compressed (already cached cheaply). Query text and output
+# are unchanged. At rate=0.5, retrieved_tokens shrinks 2x.
+LLMLINGUA_RATE = 0.5
+
 # Per-effort retrieval token budgets -- matches _RETRIEVAL_BUDGET (line 99)
 RETRIEVAL_BUDGET = {"low": 1_500, "medium": 3_000, "high": 6_000, "max": 9_000}
 
@@ -242,14 +247,35 @@ def compute_query_costs(
     def save_pct(actual: float) -> float:
         return (naive_cost - actual) / naive_cost * 100 if naive_cost > 0 else 0.0
 
+    # --- LLMLingua-2 projection -------------------------------------------
+    # Compress only the retrieved block (skeleton stays verbatim — it's cached
+    # across queries and its literal structure matters). Rate = fraction kept.
+    retrieved_tok_ll = int(retrieved_tok * LLMLINGUA_RATE)
+    cold_cost_ll = (
+        (skeleton_tok + retrieved_tok_ll) / 1_000_000 * PRICE_WRITE
+        + QUERY_TOKENS / 1_000_000 * PRICE_INPUT
+        + out_cost
+    )
+    warm_cost_ll = (
+        (skeleton_tok + retrieved_tok_ll) / 1_000_000 * PRICE_READ
+        + QUERY_TOKENS / 1_000_000 * PRICE_INPUT
+        + out_cost
+    )
+
     return {
-        "naive_cost":     naive_cost,
-        "cold_cost":      cold_cost,
-        "warm_cost":      warm_cost,
-        "cold_save_pct":  save_pct(cold_cost),
-        "warm_save_pct":  save_pct(warm_cost),
-        "naive_tokens":   naive_tok + QUERY_TOKENS,
-        "rag_tokens":     skeleton_tok + retrieved_tok,
+        "naive_cost":        naive_cost,
+        "cold_cost":         cold_cost,
+        "warm_cost":         warm_cost,
+        "cold_save_pct":     save_pct(cold_cost),
+        "warm_save_pct":     save_pct(warm_cost),
+        "cold_cost_ll":      cold_cost_ll,
+        "warm_cost_ll":      warm_cost_ll,
+        "cold_save_pct_ll":  save_pct(cold_cost_ll),
+        "warm_save_pct_ll":  save_pct(warm_cost_ll),
+        "retrieved_tok_ll":  retrieved_tok_ll,
+        "naive_tokens":      naive_tok + QUERY_TOKENS,
+        "rag_tokens":        skeleton_tok + retrieved_tok,
+        "rag_tokens_ll":     skeleton_tok + retrieved_tok_ll,
     }
 
 
@@ -314,24 +340,30 @@ def simulate_session(stats: dict) -> dict:
     Returns naive / cold / warm total costs and savings percentages.
     """
     naive_total = cold_total = warm_total = 0.0
+    warm_total_ll = 0.0
 
     for turn_idx, effort in enumerate(SESSION_TURNS):
         pe = stats["per_effort"][effort]
         naive_total += pe["naive_cost"]
         cold_total  += pe["cold_cost"]
         warm_total  += pe["cold_cost"] if turn_idx == 0 else pe["warm_cost"]
+        warm_total_ll += pe["cold_cost_ll"] if turn_idx == 0 else pe["warm_cost_ll"]
 
     def save_pct(actual: float) -> float:
         return (naive_total - actual) / naive_total * 100 if naive_total > 0 else 0.0
 
     return {
-        "turns":           len(SESSION_TURNS),
-        "naive_total":     naive_total,
-        "cold_total":      cold_total,
-        "warm_total":      warm_total,
-        "cold_save_pct":   save_pct(cold_total),
-        "warm_save_pct":   save_pct(warm_total),
-        "naive_vs_warm_x": naive_total / warm_total if warm_total > 0 else float("inf"),
+        "turns":            len(SESSION_TURNS),
+        "naive_total":      naive_total,
+        "cold_total":       cold_total,
+        "warm_total":       warm_total,
+        "warm_total_ll":    warm_total_ll,
+        "cold_save_pct":    save_pct(cold_total),
+        "warm_save_pct":    save_pct(warm_total),
+        "warm_save_pct_ll": save_pct(warm_total_ll),
+        "naive_vs_warm_x":  naive_total / warm_total if warm_total > 0 else float("inf"),
+        "ll_extra_save":    warm_total - warm_total_ll,
+        "ll_extra_save_pct": ((warm_total - warm_total_ll) / warm_total * 100) if warm_total > 0 else 0.0,
     }
 
 
@@ -463,6 +495,35 @@ def print_effort_aggregate(all_stats: list) -> None:
     print(_table(headers, rows, aligns))
 
 
+def print_llmlingua_projection(all_stats: list) -> None:
+    print(f"\n{'=' * 86}")
+    print(f"  LLMLINGUA-2 PROJECTION  (rate={LLMLINGUA_RATE}, retrieved block compressed 2x)")
+    print(f"  Skeleton left verbatim (already cached cheaply)")
+    print("=" * 86)
+    headers = [
+        "Preset", "Warm 10Q $ (cache)", "Warm 10Q $ (cache+LLM)",
+        "Extra $ saved", "Extra save%", "Warm save% (LLM)",
+    ]
+    aligns = ["l", "r", "r", "r", "r", "r"]
+    rows = [
+        [
+            s["preset"],
+            _d(s["session"]["warm_total"]),
+            _d(s["session"]["warm_total_ll"]),
+            _d(s["session"]["ll_extra_save"]),
+            _p(s["session"]["ll_extra_save_pct"]),
+            _p(s["session"]["warm_save_pct_ll"]),
+        ]
+        for s in all_stats
+    ]
+    print(_table(headers, rows, aligns))
+    print(
+        "\n  Extra save% = what LLMLingua adds on top of caching alone.\n"
+        "  Bigger relative wins on cold/cache-miss queries (cache-write path\n"
+        "  is $3.75/M, so halving its tokens halves that write cost).\n"
+    )
+
+
 def print_session_table(all_stats: list) -> None:
     dist = {e: SESSION_TURNS.count(e) for e in ("low", "medium", "high", "max")}
     dist_str = "  +  ".join(f"{v}x{k}" for k, v in dist.items() if v)
@@ -540,6 +601,7 @@ def main() -> None:
         print_per_query_table(stats)
     print_effort_aggregate(all_stats)
     print_session_table(all_stats)
+    print_llmlingua_projection(all_stats)
 
 
 if __name__ == "__main__":
