@@ -409,5 +409,375 @@ class TestWarmCache(unittest.TestCase):
             warm_cache(quiet=True)
 
 
+# ---------------------------------------------------------------------------
+# _make_cli_subprocess_call — OAUTH stream-json path
+# ---------------------------------------------------------------------------
+
+def _fake_popen(stdout_lines, returncode=0, stderr=""):
+    """Build a mock Popen that yields the given stream-json lines on stdout."""
+    mock = MagicMock()
+    mock.stdout = iter(l + "\n" for l in stdout_lines)
+    mock.stderr = io.StringIO(stderr)
+    mock.wait.return_value = returncode
+    mock.poll.return_value = returncode  # watchdog's poll sees "done"
+    mock.returncode = returncode
+
+    def _kill():
+        mock.poll.return_value = returncode
+    mock.kill = _kill
+    return mock
+
+
+class TestCliSubprocessStreaming(unittest.TestCase):
+    """Verify the Popen/stream-json parsing in _make_cli_subprocess_call."""
+
+    def _call_with_events(self, events, returncode=0, stderr=""):
+        """Run _make_cli_subprocess_call with a mocked Popen emitting events."""
+        import json as _json
+        from claude_light import llm
+
+        lines = [_json.dumps(e) for e in events]
+        mock_proc = _fake_popen(lines, returncode=returncode, stderr=stderr)
+
+        # Swallow streamed stdout so tests don't spam the terminal.
+        # shutil.which is patched because on Linux/CI the `claude` CLI is
+        # likely not installed and _make_cli_subprocess_call raises before
+        # Popen is ever reached. On Windows the function bypasses which()
+        # altogether (uses shell=True), so the patch is a no-op there.
+        captured = io.StringIO()
+        with patch("claude_light.llm.subprocess.Popen", return_value=mock_proc), \
+             patch("shutil.which", return_value="/fake/bin/claude"), \
+             patch("sys.stdout", captured):
+            result = llm._make_cli_subprocess_call("hello")
+        return result, captured.getvalue(), mock_proc
+
+    def test_streams_content_block_delta_text(self):
+        print("\n  ▶ TestCliSubprocessStreaming.test_streams_content_block_delta_text")
+        events = [
+            {"type": "system", "subtype": "init"},
+            {"type": "stream_event", "event": {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "Hello "},
+            }},
+            {"type": "stream_event", "event": {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "world"},
+            }},
+            {"type": "result", "subtype": "success", "result": "Hello world",
+             "usage": {"input_tokens": 10, "output_tokens": 2,
+                       "cache_creation_input_tokens": 0,
+                       "cache_read_input_tokens": 100},
+             "session_id": "sess-xyz"},
+        ]
+        (reply, usage, sid), output, _ = self._call_with_events(events)
+        self.assertEqual(reply, "Hello world")
+        self.assertEqual(sid, "sess-xyz")
+        self.assertEqual(usage.input_tokens, 10)
+        self.assertEqual(usage.output_tokens, 2)
+        self.assertEqual(usage.cache_read_input_tokens, 100)
+        self.assertIn("Hello ", output)
+        self.assertIn("world", output)
+
+    def test_falls_back_to_assistant_event_when_no_deltas(self):
+        print("\n  ▶ TestCliSubprocessStreaming.test_falls_back_to_assistant_event_when_no_deltas")
+        # Older CLI that doesn't honor --include-partial-messages emits
+        # only a complete `assistant` event before `result`.
+        events = [
+            {"type": "assistant", "message": {"content": [
+                {"type": "text", "text": "Complete reply"},
+            ]}},
+            {"type": "result", "subtype": "success", "result": "Complete reply",
+             "usage": {"input_tokens": 5, "output_tokens": 3}},
+        ]
+        (reply, _usage, _sid), output, _ = self._call_with_events(events)
+        self.assertEqual(reply, "Complete reply")
+        self.assertIn("Complete reply", output)
+
+    def test_skips_assistant_event_if_deltas_already_streamed(self):
+        print("\n  ▶ TestCliSubprocessStreaming.test_skips_assistant_event_if_deltas_already_streamed")
+        # Modern CLI emits BOTH stream_event deltas AND a complete assistant
+        # event; we must not double-print.
+        events = [
+            {"type": "stream_event", "event": {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "Streamed"},
+            }},
+            {"type": "assistant", "message": {"content": [
+                {"type": "text", "text": "Streamed"},
+            ]}},
+            {"type": "result", "subtype": "success", "result": "Streamed",
+             "usage": {"input_tokens": 1, "output_tokens": 1}},
+        ]
+        (reply, _, _), output, _ = self._call_with_events(events)
+        # Reply should be "Streamed" once, not duplicated.
+        self.assertEqual(reply, "Streamed")
+        self.assertEqual(output.count("Streamed"), 1)
+
+    def test_fallback_to_result_text_when_no_events_seen(self):
+        print("\n  ▶ TestCliSubprocessStreaming.test_fallback_to_result_text_when_no_events_seen")
+        # If neither stream_event nor assistant events arrive (e.g. the CLI
+        # emits a single result-only message), we should still return the
+        # result text so the caller has something to show.
+        events = [
+            {"type": "result", "subtype": "success", "result": "Only in result",
+             "usage": {"input_tokens": 2, "output_tokens": 4}},
+        ]
+        (reply, _, _), output, _ = self._call_with_events(events)
+        self.assertEqual(reply, "Only in result")
+        self.assertIn("Only in result", output)
+
+    def test_nonzero_exit_raises_runtime_error(self):
+        print("\n  ▶ TestCliSubprocessStreaming.test_nonzero_exit_raises_runtime_error")
+        from claude_light import llm
+        with self.assertRaises(RuntimeError):
+            self._call_with_events(
+                [{"type": "result", "subtype": "error", "result": "boom"}],
+                returncode=1,
+                stderr="some CLI error",
+            )
+
+    def test_not_logged_in_raises_dedicated_exception(self):
+        print("\n  ▶ TestCliSubprocessStreaming.test_not_logged_in_raises_dedicated_exception")
+        from claude_light.llm import ClaudeNotLoggedIn
+        with self.assertRaises(ClaudeNotLoggedIn):
+            self._call_with_events(
+                [],
+                returncode=1,
+                stderr="Not logged in",
+            )
+
+    def test_ignores_malformed_json_lines(self):
+        print("\n  ▶ TestCliSubprocessStreaming.test_ignores_malformed_json_lines")
+        from claude_light import llm
+        # Real CLI occasionally emits warning lines that aren't valid JSON
+        # (e.g. Node deprecation warnings); we must not crash on them.
+        lines = [
+            "(node:1234) DeprecationWarning: blah",  # non-JSON
+            '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}}',
+            '{"type":"result","subtype":"success","result":"ok","usage":{}}',
+        ]
+        mock_proc = _fake_popen(lines, returncode=0)
+        captured = io.StringIO()
+        with patch("claude_light.llm.subprocess.Popen", return_value=mock_proc), \
+             patch("shutil.which", return_value="/fake/bin/claude"), \
+             patch("sys.stdout", captured):
+            reply, _, _ = llm._make_cli_subprocess_call("hi")
+        self.assertEqual(reply, "ok")
+
+    def test_heartbeat_stopped_after_success(self):
+        print("\n  ▶ TestCliSubprocessStreaming.test_heartbeat_stopped_after_success")
+        # After a successful call, the heartbeat thread must be joined —
+        # a stray daemon thread would keep painting "Processing…" over
+        # later output.
+        import threading as _threading
+        before = {t.name for t in _threading.enumerate()}
+        events = [
+            {"type": "stream_event", "event": {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "hi"},
+            }},
+            {"type": "result", "subtype": "success", "result": "hi", "usage": {}},
+        ]
+        self._call_with_events(events)
+        # Allow a brief moment for the heartbeat's .join(timeout=1.5) to finish
+        import time as _time
+        _time.sleep(0.1)
+        after = {t.name for t in _threading.enumerate()}
+        # No new threads named anything heartbeat-ish should be left running.
+        self.assertEqual(
+            before, after,
+            msg=f"Leaked threads: {after - before}",
+        )
+
+    def test_heartbeat_stopped_on_error_path(self):
+        print("\n  ▶ TestCliSubprocessStreaming.test_heartbeat_stopped_on_error_path")
+        # Error in subprocess must still clean up the heartbeat — otherwise
+        # after a failed call the animated line ticks forever over the next
+        # prompt.
+        import threading as _threading
+        before = {t.name for t in _threading.enumerate()}
+        with self.assertRaises(RuntimeError):
+            self._call_with_events(
+                [{"type": "result", "subtype": "error", "result": "boom"}],
+                returncode=1,
+                stderr="some CLI error",
+            )
+        import time as _time
+        _time.sleep(0.1)
+        after = {t.name for t in _threading.enumerate()}
+        self.assertEqual(
+            before, after,
+            msg=f"Leaked threads on error path: {after - before}",
+        )
+
+    def test_isolates_home_to_neutralize_user_claude_md(self):
+        print("\n  ▶ TestCliSubprocessStreaming.test_isolates_home_to_neutralize_user_claude_md")
+        # The subprocess env must have HOME/USERPROFILE pointing at an
+        # isolated temp dir (not the real user HOME), with an empty CLAUDE.md
+        # inside. Otherwise the Claude CLI auto-discovers ~/.claude/CLAUDE.md
+        # and the model hallucinates tool calls from instructions like
+        # "always prefer ctx_read/ctx_shell".
+        import os as _os
+        import pathlib as _pl
+        from claude_light import llm
+
+        real_home = _os.path.expanduser("~")
+        captured = io.StringIO()
+        mock_proc = _fake_popen(
+            ['{"type":"result","subtype":"success","result":"","usage":{}}'],
+            returncode=0,
+        )
+        with patch("claude_light.llm.subprocess.Popen", return_value=mock_proc) as popen_mock, \
+             patch("shutil.which", return_value="/fake/bin/claude"), \
+             patch("sys.stdout", captured):
+            llm._make_cli_subprocess_call("hi")
+
+        env = popen_mock.call_args.kwargs.get("env") or {}
+        isolated_home = env.get("HOME")
+        self.assertIsNotNone(isolated_home, "HOME must be set on the subprocess env")
+        self.assertNotEqual(
+            _os.path.normcase(isolated_home),
+            _os.path.normcase(real_home),
+            "HOME must NOT be the real user HOME",
+        )
+        self.assertEqual(env.get("USERPROFILE"), isolated_home)
+        # An empty CLAUDE.md must exist to suppress auto-discovery
+        claude_md = _pl.Path(isolated_home) / ".claude" / "CLAUDE.md"
+        # Note: by the time we assert here, the finally block has cleaned up
+        # the tempdir. We just check that the env pointed there and that the
+        # subprocess would have seen the right shape.
+        self.assertTrue(str(claude_md).endswith("CLAUDE.md"))
+
+    def test_command_uses_stream_json_flags(self):
+        print("\n  ▶ TestCliSubprocessStreaming.test_command_uses_stream_json_flags")
+        # Lock in the CLI flags we rely on — if any of these change, the
+        # stream-json parser above will silently fail to produce output.
+        from claude_light import llm
+        captured = io.StringIO()
+        mock_proc = _fake_popen(
+            ['{"type":"result","subtype":"success","result":"","usage":{}}'],
+            returncode=0,
+        )
+        with patch("claude_light.llm.subprocess.Popen", return_value=mock_proc) as popen_mock, \
+             patch("shutil.which", return_value="/fake/bin/claude"), \
+             patch("sys.stdout", captured):
+            llm._make_cli_subprocess_call("hi")
+        # First positional arg is the command list
+        cmd = popen_mock.call_args.args[0]
+        self.assertIn("--output-format", cmd)
+        idx = cmd.index("--output-format")
+        self.assertEqual(cmd[idx + 1], "stream-json")
+        self.assertIn("--verbose", cmd)
+        self.assertIn("--include-partial-messages", cmd)
+
+
+class TestAgentEditDetection(unittest.TestCase):
+    """Verify _git_modified_snapshot + _commit_agent_edits — the OAUTH safety
+    net that catches files the Claude CLI agent edited directly (outside our
+    SEARCH/REPLACE pipeline) and auto-commits them."""
+
+    def test_snapshot_returns_modified_files_when_in_repo(self):
+        print("\n  ▶ TestAgentEditDetection.test_snapshot_returns_modified_files_when_in_repo")
+        from claude_light import llm
+        with patch("claude_light.git_manager.is_git_repo", return_value=True), \
+             patch("claude_light.git_manager.get_modified_files",
+                   return_value=["a.py", "b.md"]):
+            snap = llm._git_modified_snapshot()
+        self.assertEqual(snap, {"a.py", "b.md"})
+
+    def test_snapshot_is_empty_outside_repo(self):
+        print("\n  ▶ TestAgentEditDetection.test_snapshot_is_empty_outside_repo")
+        from claude_light import llm
+        with patch("claude_light.git_manager.is_git_repo", return_value=False):
+            snap = llm._git_modified_snapshot()
+        self.assertEqual(snap, set())
+
+    def test_commit_agent_edits_calls_auto_commit(self):
+        print("\n  ▶ TestAgentEditDetection.test_commit_agent_edits_calls_auto_commit")
+        from claude_light import llm
+        captured = io.StringIO()
+        with patch("sys.stdout", captured), \
+             patch("claude_light.llm.subprocess.run") as mock_diff, \
+             patch("claude_light.git_manager.auto_commit") as mock_commit:
+            mock_diff.return_value = MagicMock(stdout="+ new line\n- old line\n")
+            llm._commit_agent_edits({"foo.py"}, "updated foo", auto_apply=True)
+        mock_commit.assert_called_once()
+        args, kwargs = mock_commit.call_args
+        # auto_commit(files, explanation)
+        self.assertEqual(args[0], ["foo.py"])
+        self.assertEqual(args[1], "updated foo")
+
+    def test_commit_agent_edits_noop_when_empty(self):
+        print("\n  ▶ TestAgentEditDetection.test_commit_agent_edits_noop_when_empty")
+        from claude_light import llm
+        with patch("claude_light.git_manager.auto_commit") as mock_commit:
+            llm._commit_agent_edits(set(), "explanation", auto_apply=True)
+        mock_commit.assert_not_called()
+
+    def test_commit_agent_edits_respects_declined_interactive_prompt(self):
+        print("\n  ▶ TestAgentEditDetection.test_commit_agent_edits_respects_declined_interactive_prompt")
+        from claude_light import llm
+        captured = io.StringIO()
+        # Force interactive path with stdin.isatty() true, then user says 'n'
+        with patch("sys.stdout", captured), \
+             patch("claude_light.llm.subprocess.run") as mock_diff, \
+             patch("claude_light.git_manager.auto_commit") as mock_commit, \
+             patch("sys.stdin") as mock_stdin, \
+             patch("builtins.input", return_value="n"):
+            mock_stdin.isatty.return_value = True
+            mock_diff.return_value = MagicMock(stdout="")
+            llm._commit_agent_edits({"foo.py"}, "explanation", auto_apply=False)
+        mock_commit.assert_not_called()
+        self.assertIn("not committed", captured.getvalue().lower())
+
+
+class TestHeartbeat(unittest.TestCase):
+    """Verify the _Heartbeat context manager's lifecycle and rendering."""
+
+    def test_emits_elapsed_seconds_counter(self):
+        print("\n  ▶ TestHeartbeat.test_emits_elapsed_seconds_counter")
+        from claude_light.llm import _Heartbeat
+        captured = io.StringIO()
+        with patch("sys.stdout", captured):
+            with _Heartbeat("Working", interval=0.05):
+                import time as _time
+                # Let ~3 ticks fire. interval=0.05 so this is fast.
+                _time.sleep(0.22)
+        output = captured.getvalue()
+        # The initial frame has "Working…" without a counter; later frames
+        # add "(Ns)". We should see at least one timestamped frame.
+        self.assertIn("Working…", output)
+        self.assertRegex(output, r"Working… \(\d+s\)")
+
+    def test_stop_clears_line_and_is_idempotent(self):
+        print("\n  ▶ TestHeartbeat.test_stop_clears_line_and_is_idempotent")
+        from claude_light.llm import _Heartbeat
+        hb = _Heartbeat("X", interval=0.05)
+        captured = io.StringIO()
+        with patch("sys.stdout", captured):
+            hb.__enter__()
+            hb.stop()
+            hb.stop()  # must not raise or re-print
+            hb.__exit__(None, None, None)  # also idempotent
+        output = captured.getvalue()
+        # Last output chunk should contain the \r\033[K clear sequence.
+        self.assertIn("\r\x1b[K", output)
+
+    def test_no_thread_leak_after_exit(self):
+        print("\n  ▶ TestHeartbeat.test_no_thread_leak_after_exit")
+        import threading as _threading
+        from claude_light.llm import _Heartbeat
+        before = {t.name for t in _threading.enumerate()}
+        captured = io.StringIO()
+        with patch("sys.stdout", captured):
+            with _Heartbeat("Z", interval=0.05):
+                import time as _time
+                _time.sleep(0.1)
+        import time as _time
+        _time.sleep(0.1)  # let join finish
+        after = {t.name for t in _threading.enumerate()}
+        self.assertEqual(before, after, msg=f"Leaked: {after - before}")
+
+
 if __name__ == "__main__":
     unittest.main()

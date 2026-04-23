@@ -62,22 +62,25 @@ def get_git_root(path: Optional[Path] = None) -> Optional[Path]:
 def get_modified_files() -> List[str]:
     """
     Get list of modified/staged files in the working directory.
-    
+
     Returns:
         List of file paths that have been modified or staged.
     """
     stdout, code = _run_git("status", "--porcelain")
     if code != 0:
         return []
-    
+
+    # `git status --porcelain` emits lines of the form "XY path" where X is
+    # the index status and Y is the worktree status. Splitting on whitespace
+    # once is robust to both " M path" (unstaged edit, space + M) and
+    # "M  path" (staged-only), and also to _run_git's .strip() having eaten
+    # the leading space on the first line, which a naive line[3:] would
+    # mis-slice and return "ocs/..." instead of "docs/...".
     files = []
     for line in stdout.splitlines():
-        if not line:
-            continue
-        # Parse git status output: "M  path", "A  path", etc.
-        # First two chars are status, followed by space and file path
-        if len(line) > 3:
-            files.append(line[3:])
+        parts = line.split(None, 1)
+        if len(parts) == 2:
+            files.append(parts[1])
     return files
 
 

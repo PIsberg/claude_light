@@ -114,7 +114,12 @@ class TestRemoveFileFromIndex(unittest.TestCase):
         print("\n  ▶ TestRemoveFileFromIndex.test_removes_all_chunks_for_file")
         from claude_light import _remove_file_from_index
         import claude_light as cl
-        with patch("claude_light._save_cache"):
+        # Patch the indexer's own _save_cache binding — see the twin fix in
+        # test_claude_light.py. Patching claude_light._save_cache (the alias
+        # in __init__.py) is a no-op because _remove_file_from_index resolves
+        # the symbol against its own module, so the real project cache would
+        # be written on every pytest run.
+        with patch("claude_light.indexer._save_cache"):
             _remove_file_from_index("src/X.java")
         self.assertNotIn("src/X.java", cl.chunk_store)
         self.assertNotIn("src/X.java::m1", cl.chunk_store)
@@ -158,11 +163,10 @@ class TestLoadCache(unittest.TestCase):
                 self.assertEqual(cached, {})
             finally:
                 os.chdir(orig)
-                try:
-                    cl.CACHE_MANIFEST.unlink()
-                    cl.CACHE_INDEX.unlink()
-                except Exception:
-                    pass
+                # NOTE: do NOT unlink CACHE_MANIFEST/INDEX here — those are
+                # relative paths and os.chdir(orig) already ran, so unlinking
+                # would nuke the real project's .claude_light_cache/ files.
+                # TemporaryDirectory() cleans up the in-tmpdir copies on exit.
 
 
 class TestReindexFile(unittest.TestCase):

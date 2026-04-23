@@ -3089,7 +3089,11 @@ class TestRemoveFileFromIndex(unittest.TestCase):
     def test_removes_all_chunks_for_file(self):
         from claude_light import _remove_file_from_index
         import claude_light as cl
-        with patch("claude_light._save_cache"):
+        # patch the indexer's _save_cache binding, not the re-export in
+        # claude_light/__init__.py — _remove_file_from_index resolves the
+        # name against its own module, so patching the alias is a no-op and
+        # the real cache on disk gets overwritten by every test run.
+        with patch("claude_light.indexer._save_cache"):
             _remove_file_from_index("src/X.java")
         self.assertNotIn("src/X.java", cl.chunk_store)
         self.assertNotIn("src/X.java::m1", cl.chunk_store)
@@ -3497,13 +3501,10 @@ class TestLoadCache(unittest.TestCase):
                 self.assertEqual(cached, {})
             finally:
                 os.chdir(orig)
-                # Clean up
-                try:
-                    cl.CACHE_MANIFEST.unlink()
-                    cl.CACHE_INDEX.unlink()
-                    cl.CACHE_DIR.rmdir()
-                except Exception:
-                    pass
+                # NOTE: do NOT unlink CACHE_MANIFEST/INDEX/DIR here — those are
+                # relative paths and os.chdir(orig) already ran, so unlinking
+                # would nuke the real project's .claude_light_cache/ files.
+                # TemporaryDirectory() cleans up the in-tmpdir copies on exit.
 
 
 # ---------------------------------------------------------------------------
@@ -3709,12 +3710,10 @@ class TestLoadCacheHit(unittest.TestCase):
                 self.assertEqual(len(stale), 0)
             finally:
                 os.chdir(orig)
-                try:
-                    cl.CACHE_MANIFEST.unlink()
-                    cl.CACHE_INDEX.unlink()
-                    cl.CACHE_DIR.rmdir()
-                except Exception:
-                    pass
+                # NOTE: do NOT unlink CACHE_MANIFEST/INDEX/DIR here — those are
+                # relative paths and os.chdir(orig) already ran, so unlinking
+                # would nuke the real project's .claude_light_cache/ files.
+                # TemporaryDirectory() cleans up the in-tmpdir copies on exit.
 
 
 # ---------------------------------------------------------------------------
@@ -4143,12 +4142,10 @@ class TestIndexFilesCache(unittest.TestCase):
                 cl.embedder = orig_embedder
             finally:
                 os.chdir(orig)
-                try:
-                    cl.CACHE_MANIFEST.unlink()
-                    cl.CACHE_INDEX.unlink()
-                    cl.CACHE_DIR.rmdir()
-                except Exception:
-                    pass
+                # NOTE: do NOT unlink CACHE_MANIFEST/INDEX/DIR here — those are
+                # relative paths and os.chdir(orig) already ran, so unlinking
+                # would nuke the real project's .claude_light_cache/ files.
+                # TemporaryDirectory() cleans up the in-tmpdir copies on exit.
 
 
 # ---------------------------------------------------------------------------
@@ -4317,12 +4314,10 @@ class TestLoadCacheStale(unittest.TestCase):
                 self.assertEqual(len(stale), 1)
             finally:
                 os.chdir(orig)
-                try:
-                    cl.CACHE_MANIFEST.unlink()
-                    cl.CACHE_INDEX.unlink()
-                    cl.CACHE_DIR.rmdir()
-                except Exception:
-                    pass
+                # NOTE: do NOT unlink CACHE_MANIFEST/INDEX/DIR here — those are
+                # relative paths and os.chdir(orig) already ran, so unlinking
+                # would nuke the real project's .claude_light_cache/ files.
+                # TemporaryDirectory() cleans up the in-tmpdir copies on exit.
 
     def test_cache_miss_verbose_with_existing_cache(self):
         """When cache exists but model changed, prints warning."""
@@ -4347,12 +4342,10 @@ class TestLoadCacheStale(unittest.TestCase):
                 self.assertTrue(any("Miss" in str(p) or "re-index" in str(p) for p in printed))
             finally:
                 os.chdir(orig)
-                try:
-                    cl.CACHE_MANIFEST.unlink()
-                    cl.CACHE_INDEX.unlink()
-                    cl.CACHE_DIR.rmdir()
-                except Exception:
-                    pass
+                # NOTE: do NOT unlink CACHE_MANIFEST/INDEX/DIR here — those are
+                # relative paths and os.chdir(orig) already ran, so unlinking
+                # would nuke the real project's .claude_light_cache/ files.
+                # TemporaryDirectory() cleans up the in-tmpdir copies on exit.
 
 
 # ---------------------------------------------------------------------------
@@ -4854,8 +4847,12 @@ class TestSaveCacheException(unittest.TestCase):
     def test_save_cache_exception_prints_error(self):
         from claude_light import _save_cache
         with patch("builtins.print") as mock_print:
-            # Patch Path.mkdir to raise
-            with patch("claude_light.CACHE_DIR") as mock_dir:
+            # Patch the indexer's own CACHE_DIR binding (not the re-export in
+            # claude_light/__init__.py) — _save_cache resolves the name against
+            # its own module, so patching the alias is a no-op and the test
+            # actually writes to the real project cache. See also the sibling
+            # fix in TestRemoveFileFromIndex.test_removes_all_chunks_for_file.
+            with patch("claude_light.indexer.CACHE_DIR") as mock_dir:
                 mock_dir.mkdir.side_effect = PermissionError("denied")
                 mock_dir.__truediv__ = lambda s, x: MagicMock()
                 _save_cache("all-MiniLM-L6-v2")
