@@ -217,6 +217,24 @@ def print_session_summary():
     print(f"{_B}│{_R} Sessions: {sessions:<47} {_B}│{_R}")
     print(f"{_B}└{'─'*57}┘{_R}")
 
+    # --- LLMLingua-2 Compression Savings (only show if ever used) ---
+    pre_t  = gs.get("total_tokens_pre_compress", 0)
+    post_t = gs.get("total_tokens_post_compress", 0)
+    llm_d  = gs.get("total_dollars_saved_llmlingua", 0.0)
+    if pre_t > 0:
+        comp_pct = (post_t / pre_t * 100) if pre_t else 0.0
+        saved_pct = 100.0 - comp_pct
+        dollars_label = "Extra Dollars Saved:" if ECONOMY_MODE == "USD" else "Extra API-Equiv. Saved:"
+        print(f"\n{_B}┌{'─'*57}┐{_R}")
+        print(f"{_B}│{_R}{_H}{'LLMLingua-2 Compression':^57}{_R}{_B}│{_R}")
+        print(f"{_B}├{'─'*28}┬{'─'*28}┤{_R}")
+        print(f"{_B}│{_R} {dollars_label:<29}{_B}│{_R} {_ANSI_GREEN}${llm_d:<26.2f}{_R} {_B}│{_R}")
+        pre_str  = f"{pre_t:,}"
+        post_str = f"{post_t:,} ({saved_pct:.1f}% cut)"
+        print(f"{_B}│{_R} Tokens before compression:   {_B}│{_R} {pre_str:<27}{_B}│{_R}")
+        print(f"{_B}│{_R} Tokens after compression:    {_B}│{_R} {_ANSI_GREEN}{post_str:<27}{_R}{_B}│{_R}")
+        print(f"{_B}└{'─'*28}┴{'─'*28}┘{_R}")
+
 
 def _colorize_diff(lines):
     result = []

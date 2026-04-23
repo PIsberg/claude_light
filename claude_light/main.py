@@ -24,6 +24,7 @@ from claude_light.config import MODEL, CACHE_DIR, HEARTBEAT_SECS, CACHE_TTL_SECS
 from claude_light.ui import _ANSI_BOLD, _ANSI_RESET, _ANSI_CYAN, _ANSI_DIM, _ANSI_GREEN, _ANSI_RED, _T_SYS, _T_ERR, print_session_summary, print_banner
 from claude_light.llm import full_refresh, chat, one_shot, warm_cache, ClaudeNotLoggedIn
 from claude_light.indexer import SourceHandler
+from claude_light.compressor import start_background_load as _start_llmlingua_load
 
 try:
     from prompt_toolkit import PromptSession as _PromptSession
@@ -263,6 +264,11 @@ def main():
         from tests.utilities.test_mocks import MockManager
         manager = MockManager(args.test_mode)
         manager.start()
+
+    # Kick off LLMLingua-2 model load in background as early as possible so
+    # indexing + skeleton-building run in parallel with the model load. No-op
+    # if disabled or if the package isn't installed.
+    _start_llmlingua_load()
 
     query_str = " ".join(args.query).strip()
     if query_str:

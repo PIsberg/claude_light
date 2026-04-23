@@ -98,6 +98,20 @@ _RETRIEVAL_BUDGET = {"low": 1_500, "medium": 3_000, "high": 6_000, "max": 9_000}
 MAX_HISTORY_TURNS       = 6       # compress+cap when stored turns exceed this
 SUMMARIZE_BATCH         = 3       # how many old turns to collapse into a summary at once
 
+# LLMLingua-2 prompt compression (optional; falls back silently if not installed).
+# See docs/llmlingua_plan.md. ON by default — opt out with CLAUDE_LIGHT_LLMLINGUA=0.
+# If `llmlingua` isn't installed, compress_context() is a silent no-op, so this
+# default is safe on fresh machines: it only activates once the user runs
+# `pip install llmlingua`.
+LLMLINGUA_ENABLED      = os.environ.get("CLAUDE_LIGHT_LLMLINGUA", "1") != "0"
+LLMLINGUA_MODEL        = os.environ.get(
+    "CLAUDE_LIGHT_LLMLINGUA_MODEL",
+    "microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank",
+)
+LLMLINGUA_TARGET_RATE  = float(os.environ.get("CLAUDE_LIGHT_LLMLINGUA_RATE", "0.5"))
+LLMLINGUA_MIN_TOKENS   = 800      # below this, skip — compression overhead > savings
+LLMLINGUA_FORCE_TOKENS = ["\n", "```", "::", "//"]
+
 SKIP_DIRS      = {
     ".git", "target", "build", "node_modules",
     ".idea", "__pycache__", ".mvn", ".gradle",
