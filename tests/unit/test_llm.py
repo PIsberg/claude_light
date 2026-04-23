@@ -558,6 +558,52 @@ class TestCliSubprocessStreaming(unittest.TestCase):
             reply, _, _ = llm._make_cli_subprocess_call("hi")
         self.assertEqual(reply, "ok")
 
+    def test_heartbeat_stopped_after_success(self):
+        print("\n  ▶ TestCliSubprocessStreaming.test_heartbeat_stopped_after_success")
+        # After a successful call, the heartbeat thread must be joined —
+        # a stray daemon thread would keep painting "Processing…" over
+        # later output.
+        import threading as _threading
+        before = {t.name for t in _threading.enumerate()}
+        events = [
+            {"type": "stream_event", "event": {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "hi"},
+            }},
+            {"type": "result", "subtype": "success", "result": "hi", "usage": {}},
+        ]
+        self._call_with_events(events)
+        # Allow a brief moment for the heartbeat's .join(timeout=1.5) to finish
+        import time as _time
+        _time.sleep(0.1)
+        after = {t.name for t in _threading.enumerate()}
+        # No new threads named anything heartbeat-ish should be left running.
+        self.assertEqual(
+            before, after,
+            msg=f"Leaked threads: {after - before}",
+        )
+
+    def test_heartbeat_stopped_on_error_path(self):
+        print("\n  ▶ TestCliSubprocessStreaming.test_heartbeat_stopped_on_error_path")
+        # Error in subprocess must still clean up the heartbeat — otherwise
+        # after a failed call the animated line ticks forever over the next
+        # prompt.
+        import threading as _threading
+        before = {t.name for t in _threading.enumerate()}
+        with self.assertRaises(RuntimeError):
+            self._call_with_events(
+                [{"type": "result", "subtype": "error", "result": "boom"}],
+                returncode=1,
+                stderr="some CLI error",
+            )
+        import time as _time
+        _time.sleep(0.1)
+        after = {t.name for t in _threading.enumerate()}
+        self.assertEqual(
+            before, after,
+            msg=f"Leaked threads on error path: {after - before}",
+        )
+
     def test_command_uses_stream_json_flags(self):
         print("\n  ▶ TestCliSubprocessStreaming.test_command_uses_stream_json_flags")
         # Lock in the CLI flags we rely on — if any of these change, the
@@ -578,6 +624,54 @@ class TestCliSubprocessStreaming(unittest.TestCase):
         self.assertEqual(cmd[idx + 1], "stream-json")
         self.assertIn("--verbose", cmd)
         self.assertIn("--include-partial-messages", cmd)
+
+
+class TestHeartbeat(unittest.TestCase):
+    """Verify the _Heartbeat context manager's lifecycle and rendering."""
+
+    def test_emits_elapsed_seconds_counter(self):
+        print("\n  ▶ TestHeartbeat.test_emits_elapsed_seconds_counter")
+        from claude_light.llm import _Heartbeat
+        captured = io.StringIO()
+        with patch("sys.stdout", captured):
+            with _Heartbeat("Working", interval=0.05):
+                import time as _time
+                # Let ~3 ticks fire. interval=0.05 so this is fast.
+                _time.sleep(0.22)
+        output = captured.getvalue()
+        # The initial frame has "Working…" without a counter; later frames
+        # add "(Ns)". We should see at least one timestamped frame.
+        self.assertIn("Working…", output)
+        self.assertRegex(output, r"Working… \(\d+s\)")
+
+    def test_stop_clears_line_and_is_idempotent(self):
+        print("\n  ▶ TestHeartbeat.test_stop_clears_line_and_is_idempotent")
+        from claude_light.llm import _Heartbeat
+        hb = _Heartbeat("X", interval=0.05)
+        captured = io.StringIO()
+        with patch("sys.stdout", captured):
+            hb.__enter__()
+            hb.stop()
+            hb.stop()  # must not raise or re-print
+            hb.__exit__(None, None, None)  # also idempotent
+        output = captured.getvalue()
+        # Last output chunk should contain the \r\033[K clear sequence.
+        self.assertIn("\r\x1b[K", output)
+
+    def test_no_thread_leak_after_exit(self):
+        print("\n  ▶ TestHeartbeat.test_no_thread_leak_after_exit")
+        import threading as _threading
+        from claude_light.llm import _Heartbeat
+        before = {t.name for t in _threading.enumerate()}
+        captured = io.StringIO()
+        with patch("sys.stdout", captured):
+            with _Heartbeat("Z", interval=0.05):
+                import time as _time
+                _time.sleep(0.1)
+        import time as _time
+        _time.sleep(0.1)  # let join finish
+        after = {t.name for t in _threading.enumerate()}
+        self.assertEqual(before, after, msg=f"Leaked: {after - before}")
 
 
 if __name__ == "__main__":

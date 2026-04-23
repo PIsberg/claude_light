@@ -242,6 +242,62 @@ def _build_system_blocks(skeleton):
     return blocks
 
 
+class _Heartbeat:
+    """Animated 'Processing… (Ns)' indicator with an elapsed-seconds counter.
+
+    Used as a context manager around a potentially long blocking call so the
+    user can tell the process is alive and how long it's been going. Call
+    .stop() as soon as real output starts so the counter doesn't interleave
+    with the response stream.
+    """
+
+    def __init__(self, message: str = "Processing", interval: float = 1.0):
+        import threading as _threading
+        self.message = message
+        self.interval = interval
+        self._stop_event = _threading.Event()
+        self._thread: _threading.Thread | None = None
+        self._start_time: float = 0.0
+        self._stopped = False
+
+    def __enter__(self):
+        import threading as _threading
+        self._start_time = time.monotonic()
+        self._stop_event.clear()
+        self._stopped = False
+        # Initial frame so the user sees *something* immediately.
+        print(
+            f"\r\033[K  {_ANSI_DIM}⏺  {self.message}…{_ANSI_RESET}",
+            end="", flush=True,
+        )
+        self._thread = _threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.stop()
+        return False
+
+    def stop(self):
+        """Stop the heartbeat and clear the line. Idempotent."""
+        if self._stopped:
+            return
+        self._stopped = True
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.5)
+        print("\r\033[K", end="", flush=True)
+
+    def _run(self):
+        # Tick on self.interval without burning a CPU; stop() flips the event.
+        while not self._stop_event.wait(self.interval):
+            elapsed = int(time.monotonic() - self._start_time)
+            print(
+                f"\r\033[K  {_ANSI_DIM}⏺  {self.message}… ({elapsed}s){_ANSI_RESET}",
+                end="", flush=True,
+            )
+
+
 def _make_cli_subprocess_call(
     prompt: str,
     model: str = "",
@@ -392,6 +448,13 @@ def _make_cli_subprocess_call(
         _wd = _threading.Thread(target=_watchdog, daemon=True)
         _wd.start()
 
+        # Heartbeat: animated "Processing… (Ns)" so the user can tell the
+        # process is alive during warmup (before the first token arrives).
+        # Stops the moment the first text event lands so it doesn't
+        # interleave with streamed output.
+        heartbeat = _Heartbeat("Processing")
+        heartbeat.__enter__()
+
         header_printed = False
         reply_parts: list[str] = []
         streamed_via_delta = False
@@ -402,8 +465,7 @@ def _make_cli_subprocess_call(
         def _ensure_header():
             nonlocal header_printed
             if not header_printed:
-                # Clear the "Processing…" placeholder, start the response line.
-                print(f"\r\033[K", end="", flush=True)
+                heartbeat.stop()  # clears the "Processing…" line
                 print(f"\n{_ANSI_CYAN}{_ANSI_BOLD}{_SYM_RESP}{_ANSI_RESET} ", end="", flush=True)
                 header_printed = True
 
@@ -482,9 +544,8 @@ def _make_cli_subprocess_call(
             _ensure_header()
             print(response_text, flush=True)
 
-        # Clear the "Processing…" placeholder if we never printed anything.
-        if not header_printed:
-            print(f"\r\033[K", end="", flush=True)
+        # Heartbeat.stop() in the finally block clears any lingering
+        # "Processing…" line if we never printed real output.
 
         class UsageObj:
             pass
@@ -497,6 +558,14 @@ def _make_cli_subprocess_call(
         return response_text.strip(), usage, session_id
 
     finally:
+        # Always stop the heartbeat (idempotent) so a raised exception
+        # doesn't leave the animated line ticking on screen forever.
+        try:
+            heartbeat.stop()
+        except NameError:
+            # Raised before Popen succeeded — heartbeat never constructed.
+            pass
+
         # Cleanup temporary files if created
         for temp_file in (temp_context_file, temp_system_prompt_file):
             if temp_file and os.path.exists(temp_file):
@@ -549,19 +618,18 @@ def _make_streaming_api_call(**create_kwargs):
         )
         extra_flags = ["--system-prompt", system_text]
 
-        print(f"  {_ANSI_DIM}⏺  Processing…{_ANSI_RESET}", end="", flush=True)
         try:
             reply_text, usage, _session_id = _make_cli_subprocess_call(
                 prompt, model=model, extra_flags=extra_flags
             )
             # _make_cli_subprocess_call now streams text inline as the CLI
-            # emits stream-json events, so the caller must not re-print.
+            # emits stream-json events and owns its own "Processing…"
+            # heartbeat, so the caller must not print anything here.
             return reply_text, usage, True
         except ClaudeNotLoggedIn:
-            print(f"\r\033[K", end="", flush=True)
             raise
         except Exception as e:
-            print(f"\r\033[K  {_T_ERR}  failed ({e})", flush=True)
+            print(f"  {_T_ERR}  failed ({e})", flush=True)
             raise
 
     # API Key mode — use the anthropic client directly
