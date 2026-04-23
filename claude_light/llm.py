@@ -334,68 +334,167 @@ def _make_cli_subprocess_call(
         # --bare disables the CLI system prompt for a cleaner response.
         # On Windows it also breaks Credential Manager access, so we omit it there.
         # --tools "" strips built-in tool definitions from the context (saves ~5-10K tokens).
+        # stream-json + --verbose + --include-partial-messages gives us per-
+        # token content_block_delta events so we can echo text as the model
+        # generates it, instead of the old blocking subprocess.run() that
+        # showed nothing but "Processing…" for up to 3 minutes.
         command = [claude_bin]
         if current_os != 'nt':
             command.append("--bare")
-        command += ["-p", cmd_prompt, "--output-format", "json", "--tools", ""]
+        command += [
+            "-p", cmd_prompt,
+            "--output-format", "stream-json",
+            "--verbose",
+            "--include-partial-messages",
+            "--tools", "",
+        ]
         if model:
             command += ["--model", model]
         if processed_extra_flags:
             command += processed_extra_flags
         
-        # 3. Execute
+        # 3. Execute (streamed)
         # - stdin=DEVNULL so the child can never block waiting on an
         #   inherited stdin (observed as silent "Processing..." hangs).
-        # - timeout bounds the wait; on expiry we surface captured stderr so
-        #   the user can see what the CLI was doing instead of hanging forever.
+        # - Popen + line-by-line stdout so stream-json events surface as
+        #   they arrive. A watchdog thread enforces the overall timeout
+        #   (Popen has no timeout on iteration).
         # - shell=True on Windows ensures the Bun-based CLI finds its shim.
+        import threading as _threading
         _CLI_TIMEOUT_SECS = 180
-        try:
-            result = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                env=env,
-                encoding='utf-8',
-                errors='replace',
-                shell=(current_os == 'nt'),
-                stdin=subprocess.DEVNULL,
-                timeout=_CLI_TIMEOUT_SECS,
-            )
-        except subprocess.TimeoutExpired as exc:
-            stderr_tail = (exc.stderr or b"")[-2000:].decode("utf-8", errors="replace") if isinstance(exc.stderr, (bytes, bytearray)) else (exc.stderr or "")[-2000:]
+
+        proc = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            encoding='utf-8',
+            errors='replace',
+            shell=(current_os == 'nt'),
+            stdin=subprocess.DEVNULL,
+            bufsize=1,
+        )
+
+        timed_out = _threading.Event()
+        start_time = time.monotonic()
+
+        def _watchdog():
+            while proc.poll() is None:
+                if time.monotonic() - start_time > _CLI_TIMEOUT_SECS:
+                    timed_out.set()
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    return
+                time.sleep(0.5)
+
+        _wd = _threading.Thread(target=_watchdog, daemon=True)
+        _wd.start()
+
+        header_printed = False
+        reply_parts: list[str] = []
+        streamed_via_delta = False
+        usage_data: dict = {}
+        session_id = None
+        final_result_text: str | None = None
+
+        def _ensure_header():
+            nonlocal header_printed
+            if not header_printed:
+                # Clear the "Processing…" placeholder, start the response line.
+                print(f"\r\033[K", end="", flush=True)
+                print(f"\n{_ANSI_CYAN}{_ANSI_BOLD}{_SYM_RESP}{_ANSI_RESET} ", end="", flush=True)
+                header_printed = True
+
+        for raw_line in proc.stdout:
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            ev_type = event.get("type")
+
+            if ev_type == "stream_event":
+                # Per-token deltas when --include-partial-messages is active.
+                inner = event.get("event", {})
+                if inner.get("type") == "content_block_delta":
+                    delta = inner.get("delta", {})
+                    if delta.get("type") == "text_delta":
+                        text = delta.get("text", "")
+                        if text:
+                            _ensure_header()
+                            print(text, end="", flush=True)
+                            reply_parts.append(text)
+                            streamed_via_delta = True
+
+            elif ev_type == "assistant":
+                # Complete message; only print if deltas didn't already cover it.
+                if not streamed_via_delta:
+                    msg = event.get("message", {})
+                    for block in msg.get("content", []):
+                        if block.get("type") == "text":
+                            text = block.get("text", "")
+                            if text:
+                                _ensure_header()
+                                print(text, end="", flush=True)
+                                reply_parts.append(text)
+
+            elif ev_type == "result":
+                final_result_text = event.get("result")
+                usage_data = event.get("usage", {}) or {}
+                session_id = event.get("session_id")
+
+        returncode = proc.wait()
+
+        if header_printed:
+            print()  # newline after streamed output
+
+        if timed_out.is_set():
+            try:
+                stderr_tail = (proc.stderr.read() or "")[-2000:]
+            except Exception:
+                stderr_tail = ""
             raise RuntimeError(
                 f"Claude CLI timed out after {_CLI_TIMEOUT_SECS}s. "
                 f"Last stderr: {stderr_tail.strip() or '(empty)'}"
             )
 
-        if result.returncode != 0:
-            error_output = result.stderr or result.stdout
+        if returncode != 0:
+            try:
+                stderr_output = proc.stderr.read() or ""
+            except Exception:
+                stderr_output = ""
+            error_output = stderr_output or (final_result_text or "")
             if "Not logged in" in error_output or "Invalid API key" in error_output:
                 raise ClaudeNotLoggedIn("Claude CLI: Not logged in. Please run 'claude auth login' in your terminal.")
-            raise RuntimeError(f"Claude CLI error (code {result.returncode}): {error_output}")
-            
-        # 4. Parse Output
-        try:
-            data = json.loads(result.stdout)
-            # In 'json' mode, the CLI returns an object with results
-            response_text = data.get("result", "")
-            
-            # Extract usage from the CLI's "usage" block (not "stats").
-            usage_data = data.get("usage", {})
-            class UsageObj:
-                pass
-            usage = UsageObj()
-            usage.input_tokens = usage_data.get("input_tokens", 0)
-            usage.output_tokens = usage_data.get("output_tokens", 0)
-            usage.cache_creation_input_tokens = usage_data.get("cache_creation_input_tokens", 0)
-            usage.cache_read_input_tokens = usage_data.get("cache_read_input_tokens", 0)
+            raise RuntimeError(f"Claude CLI error (code {returncode}): {error_output}")
 
-            session_id = data.get("session_id")
-            return response_text, usage, session_id
+        response_text = "".join(reply_parts)
+        if not response_text and final_result_text:
+            # Fallback: deltas and assistant events missing (older CLI or
+            # unexpected format) — use the terminal result. Print it now
+            # so the user still sees something.
+            response_text = final_result_text
+            _ensure_header()
+            print(response_text, flush=True)
 
-        except json.JSONDecodeError:
-            return result.stdout.strip(), None, None
+        # Clear the "Processing…" placeholder if we never printed anything.
+        if not header_printed:
+            print(f"\r\033[K", end="", flush=True)
+
+        class UsageObj:
+            pass
+        usage = UsageObj()
+        usage.input_tokens = usage_data.get("input_tokens", 0)
+        usage.output_tokens = usage_data.get("output_tokens", 0)
+        usage.cache_creation_input_tokens = usage_data.get("cache_creation_input_tokens", 0)
+        usage.cache_read_input_tokens = usage_data.get("cache_read_input_tokens", 0)
+
+        return response_text.strip(), usage, session_id
 
     finally:
         # Cleanup temporary files if created
@@ -455,8 +554,9 @@ def _make_streaming_api_call(**create_kwargs):
             reply_text, usage, _session_id = _make_cli_subprocess_call(
                 prompt, model=model, extra_flags=extra_flags
             )
-            print(f"\r\033[K", end="", flush=True)
-            return reply_text, usage, False  # not streamed — caller should call _print_reply
+            # _make_cli_subprocess_call now streams text inline as the CLI
+            # emits stream-json events, so the caller must not re-print.
+            return reply_text, usage, True
         except ClaudeNotLoggedIn:
             print(f"\r\033[K", end="", flush=True)
             raise

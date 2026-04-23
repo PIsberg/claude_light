@@ -409,5 +409,176 @@ class TestWarmCache(unittest.TestCase):
             warm_cache(quiet=True)
 
 
+# ---------------------------------------------------------------------------
+# _make_cli_subprocess_call — OAUTH stream-json path
+# ---------------------------------------------------------------------------
+
+def _fake_popen(stdout_lines, returncode=0, stderr=""):
+    """Build a mock Popen that yields the given stream-json lines on stdout."""
+    mock = MagicMock()
+    mock.stdout = iter(l + "\n" for l in stdout_lines)
+    mock.stderr = io.StringIO(stderr)
+    mock.wait.return_value = returncode
+    mock.poll.return_value = returncode  # watchdog's poll sees "done"
+    mock.returncode = returncode
+
+    def _kill():
+        mock.poll.return_value = returncode
+    mock.kill = _kill
+    return mock
+
+
+class TestCliSubprocessStreaming(unittest.TestCase):
+    """Verify the Popen/stream-json parsing in _make_cli_subprocess_call."""
+
+    def _call_with_events(self, events, returncode=0, stderr=""):
+        """Run _make_cli_subprocess_call with a mocked Popen emitting events."""
+        import json as _json
+        from claude_light import llm
+
+        lines = [_json.dumps(e) for e in events]
+        mock_proc = _fake_popen(lines, returncode=returncode, stderr=stderr)
+
+        # Swallow streamed stdout so tests don't spam the terminal.
+        captured = io.StringIO()
+        with patch("claude_light.llm.subprocess.Popen", return_value=mock_proc), \
+             patch("sys.stdout", captured):
+            result = llm._make_cli_subprocess_call("hello")
+        return result, captured.getvalue(), mock_proc
+
+    def test_streams_content_block_delta_text(self):
+        print("\n  ▶ TestCliSubprocessStreaming.test_streams_content_block_delta_text")
+        events = [
+            {"type": "system", "subtype": "init"},
+            {"type": "stream_event", "event": {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "Hello "},
+            }},
+            {"type": "stream_event", "event": {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "world"},
+            }},
+            {"type": "result", "subtype": "success", "result": "Hello world",
+             "usage": {"input_tokens": 10, "output_tokens": 2,
+                       "cache_creation_input_tokens": 0,
+                       "cache_read_input_tokens": 100},
+             "session_id": "sess-xyz"},
+        ]
+        (reply, usage, sid), output, _ = self._call_with_events(events)
+        self.assertEqual(reply, "Hello world")
+        self.assertEqual(sid, "sess-xyz")
+        self.assertEqual(usage.input_tokens, 10)
+        self.assertEqual(usage.output_tokens, 2)
+        self.assertEqual(usage.cache_read_input_tokens, 100)
+        self.assertIn("Hello ", output)
+        self.assertIn("world", output)
+
+    def test_falls_back_to_assistant_event_when_no_deltas(self):
+        print("\n  ▶ TestCliSubprocessStreaming.test_falls_back_to_assistant_event_when_no_deltas")
+        # Older CLI that doesn't honor --include-partial-messages emits
+        # only a complete `assistant` event before `result`.
+        events = [
+            {"type": "assistant", "message": {"content": [
+                {"type": "text", "text": "Complete reply"},
+            ]}},
+            {"type": "result", "subtype": "success", "result": "Complete reply",
+             "usage": {"input_tokens": 5, "output_tokens": 3}},
+        ]
+        (reply, _usage, _sid), output, _ = self._call_with_events(events)
+        self.assertEqual(reply, "Complete reply")
+        self.assertIn("Complete reply", output)
+
+    def test_skips_assistant_event_if_deltas_already_streamed(self):
+        print("\n  ▶ TestCliSubprocessStreaming.test_skips_assistant_event_if_deltas_already_streamed")
+        # Modern CLI emits BOTH stream_event deltas AND a complete assistant
+        # event; we must not double-print.
+        events = [
+            {"type": "stream_event", "event": {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "Streamed"},
+            }},
+            {"type": "assistant", "message": {"content": [
+                {"type": "text", "text": "Streamed"},
+            ]}},
+            {"type": "result", "subtype": "success", "result": "Streamed",
+             "usage": {"input_tokens": 1, "output_tokens": 1}},
+        ]
+        (reply, _, _), output, _ = self._call_with_events(events)
+        # Reply should be "Streamed" once, not duplicated.
+        self.assertEqual(reply, "Streamed")
+        self.assertEqual(output.count("Streamed"), 1)
+
+    def test_fallback_to_result_text_when_no_events_seen(self):
+        print("\n  ▶ TestCliSubprocessStreaming.test_fallback_to_result_text_when_no_events_seen")
+        # If neither stream_event nor assistant events arrive (e.g. the CLI
+        # emits a single result-only message), we should still return the
+        # result text so the caller has something to show.
+        events = [
+            {"type": "result", "subtype": "success", "result": "Only in result",
+             "usage": {"input_tokens": 2, "output_tokens": 4}},
+        ]
+        (reply, _, _), output, _ = self._call_with_events(events)
+        self.assertEqual(reply, "Only in result")
+        self.assertIn("Only in result", output)
+
+    def test_nonzero_exit_raises_runtime_error(self):
+        print("\n  ▶ TestCliSubprocessStreaming.test_nonzero_exit_raises_runtime_error")
+        from claude_light import llm
+        with self.assertRaises(RuntimeError):
+            self._call_with_events(
+                [{"type": "result", "subtype": "error", "result": "boom"}],
+                returncode=1,
+                stderr="some CLI error",
+            )
+
+    def test_not_logged_in_raises_dedicated_exception(self):
+        print("\n  ▶ TestCliSubprocessStreaming.test_not_logged_in_raises_dedicated_exception")
+        from claude_light.llm import ClaudeNotLoggedIn
+        with self.assertRaises(ClaudeNotLoggedIn):
+            self._call_with_events(
+                [],
+                returncode=1,
+                stderr="Not logged in",
+            )
+
+    def test_ignores_malformed_json_lines(self):
+        print("\n  ▶ TestCliSubprocessStreaming.test_ignores_malformed_json_lines")
+        from claude_light import llm
+        # Real CLI occasionally emits warning lines that aren't valid JSON
+        # (e.g. Node deprecation warnings); we must not crash on them.
+        lines = [
+            "(node:1234) DeprecationWarning: blah",  # non-JSON
+            '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}}',
+            '{"type":"result","subtype":"success","result":"ok","usage":{}}',
+        ]
+        mock_proc = _fake_popen(lines, returncode=0)
+        captured = io.StringIO()
+        with patch("claude_light.llm.subprocess.Popen", return_value=mock_proc), \
+             patch("sys.stdout", captured):
+            reply, _, _ = llm._make_cli_subprocess_call("hi")
+        self.assertEqual(reply, "ok")
+
+    def test_command_uses_stream_json_flags(self):
+        print("\n  ▶ TestCliSubprocessStreaming.test_command_uses_stream_json_flags")
+        # Lock in the CLI flags we rely on — if any of these change, the
+        # stream-json parser above will silently fail to produce output.
+        from claude_light import llm
+        captured = io.StringIO()
+        mock_proc = _fake_popen(
+            ['{"type":"result","subtype":"success","result":"","usage":{}}'],
+            returncode=0,
+        )
+        with patch("claude_light.llm.subprocess.Popen", return_value=mock_proc) as popen_mock, \
+             patch("sys.stdout", captured):
+            llm._make_cli_subprocess_call("hi")
+        # First positional arg is the command list
+        cmd = popen_mock.call_args.args[0]
+        self.assertIn("--output-format", cmd)
+        idx = cmd.index("--output-format")
+        self.assertEqual(cmd[idx + 1], "stream-json")
+        self.assertIn("--verbose", cmd)
+        self.assertIn("--include-partial-messages", cmd)
+
+
 if __name__ == "__main__":
     unittest.main()
