@@ -663,6 +663,66 @@ class TestCliSubprocessStreaming(unittest.TestCase):
         self.assertIn("--include-partial-messages", cmd)
 
 
+class TestAgentEditDetection(unittest.TestCase):
+    """Verify _git_modified_snapshot + _commit_agent_edits — the OAUTH safety
+    net that catches files the Claude CLI agent edited directly (outside our
+    SEARCH/REPLACE pipeline) and auto-commits them."""
+
+    def test_snapshot_returns_modified_files_when_in_repo(self):
+        print("\n  ▶ TestAgentEditDetection.test_snapshot_returns_modified_files_when_in_repo")
+        from claude_light import llm
+        with patch("claude_light.git_manager.is_git_repo", return_value=True), \
+             patch("claude_light.git_manager.get_modified_files",
+                   return_value=["a.py", "b.md"]):
+            snap = llm._git_modified_snapshot()
+        self.assertEqual(snap, {"a.py", "b.md"})
+
+    def test_snapshot_is_empty_outside_repo(self):
+        print("\n  ▶ TestAgentEditDetection.test_snapshot_is_empty_outside_repo")
+        from claude_light import llm
+        with patch("claude_light.git_manager.is_git_repo", return_value=False):
+            snap = llm._git_modified_snapshot()
+        self.assertEqual(snap, set())
+
+    def test_commit_agent_edits_calls_auto_commit(self):
+        print("\n  ▶ TestAgentEditDetection.test_commit_agent_edits_calls_auto_commit")
+        from claude_light import llm
+        captured = io.StringIO()
+        with patch("sys.stdout", captured), \
+             patch("claude_light.llm.subprocess.run") as mock_diff, \
+             patch("claude_light.git_manager.auto_commit") as mock_commit:
+            mock_diff.return_value = MagicMock(stdout="+ new line\n- old line\n")
+            llm._commit_agent_edits({"foo.py"}, "updated foo", auto_apply=True)
+        mock_commit.assert_called_once()
+        args, kwargs = mock_commit.call_args
+        # auto_commit(files, explanation)
+        self.assertEqual(args[0], ["foo.py"])
+        self.assertEqual(args[1], "updated foo")
+
+    def test_commit_agent_edits_noop_when_empty(self):
+        print("\n  ▶ TestAgentEditDetection.test_commit_agent_edits_noop_when_empty")
+        from claude_light import llm
+        with patch("claude_light.git_manager.auto_commit") as mock_commit:
+            llm._commit_agent_edits(set(), "explanation", auto_apply=True)
+        mock_commit.assert_not_called()
+
+    def test_commit_agent_edits_respects_declined_interactive_prompt(self):
+        print("\n  ▶ TestAgentEditDetection.test_commit_agent_edits_respects_declined_interactive_prompt")
+        from claude_light import llm
+        captured = io.StringIO()
+        # Force interactive path with stdin.isatty() true, then user says 'n'
+        with patch("sys.stdout", captured), \
+             patch("claude_light.llm.subprocess.run") as mock_diff, \
+             patch("claude_light.git_manager.auto_commit") as mock_commit, \
+             patch("sys.stdin") as mock_stdin, \
+             patch("builtins.input", return_value="n"):
+            mock_stdin.isatty.return_value = True
+            mock_diff.return_value = MagicMock(stdout="")
+            llm._commit_agent_edits({"foo.py"}, "explanation", auto_apply=False)
+        mock_commit.assert_not_called()
+        self.assertIn("not committed", captured.getvalue().lower())
+
+
 class TestHeartbeat(unittest.TestCase):
     """Verify the _Heartbeat context manager's lifecycle and rendering."""
 

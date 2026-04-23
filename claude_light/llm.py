@@ -14,7 +14,7 @@ from claude_light.config import (
     ENABLE_STREAMING
 )
 from claude_light.ui import (
-    _T_ROUTE, _T_SYS, _T_ERR, _T_RAG, _T_CACHE,
+    _T_ROUTE, _T_SYS, _T_ERR, _T_RAG, _T_CACHE, _T_EDIT,
     _ANSI_GREEN, _ANSI_CYAN, _ANSI_YELLOW, _ANSI_MAGENTA, _ANSI_BOLD, _ANSI_DIM, _ANSI_RESET, _ANSI_RED,
     _SYM_RESP, print_stats, _Spinner, calculate_cost, _print_reply
 )
@@ -240,6 +240,83 @@ def _build_system_blocks(skeleton):
         {"type": "text", "text": skeleton, "cache_control": {"type": "ephemeral"}},
     ]
     return blocks
+
+
+def _git_modified_snapshot():
+    """Return the set of files currently dirty in the working tree.
+
+    Used in OAUTH mode to detect edits the Claude CLI agent made directly
+    via its own Read/Edit/Bash tools (`--tools ""` doesn't actually disable
+    those in CLI 2.1.118). We snapshot before the API call and diff after
+    so we only commit files the agent touched during this turn, not
+    whatever the user had dirty beforehand.
+    """
+    from claude_light import git_manager
+    if not git_manager.is_git_repo():
+        return set()
+    return set(git_manager.get_modified_files())
+
+
+def _commit_agent_edits(new_files, explanation, auto_apply=False):
+    """Commit edits the OAUTH CLI agent made directly (outside our
+    SEARCH/REPLACE pipeline). Shows a git diff per file first; if stdin is
+    interactive and auto_apply is False, asks before committing.
+    """
+    from claude_light import git_manager
+    files = sorted(new_files)
+    if not files:
+        return
+
+    print()
+    for f in files:
+        print(f"  {_T_EDIT}  {f}  {_ANSI_DIM}(agent edit){_ANSI_RESET}")
+
+    # Render the diff straight from git so we don't have to track old content
+    import subprocess as _sub
+    for f in files:
+        print(f"  {_ANSI_DIM}── {f}{_ANSI_RESET}")
+        try:
+            diff_out = _sub.run(
+                ["git", "diff", "--", f],
+                capture_output=True, text=True,
+                encoding="utf-8", errors="replace",
+                stdin=_sub.DEVNULL,
+            ).stdout
+        except Exception:
+            diff_out = ""
+        # Cap the diff so a huge refactor doesn't scroll the terminal.
+        lines = diff_out.splitlines()
+        max_lines = 80
+        for line in lines[:max_lines]:
+            if line.startswith("+") and not line.startswith("+++"):
+                print(f"{_ANSI_GREEN}{line}{_ANSI_RESET}")
+            elif line.startswith("-") and not line.startswith("---"):
+                print(f"{_ANSI_RED}{line}{_ANSI_RESET}")
+            else:
+                print(f"{_ANSI_DIM}{line}{_ANSI_RESET}")
+        if len(lines) > max_lines:
+            print(f"  {_ANSI_DIM}… {len(lines) - max_lines} more line(s) truncated{_ANSI_RESET}")
+
+    if auto_apply:
+        commit = True
+    elif not sys.stdin.isatty():
+        commit = True
+    else:
+        print(
+            f"  Commit {_ANSI_BOLD}{len(files)}{_ANSI_RESET} agent-made change(s)? "
+            f"[{_ANSI_GREEN}y{_ANSI_RESET}/{_ANSI_RED}n{_ANSI_RESET}] ",
+            end="", flush=True,
+        )
+        try:
+            commit = input().strip().lower() in ("y", "yes")
+        except (KeyboardInterrupt, EOFError):
+            commit = False
+
+    if not commit:
+        print(f"  {_T_EDIT}  Kept in working tree; not committed.\n")
+        return
+
+    git_manager.auto_commit(files, explanation)
 
 
 class _Heartbeat:
@@ -815,6 +892,11 @@ def chat(query, auto_apply=False):
     if effort == "max":
         create_kwargs["thinking"] = {"type": "enabled", "budget_tokens": 10_000}
 
+    # Snapshot dirty files BEFORE the API call so we can distinguish agent
+    # edits (OAUTH mode: the CLI's own Read/Edit/Bash tools aren't actually
+    # blocked by --tools "") from changes the user had pending.
+    pre_modified = _git_modified_snapshot() if AUTH_MODE == "OAUTH" else set()
+
     try:
         for attempt in range(3):
             reply, usage, was_streamed = _make_streaming_api_call(**create_kwargs)
@@ -869,6 +951,14 @@ def chat(query, auto_apply=False):
                 sys.stdout.flush()
             if edits:
                 apply_edits(edits, explanation=explanation, auto_apply=auto_apply)
+            elif AUTH_MODE == "OAUTH":
+                # No SEARCH/REPLACE block but the CLI agent may have edited
+                # files itself. Diff against the pre-call snapshot; commit
+                # anything new so /undo can revert it.
+                post_modified = _git_modified_snapshot()
+                agent_edits = post_modified - pre_modified
+                if agent_edits:
+                    _commit_agent_edits(agent_edits, explanation or query, auto_apply=auto_apply)
 
             print_stats(usage, label=f"Turn {turns}")
             break
@@ -913,6 +1003,10 @@ def one_shot(prompt, auto_apply=False):
     )
     if effort == "max":
         create_kwargs["thinking"] = {"type": "enabled", "budget_tokens": 10_000}
+
+    # See chat() for rationale — snapshot to detect agent edits in OAUTH mode.
+    pre_modified = _git_modified_snapshot() if AUTH_MODE == "OAUTH" else set()
+
     try:
         for attempt in range(3):
             reply, usage, was_streamed = _make_streaming_api_call(**create_kwargs)
@@ -948,6 +1042,11 @@ def one_shot(prompt, auto_apply=False):
                 sys.stdout.flush()
             if edits:
                 apply_edits(edits, explanation=explanation, auto_apply=auto_apply)
+            elif AUTH_MODE == "OAUTH":
+                post_modified = _git_modified_snapshot()
+                agent_edits = post_modified - pre_modified
+                if agent_edits:
+                    _commit_agent_edits(agent_edits, explanation or prompt, auto_apply=auto_apply)
 
             cost = calculate_cost(usage)
             _accumulate_usage(usage)
