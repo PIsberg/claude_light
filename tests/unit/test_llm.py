@@ -440,8 +440,13 @@ class TestCliSubprocessStreaming(unittest.TestCase):
         mock_proc = _fake_popen(lines, returncode=returncode, stderr=stderr)
 
         # Swallow streamed stdout so tests don't spam the terminal.
+        # shutil.which is patched because on Linux/CI the `claude` CLI is
+        # likely not installed and _make_cli_subprocess_call raises before
+        # Popen is ever reached. On Windows the function bypasses which()
+        # altogether (uses shell=True), so the patch is a no-op there.
         captured = io.StringIO()
         with patch("claude_light.llm.subprocess.Popen", return_value=mock_proc), \
+             patch("shutil.which", return_value="/fake/bin/claude"), \
              patch("sys.stdout", captured):
             result = llm._make_cli_subprocess_call("hello")
         return result, captured.getvalue(), mock_proc
@@ -554,6 +559,7 @@ class TestCliSubprocessStreaming(unittest.TestCase):
         mock_proc = _fake_popen(lines, returncode=0)
         captured = io.StringIO()
         with patch("claude_light.llm.subprocess.Popen", return_value=mock_proc), \
+             patch("shutil.which", return_value="/fake/bin/claude"), \
              patch("sys.stdout", captured):
             reply, _, _ = llm._make_cli_subprocess_call("hi")
         self.assertEqual(reply, "ok")
@@ -622,6 +628,7 @@ class TestCliSubprocessStreaming(unittest.TestCase):
             returncode=0,
         )
         with patch("claude_light.llm.subprocess.Popen", return_value=mock_proc) as popen_mock, \
+             patch("shutil.which", return_value="/fake/bin/claude"), \
              patch("sys.stdout", captured):
             llm._make_cli_subprocess_call("hi")
 
@@ -652,6 +659,7 @@ class TestCliSubprocessStreaming(unittest.TestCase):
             returncode=0,
         )
         with patch("claude_light.llm.subprocess.Popen", return_value=mock_proc) as popen_mock, \
+             patch("shutil.which", return_value="/fake/bin/claude"), \
              patch("sys.stdout", captured):
             llm._make_cli_subprocess_call("hi")
         # First positional arg is the command list
