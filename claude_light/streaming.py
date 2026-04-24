@@ -6,6 +6,7 @@ display of Claude's response and proper handling of edit blocks.
 """
 
 import sys
+import time
 import anthropic
 from typing import Iterator, Tuple, Dict, Any
 from claude_light.config import PRICE_INPUT, PRICE_WRITE, PRICE_READ, PRICE_OUTPUT
@@ -25,6 +26,8 @@ class StreamingResponseHandler:
         self.thinking_buffer = ""
         self.is_thinking = False
         self._thinking_chars = 0
+        self._write_buf = ""
+        self._last_flush = 0.0
 
     def process_stream(self, stream: Iterator) -> Tuple[str, Dict[str, int]]:
         """
@@ -92,7 +95,11 @@ class StreamingResponseHandler:
         print(f"\n{_ANSI_CYAN}{_ANSI_BOLD}{_SYM_RESP}{_ANSI_RESET} ", end="", flush=True)
 
     def _print_stream_end(self):
-        """Print a blank line after the response."""
+        """Flush any buffered text, then print a blank line after the response."""
+        if self._write_buf:
+            sys.stdout.write(self._write_buf)
+            self._write_buf = ""
+        sys.stdout.flush()
         print()
 
     def _print_thinking_start(self):
@@ -113,8 +120,14 @@ class StreamingResponseHandler:
         print(f"\r\033[K\n{_ANSI_CYAN}{_ANSI_BOLD}{_SYM_RESP}{_ANSI_RESET} ", end="", flush=True)
 
     def _print_text_chunk(self, chunk: str):
-        """Print a chunk of response text in real-time."""
-        print(chunk, end="", flush=True)
+        """Buffer response text and flush in batches to reduce console I/O."""
+        self._write_buf += chunk
+        now = time.monotonic()
+        if "\n" in chunk or len(self._write_buf) >= 40 or (now - self._last_flush) >= 0.05:
+            sys.stdout.write(self._write_buf)
+            sys.stdout.flush()
+            self._write_buf = ""
+            self._last_flush = now
 
 
 def stream_chat_response(client, **create_kwargs) -> Tuple[str, Dict[str, int]]:

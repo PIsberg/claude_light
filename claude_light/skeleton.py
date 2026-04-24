@@ -18,15 +18,42 @@ def _file_hash(path: Path) -> str:
     """MD5 of file bytes — fast change detection, not cryptographic."""
     return hashlib.md5(path.read_bytes()).hexdigest()
 
-def _file_hash_parallel(paths: list[Path]) -> dict[str, str]:
-    """Compute file hashes in parallel using ThreadPoolExecutor."""
-    def hash_one(p: Path) -> tuple[str, str]:
-        return (str(p), _file_hash(p))
-    
+def _stat_tuple(path: Path):
+    """Return (mtime, size) or None if the file is unreadable."""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (st.st_mtime, st.st_size)
+
+def _file_hash_parallel(
+    paths: list[Path],
+    prev_hashes: dict | None = None,
+    prev_stats: dict | None = None,
+) -> tuple[dict, dict]:
+    """Compute file hashes in parallel, reusing cached hashes when (mtime, size) matches.
+
+    Returns (hashes, stats) where stats is {path: [mtime, size]} for persistence.
+    """
+    prev_hashes = prev_hashes or {}
+    prev_stats = prev_stats or {}
+
+    def hash_one(p: Path):
+        key = str(p)
+        stat = _stat_tuple(p)
+        if stat is None:
+            return (key, None, None)
+        prev_stat = prev_stats.get(key)
+        if prev_stat and tuple(prev_stat) == stat and key in prev_hashes:
+            return (key, prev_hashes[key], list(stat))
+        return (key, _file_hash(p), list(stat))
+
     with ThreadPoolExecutor(max_workers=8) as executor:
         results = list(executor.map(hash_one, paths))
-    
-    return dict(results)
+
+    hashes = {k: h for k, h, _ in results if h is not None}
+    stats = {k: s for k, _, s in results if s is not None}
+    return hashes, stats
 
 def _is_skipped(path):
     return any(p in SKIP_DIRS or p.startswith(".") for p in path.parts)
@@ -211,9 +238,14 @@ def build_skeleton() -> str:
 
     state._skeleton_tree = _build_compressed_tree(all_paths)
 
-    # Parallel hash computation for markdown files
-    new_hashes = _file_hash_parallel(md_files) if md_files else {}
-    
+    # Parallel hash computation for markdown files (skip re-read when stat matches)
+    if md_files:
+        new_hashes, new_stats = _file_hash_parallel(
+            md_files, state._skeleton_md_hashes, state._skeleton_md_stats
+        )
+    else:
+        new_hashes, new_stats = {}, {}
+
     new_parts = {}
     for path in md_files:
         path_str = str(path)
@@ -222,8 +254,9 @@ def build_skeleton() -> str:
             new_parts[path_str] = state._skeleton_md_parts[path_str]
         else:
             new_parts[path_str] = _render_md_file(path)
-    
+
     state._skeleton_md_hashes = new_hashes
+    state._skeleton_md_stats  = new_stats
     state._skeleton_md_parts  = new_parts
 
     return _assemble_skeleton()
