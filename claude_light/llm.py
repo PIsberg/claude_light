@@ -501,13 +501,12 @@ def _make_cli_subprocess_call(
         # generates it, instead of the old blocking subprocess.run() that
         # showed nothing but "Processing…" for up to 3 minutes.
         #
-        # Bash and PowerShell are blocked: the CLI runs with stdin=DEVNULL, so
-        # any interactive permission prompt hangs forever. PowerShell is opt-in
-        # (CLAUDE_CODE_USE_POWERSHELL_TOOL=1) but blocked defensively since
-        # we're on Windows. Read and Edit remain available so the agent can
-        # still read files and apply edits directly; the SYSTEM_PROMPT
-        # instructs it to use SEARCH/REPLACE blocks as the primary write
-        # mechanism.
+        # --dangerously-skip-permissions: the CLI runs with stdin=DEVNULL so
+        # any interactive permission prompt would block forever. This flag is
+        # the standard way to run the CLI non-interactively; the user has
+        # already opted in by running claude_light in this directory.
+        # Bash and PowerShell are still blocked separately because they can
+        # execute arbitrary shell commands beyond just file edits.
         command = [claude_bin]
         if current_os != 'nt':
             command.append("--bare")
@@ -516,6 +515,7 @@ def _make_cli_subprocess_call(
             "--output-format", "stream-json",
             "--verbose",
             "--include-partial-messages",
+            "--dangerously-skip-permissions",
             "--disallowed-tools", "Bash,PowerShell",
         ]
         if model:
