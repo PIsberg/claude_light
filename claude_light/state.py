@@ -46,9 +46,11 @@ lock = threading.Lock()
 stop_event = threading.Event()
 _source_files = []
 _file_hashes = {}
+_file_stats = {}            # {path: [mtime, size]} — fast-path to skip re-hashing unchanged files
 skeleton_context = ""
 _skeleton_tree = ""
 _skeleton_md_hashes = {}
+_skeleton_md_stats = {}     # same fast-path cache for .md files
 _skeleton_md_parts = {}
 
 EMBED_MODEL = None

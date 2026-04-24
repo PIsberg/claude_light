@@ -11,7 +11,7 @@ from claude_light.config import (
 from claude_light.ui import _T_RAG, _T_CACHE, _T_ERR, _ANSI_GREEN, _ANSI_YELLOW, _ANSI_BOLD, _ANSI_RESET, _ANSI_CYAN
 import claude_light.state as state
 
-from claude_light.skeleton import _file_hash, _file_hash_parallel, _get_cached_paths, _invalidate_path_cache
+from claude_light.skeleton import _file_hash, _file_hash_parallel, _get_cached_paths, _invalidate_path_cache, _stat_tuple
 from claude_light.parsing import chunk_file
 from claude_light.executor import auto_tune, start_embedder_background_load
 
@@ -64,6 +64,7 @@ def _save_cache(embed_model: str) -> None:
         manifest = {
             "embed_model": embed_model,
             "files": dict(state._file_hashes),
+            "file_stats": dict(state._file_stats),
         }
         with state.lock:
             store_snapshot = dict(state.chunk_store)
@@ -90,8 +91,20 @@ def index_files(quiet=False):
         print(f"{_T_RAG} Found {_ANSI_BOLD}{len(source_files)}{_ANSI_RESET} source files.")
 
     state._source_files = source_files
-    # Parallel hash computation for all source files
-    state._file_hashes = _file_hash_parallel(source_files) if source_files else {}
+    # Parallel hash computation — read previous manifest first so we can skip
+    # re-hashing files whose (mtime, size) hasn't changed since last run.
+    try:
+        prev_manifest = json.loads(CACHE_MANIFEST.read_text(encoding="utf-8"))
+    except Exception:
+        prev_manifest = {}
+    prev_hashes = prev_manifest.get("files", {})
+    prev_stats  = prev_manifest.get("file_stats", {})
+    if source_files:
+        state._file_hashes, state._file_stats = _file_hash_parallel(
+            source_files, prev_hashes, prev_stats
+        )
+    else:
+        state._file_hashes, state._file_stats = {}, {}
 
     # Check cache status BEFORE loading model - pass hashes so auto_tune can check
     cached_store, stale_files = _load_cache(source_files, state.EMBED_MODEL, state._file_hashes, quiet=quiet)
@@ -192,6 +205,9 @@ def reindex_file(path):
                 state.chunk_store[chunk["id"]] = {"text": chunk["text"], "emb": emb}
 
         state._file_hashes[path] = _file_hash(p)
+        stat = _stat_tuple(p)
+        if stat is not None:
+            state._file_stats[path] = list(stat)
         _save_cache(state.EMBED_MODEL)
         print(f"{_T_RAG} Re-indexed {_ANSI_CYAN}{path}{_ANSI_RESET} ({len(chunks)} chunks)")
     except Exception as e:
@@ -219,6 +235,7 @@ def _remove_file_from_index(path: str) -> None:
         for k in _chunks_for_file(path):
             del state.chunk_store[k]
     state._file_hashes.pop(path, None)
+    state._file_stats.pop(path, None)
     if state.EMBED_MODEL:
         _save_cache(state.EMBED_MODEL)
 
