@@ -101,7 +101,9 @@ def _strip_comments(text: str, ext: str) -> str:
         text = re.sub(r'/\*.*?\*/', '', text, flags=re.DOTALL)   # /* block */
         text = re.sub(r'//[^\n]*',  '', text)                    # // line
     elif ext == ".py":
-        text = re.sub(r'#[^\n]*', '', text)                      # # line
+        text = re.sub(r'#.*', '', text)                          # # line
+        text = re.sub(r'"""[\s\S]*?"""', '', text)               # """ docstring """
+        text = re.sub(r"'''[\s\S]*?'''", '', text)               # ''' docstring '''
     # Collapse runs of 3+ blank lines left behind by removal
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text
