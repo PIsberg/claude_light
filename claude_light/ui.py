@@ -180,25 +180,25 @@ def print_session_summary():
     hit_str    = f"{_ANSI_GREEN}{cr / input_base * 100:.1f}%{_R}" if input_base else "—"
 
     cost_col_hdr = "Cost" if ECONOMY_MODE == "USD" else "API equiv."
-    col_w = [22, 12, 8, 9]
+    col_w = [22, 12, 8, 10]
 
     def row(label, tokens, cost_val, color=""):
         cost_str = f"${cost_val:.4f}"
         return (f"│ {color}{label:<{col_w[0]}}{_R} │ {tokens:>{col_w[1]},} │"
                 f" {pct(tokens):>{col_w[2]}} │ {_ANSI_YELLOW}{cost_str:>{col_w[3]}}{_R} │")
 
-    print(f"\n{_B}┌{'─'*62}┐{_R}")
-    print(f"{_B}│{_R}{_H}{'Session Token Summary':^62}{_R}{_B}│{_R}")
-    print(f"{_B}├{'─'*24}┬{'─'*14}┬{'─'*10}┬{'─'*11}┤{_R}")
+    print(f"\n{_B}┌{'─'*63}┐{_R}")
+    print(f"{_B}│{_R}{_H}{'Session Token Summary':^63}{_R}{_B}│{_R}")
+    print(f"{_B}├{'─'*24}┬{'─'*14}┬{'─'*10}┬{'─'*12}┤{_R}")
     print(f"{_B}│{_R} {'Type':<{col_w[0]}} {_B}│{_R} {'Tokens':>{col_w[1]}} {_B}│{_R} {'%':>{col_w[2]}} {_B}│{_R} {cost_col_hdr:>{col_w[3]}} {_B}│{_R}")
-    print(f"{_B}├{'─'*24}┼{'─'*14}┼{'─'*10}┼{'─'*11}┤{_R}")
+    print(f"{_B}├{'─'*24}┼{'─'*14}┼{'─'*10}┼{'─'*12}┤{_R}")
     print(row("Input (uncached)",  inp,  cost_inp))
     print(row("Cache write",       cw,   cost_cw))
     print(row("Cache read",        cr,   cost_cr,  _ANSI_GREEN))
     print(row("Output",            out,  cost_out))
-    print(f"{_B}├{'─'*24}┼{'─'*14}┼{'─'*10}┼{'─'*11}┤{_R}")
+    print(f"{_B}├{'─'*24}┼{'─'*14}┼{'─'*10}┼{'─'*12}┤{_R}")
     print(row("TOTAL",             total, cost_tot, _ANSI_BOLD))
-    print(f"{_B}└{'─'*24}┴{'─'*14}┴{'─'*10}┴{'─'*11}┘{_R}")
+    print(f"{_B}└{'─'*24}┴{'─'*14}┴{'─'*10}┴{'─'*12}┘{_R}")
 
     print(f"  Turns: {_ANSI_BOLD}{turns}{_R}  ·  Cache hit rate: {hit_str}")
 
@@ -216,11 +216,11 @@ def print_session_summary():
     print(f"{_B}│{_R}{_H}{'Global Lifetime Savings':^57}{_R}{_B}│{_R}")
     print(f"{_B}├{'─'*28}┬{'─'*28}┤{_R}")
     dollars_label = "Total Dollars Saved:" if ECONOMY_MODE == "USD" else "Total API-Equiv. Saved:"
-    print(f"{_B}│{_R} {dollars_label:<29}{_B}│{_R} {_ANSI_GREEN}${saved_d:<26.2f}{_R} {_B}│{_R}")
+    print(f"{_B}│{_R} {dollars_label:<27}{_B}│{_R} {_ANSI_GREEN}${saved_d:<25.2f}{_R} {_B}│{_R}")
     token_str = f"{saved_t:,} ({overall_pct:.1f}%)"
-    print(f"{_B}│{_R} Total Tokens Saved:          {_B}│{_R} {_ANSI_GREEN}{token_str:<26}{_R} {_B}│{_R}")
+    print(f"{_B}│{_R} Total Tokens Saved:        {_B}│{_R} {_ANSI_GREEN}{token_str:<27}{_R}{_B}│{_R}")
     print(f"{_B}├{'─'*28}┴{'─'*28}┤{_R}")
-    print(f"{_B}│{_R} Sessions: {sessions:<47} {_B}│{_R}")
+    print(f"{_B}│{_R} Sessions: {sessions:<45} {_B}│{_R}")
     print(f"{_B}└{'─'*57}┘{_R}")
 
     # --- LLMLingua-2 Compression Savings (only show if ever used) ---
@@ -234,11 +234,11 @@ def print_session_summary():
         print(f"\n{_B}┌{'─'*57}┐{_R}")
         print(f"{_B}│{_R}{_H}{'LLMLingua-2 Compression':^57}{_R}{_B}│{_R}")
         print(f"{_B}├{'─'*28}┬{'─'*28}┤{_R}")
-        print(f"{_B}│{_R} {dollars_label:<29}{_B}│{_R} {_ANSI_GREEN}${llm_d:<26.2f}{_R} {_B}│{_R}")
+        print(f"{_B}│{_R} {dollars_label:<27}{_B}│{_R} {_ANSI_GREEN}${llm_d:<25.2f}{_R} {_B}│{_R}")
         pre_str  = f"{pre_t:,}"
         post_str = f"{post_t:,} ({saved_pct:.1f}% cut)"
-        print(f"{_B}│{_R} Tokens before compression:   {_B}│{_R} {pre_str:<27}{_B}│{_R}")
-        print(f"{_B}│{_R} Tokens after compression:    {_B}│{_R} {_ANSI_GREEN}{post_str:<27}{_R}{_B}│{_R}")
+        print(f"{_B}│{_R} Tokens before compression: {_B}│{_R} {pre_str:<27}{_B}│{_R}")
+        print(f"{_B}│{_R} Tokens after compression:  {_B}│{_R} {_ANSI_GREEN}{post_str:<27}{_R}{_B}│{_R}")
         print(f"{_B}└{'─'*28}┴{'─'*28}┘{_R}")
 
 
