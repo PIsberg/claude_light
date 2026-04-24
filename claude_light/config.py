@@ -132,7 +132,55 @@ _QUERY_PREFIX = {"nomic-ai/nomic-embed-text-v1.5": "search_query: "}
 # Tree-sitter language configuration
 # ---------------------------------------------------------------------------
 
-_LANG_CONFIG: dict = {}          # ext → {"lang": Language, "node_types": [...]} | None
+_SENTINEL_UNLOADED = object()
+
+class _LazyLangConfig(dict):
+    """Dict of tree-sitter language configs; loads each entry on first access.
+
+    We pre-populate keys with _SENTINEL_UNLOADED at import (cheap — just extension
+    strings), then lazily import the heavy per-language grammar packages
+    (tree_sitter_python, tree_sitter_java, …) only when a file of that
+    extension is actually parsed. For a Python-only project this cuts out
+    ~300-500 ms of grammar loads at startup.
+    """
+
+    def _load(self, ext):
+        if not _TREESITTER_AVAILABLE:
+            super().__setitem__(ext, None)
+            return None
+        try:
+            if ext in _WANTED_LANGS:
+                get_lang, node_types = _WANTED_LANGS[ext]
+                cfg = {"lang": get_lang(), "node_types": node_types}
+                super().__setitem__(ext, cfg)
+                return cfg
+            if ext in (".ts", ".tsx"):
+                import tree_sitter_typescript as _tspy
+                ts_nodes = ["function_declaration", "method_definition", "arrow_function"]
+                super().__setitem__(".ts",  {"lang": Language(_tspy.language_typescript()), "node_types": ts_nodes})
+                super().__setitem__(".tsx", {"lang": Language(_tspy.language_tsx()),         "node_types": ts_nodes})
+                return super().__getitem__(ext)
+        except Exception:
+            pass
+        super().__setitem__(ext, None)
+        return None
+
+    def __getitem__(self, key):
+        val = super().__getitem__(key)
+        if val is _SENTINEL_UNLOADED:
+            return self._load(key)
+        return val
+
+    def get(self, key, default=None):
+        if not super().__contains__(key):
+            return default
+        val = super().__getitem__(key)
+        if val is _SENTINEL_UNLOADED:
+            return self._load(key)
+        return val
+
+
+_LANG_CONFIG: _LazyLangConfig = _LazyLangConfig()  # ext → {"lang": Language, "node_types": [...]} | None
 INDEXABLE_EXTENSIONS: set = set()  # all file extensions we want to index
 _NAME_CHILD_TYPES = {"identifier", "name", "field_identifier", "type_identifier"}
 
@@ -175,7 +223,17 @@ def _load_languages():
 
     INDEXABLE_EXTENSIONS.update(_LANG_CONFIG)
 
-_load_languages()
+def _register_lazy_langs():
+    """Populate _LANG_CONFIG keys with sentinels and INDEXABLE_EXTENSIONS.
+
+    Cheap: just adds extension strings. Actual grammar loading is deferred
+    until _LazyLangConfig.__getitem__/get triggers it.
+    """
+    for ext in list(_WANTED_LANGS) + [".ts", ".tsx"]:
+        _LANG_CONFIG[ext] = _SENTINEL_UNLOADED
+    INDEXABLE_EXTENSIONS.update(_LANG_CONFIG)
+
+_register_lazy_langs()
 
 SYSTEM_PROMPT = """\
 You are an expert code assistant. Answer questions about the codebase provided below. Be concise and precise.
