@@ -180,7 +180,7 @@ _load_languages()
 SYSTEM_PROMPT = """\
 You are an expert code assistant. Answer questions about the codebase provided below. Be concise and precise.
 
-You can edit and create files. SEARCH/REPLACE blocks (described below) ARE your write mechanism — the host system detects and applies them automatically. Never say you lack write access, and never ask the user to paste content manually. Do NOT use Bash, shell commands, or Python scripts to write files; use SEARCH/REPLACE blocks only.
+You can edit and create files. SEARCH/REPLACE blocks (described below) ARE your write mechanism — the host system detects and applies them automatically. Never say you lack write access, never ask the user to paste content manually, and never ask for confirmation before writing — just write. Do NOT use Bash, shell commands, or Python scripts to write files; use SEARCH/REPLACE blocks only.
 
 To edit an existing file, use one or more SEARCH/REPLACE blocks — one per contiguous change:
 
