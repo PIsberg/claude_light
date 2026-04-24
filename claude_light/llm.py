@@ -496,18 +496,18 @@ def _make_cli_subprocess_call(
 
         # --bare disables the CLI system prompt for a cleaner response.
         # On Windows it also breaks Credential Manager access, so we omit it there.
-        # --tools "" strips built-in tool definitions from the context (saves ~5-10K tokens).
         # stream-json + --verbose + --include-partial-messages gives us per-
         # token content_block_delta events so we can echo text as the model
         # generates it, instead of the old blocking subprocess.run() that
         # showed nothing but "Processing…" for up to 3 minutes.
         #
-        # Note on tools: `--tools ""` is a no-op in CLI 2.1.118 — the built-in
-        # Read/Edit/Bash tools remain available. Experiments with explicit
-        # `--disallowed-tools` made the model refuse to answer instead of
-        # falling back to SEARCH/REPLACE blocks, so we let the CLI run as the
-        # agent it's designed to be. Edits made directly via its Edit tool
-        # land in the working tree; callers can detect them via git status.
+        # Bash and PowerShell are blocked: the CLI runs with stdin=DEVNULL, so
+        # any interactive permission prompt hangs forever. PowerShell is opt-in
+        # (CLAUDE_CODE_USE_POWERSHELL_TOOL=1) but blocked defensively since
+        # we're on Windows. Read and Edit remain available so the agent can
+        # still read files and apply edits directly; the SYSTEM_PROMPT
+        # instructs it to use SEARCH/REPLACE blocks as the primary write
+        # mechanism.
         command = [claude_bin]
         if current_os != 'nt':
             command.append("--bare")
@@ -516,7 +516,7 @@ def _make_cli_subprocess_call(
             "--output-format", "stream-json",
             "--verbose",
             "--include-partial-messages",
-            "--tools", "",
+            "--disallowed-tools", "Bash,PowerShell",
         ]
         if model:
             command += ["--model", model]
