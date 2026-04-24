@@ -116,10 +116,6 @@ def start_chat(auto_apply=False):
         )
 
         def _get_input():
-            if os.name == 'nt':
-                import re
-                clean = re.sub(r'<[^>]+>', '', _get_status_html())
-                print(f"\n  {_ANSI_DIM}{clean.strip()}{_ANSI_RESET}")
             return _session.prompt("\n> ").strip()
     else:
         def _get_input():
