@@ -180,6 +180,8 @@ def _accumulate_compression_stats(info: dict) -> None:
         state.global_stats["total_tokens_pre_compress"]    += info["tokens_before"]
         state.global_stats["total_tokens_post_compress"]   += info["tokens_after"]
         state.global_stats["total_dollars_saved_llmlingua"] += dollars
+        state.session_tokens["compress_pre"]  += info["tokens_before"]
+        state.session_tokens["compress_post"] += info["tokens_after"]
     state.save_global_stats()
 
 def _summarize_turns(messages: list) -> tuple:

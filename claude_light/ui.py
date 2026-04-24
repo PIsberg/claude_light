@@ -154,10 +154,12 @@ def print_stats(usage, label="Stats", file=sys.stdout):
 
 def print_session_summary():
     with state.lock:
-        inp   = state.session_tokens["input"]
-        cw    = state.session_tokens["cache_write"]
-        cr    = state.session_tokens["cache_read"]
-        out   = state.session_tokens["output"]
+        inp          = state.session_tokens["input"]
+        cw           = state.session_tokens["cache_write"]
+        cr           = state.session_tokens["cache_read"]
+        out          = state.session_tokens["output"]
+        compress_pre  = state.session_tokens.get("compress_pre", 0)
+        compress_post = state.session_tokens.get("compress_post", 0)
         cost  = state.session_cost
         turns = len(state.conversation_history) // 2
 
@@ -198,6 +200,20 @@ def print_session_summary():
     print(row("Output",            out,  cost_out))
     print(f"{_B}├{'─'*24}┼{'─'*14}┼{'─'*10}┼{'─'*12}┤{_R}")
     print(row("TOTAL",             total, cost_tot, _ANSI_BOLD))
+
+    comp_delta = compress_pre - compress_post if compress_pre > compress_post else 0
+    if comp_delta > 0:
+        comp_cost     = (comp_delta / 1_000_000) * PRICE_WRITE
+        comp_tok_str  = f"-{comp_delta:,}"
+        comp_cost_str = f"-${comp_cost:.4f}"
+        print(f"{_B}├{'─'*24}┼{'─'*14}┼{'─'*10}┼{'─'*12}┤{_R}")
+        print(
+            f"{_B}│{_R} {_ANSI_GREEN}{'Compressed away':<{col_w[0]}}{_R}"
+            f" {_B}│{_R} {_ANSI_GREEN}{comp_tok_str:>{col_w[1]}}{_R}"
+            f" {_B}│{_R} {'':>{col_w[2]}}"
+            f" {_B}│{_R} {_ANSI_GREEN}{comp_cost_str:>{col_w[3]}}{_R} {_B}│{_R}"
+        )
+
     print(f"{_B}└{'─'*24}┴{'─'*14}┴{'─'*10}┴{'─'*12}┘{_R}")
 
     print(f"  Turns: {_ANSI_BOLD}{turns}{_R}  ·  Cache hit rate: {hit_str}")
@@ -222,24 +238,6 @@ def print_session_summary():
     print(f"{_B}├{'─'*28}┴{'─'*28}┤{_R}")
     print(f"{_B}│{_R} Sessions: {sessions:<45} {_B}│{_R}")
     print(f"{_B}└{'─'*57}┘{_R}")
-
-    # --- LLMLingua-2 Compression Savings (only show if ever used) ---
-    pre_t  = gs.get("total_tokens_pre_compress", 0)
-    post_t = gs.get("total_tokens_post_compress", 0)
-    llm_d  = gs.get("total_dollars_saved_llmlingua", 0.0)
-    if pre_t > 0:
-        comp_pct = (post_t / pre_t * 100) if pre_t else 0.0
-        saved_pct = 100.0 - comp_pct
-        dollars_label = "Extra Dollars Saved:" if ECONOMY_MODE == "USD" else "Extra API-Equiv. Saved:"
-        print(f"\n{_B}┌{'─'*57}┐{_R}")
-        print(f"{_B}│{_R}{_H}{'LLMLingua-2 Compression':^57}{_R}{_B}│{_R}")
-        print(f"{_B}├{'─'*28}┬{'─'*28}┤{_R}")
-        print(f"{_B}│{_R} {dollars_label:<27}{_B}│{_R} {_ANSI_GREEN}${llm_d:<25.2f}{_R} {_B}│{_R}")
-        pre_str  = f"{pre_t:,}"
-        post_str = f"{post_t:,} ({saved_pct:.1f}% cut)"
-        print(f"{_B}│{_R} Tokens before compression: {_B}│{_R} {pre_str:<27}{_B}│{_R}")
-        print(f"{_B}│{_R} Tokens after compression:  {_B}│{_R} {_ANSI_GREEN}{post_str:<27}{_R}{_B}│{_R}")
-        print(f"{_B}└{'─'*28}┴{'─'*28}┘{_R}")
 
 
 def _colorize_diff(lines):
