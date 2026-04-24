@@ -74,8 +74,8 @@ def _save_cache(embed_model: str) -> None:
 
 def index_files(quiet=False):
     if not quiet:
-        print(f"{_T_RAG} Scanning project files...", end="", flush=True)
-    
+        print(f"{_T_RAG} Scanning project files...", flush=True)
+
     # Use cached paths from skeleton module to avoid duplicate rglob
     all_paths = _get_cached_paths()
     source_files = [
@@ -84,10 +84,10 @@ def index_files(quiet=False):
     ]
     if not source_files:
         if not quiet:
-            print(f"\r{_T_RAG} No supported source files found.")
+            print(f"{_T_RAG} No supported source files found.")
         return
     if not quiet:
-        print(f"\r{_T_RAG} Found {_ANSI_BOLD}{len(source_files)}{_ANSI_RESET} source files.")
+        print(f"{_T_RAG} Found {_ANSI_BOLD}{len(source_files)}{_ANSI_RESET} source files.")
 
     state._source_files = source_files
     # Parallel hash computation for all source files
@@ -117,28 +117,26 @@ def index_files(quiet=False):
 
     if stale_files:
         if not quiet:
-            print(f"{_T_RAG} Chunking {len(stale_files)} file(s)...", end="", flush=True)
+            print(f"{_T_RAG} Chunking {len(stale_files)} file(s)...", flush=True)
         with concurrent.futures.ThreadPoolExecutor() as executor:
             for chunks in executor.map(process_file_chunks, stale_files):
                 new_chunks.extend(chunks)
         if not quiet:
-            print(f"\r{_T_RAG} Chunked → {len(new_chunks)} chunks.")
-    else:
-        pass
+            print(f"{_T_RAG} Chunked → {len(new_chunks)} chunks.")
 
     if new_chunks:
         # Model must be loaded at this point since we have new chunks to embed
         doc_prefix = _DOC_PREFIX.get(state.EMBED_MODEL, "")
         show_bar   = (len(new_chunks) > 100) and not quiet
         if not show_bar and not quiet:
-            print(f"{_T_RAG} Embedding {len(new_chunks)} chunk(s)...", end="", flush=True)
+            print(f"{_T_RAG} Embedding {len(new_chunks)} chunk(s)...", flush=True)
         embeddings = state.embedder.encode(
             [doc_prefix + c["text"] for c in new_chunks],
             normalize_embeddings=True,
             show_progress_bar=show_bar,
         )
         if not show_bar and not quiet:
-            print(f"\r{_T_RAG} Embedded  {len(new_chunks)} chunk(s).  ")
+            print(f"{_T_RAG} Embedded  {len(new_chunks)} chunk(s).")
         new_store = {
             c["id"]: {"text": c["text"], "emb": emb}
             for c, emb in zip(new_chunks, embeddings)

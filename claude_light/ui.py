@@ -86,20 +86,26 @@ class _Spinner:
         self._thread.join()
 
 
-def print_banner(model: str, top_k: int, access_mode: str, device: str | None = None):
-    """Print the Claude Code-style welcome banner."""
+def _display_path() -> str:
     cwd = Path.cwd()
     home = Path.home()
     try:
-        display_path = "~/" + str(cwd.relative_to(home)).replace("\\", "/")
+        return "~/" + str(cwd.relative_to(home)).replace("\\", "/")
     except ValueError:
-        display_path = str(cwd).replace("\\", "/")
+        return str(cwd).replace("\\", "/")
 
+
+def print_startup_header():
+    """Print name and working directory immediately on startup, before indexing."""
+    print(f"\n  {_ANSI_CYAN}{_ANSI_BOLD}{_SYM_MARK} claude light{_ANSI_RESET}")
+    print(f"  {_ANSI_DIM}{_display_path()}{_ANSI_RESET}\n", flush=True)
+
+
+def print_banner(model: str, top_k: int, access_mode: str, device: str | None = None):
+    """Print model/stats line and help text after indexing completes."""
     model_short = model.replace("claude-", "").replace("-20251001", "")
     device_str = f"  ·  {device.upper()}" if device else ""
 
-    print(f"\n  {_ANSI_CYAN}{_ANSI_BOLD}{_SYM_MARK} claude light{_ANSI_RESET}")
-    print(f"  {_ANSI_DIM}{display_path}{_ANSI_RESET}\n")
     print(f"  {_ANSI_DIM}{model_short}  ·  RAG top-{top_k}{device_str}  ·  {access_mode}{_ANSI_RESET}")
     print(f"  {_ANSI_DIM}/help for commands  ·  Ctrl+C to exit{_ANSI_RESET}\n")
 
