@@ -78,6 +78,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Windows console defaults to cp1252; force UTF-8 so we can print claude_light's
+# stderr (which contains ·, ◆, etc.) without UnicodeEncodeError.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 # ---------------------------------------------------------------------------
 # Pricing constants — must match Claude Light exactly
 # ---------------------------------------------------------------------------
@@ -145,20 +153,22 @@ STANDARD_QUERIES = [
 # ---------------------------------------------------------------------------
 # Regex patterns — match Claude Light stderr output after ANSI stripping
 #
-# [Stats]  12,345 tokens  |  cached 10,000 (81.0%)  |  new 2,345
-# [Cost]   $0.0023  |  saved $0.0187 (89.0% vs no-cache)  |  session $0.0023
-# [Router] effort=high  model=sonnet
+# Current single-line format (Pro & API key modes):
+#   ◆ Stats  ·  13,141 tokens  ·  cached 6,410 (48.8%)  ·  saved $0.0123 (27.2%)  ·  API equiv. $0.0328
+# In API_KEY mode the trailing label is "Cost" instead of "API equiv.".
+# Router line:
+#   ◆  sonnet-4-6  ·  medium
 # ---------------------------------------------------------------------------
 _ANSI_ESCAPE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
-STATS_RE  = re.compile(
-    r"\[Stats\]\s+([\d,]+)\s+tokens\s+\|\s+cached\s+([\d,]+)\s+\(([\d.]+)%\)\s+\|\s+new\s+([\d,]+)"
-)
-COST_RE   = re.compile(
-    r"\[Cost\]\s+\$([\d.]+)\s+\|\s+saved\s+\$(-?[\d.]+)\s+\((-?[\d.]+)%\s+vs\s+no-cache\)\s+\|\s+session\s+\$([\d.]+)"
+STATS_RE = re.compile(
+    r"Stats\s+\S\s+([\d,]+)\s+tokens"
+    r"\s+\S\s+cached\s+([\d,]+)\s+\(([\d.]+)%\)"
+    r"\s+\S\s+(?:saved|overhead)\s+\$(-?[\d.]+)\s+\((-?[\d.]+)%\)"
+    r"\s+\S\s+(?:Cost|API equiv\.)\s+\$([\d.]+)"
 )
 ROUTER_RE = re.compile(
-    r"\[Router\]\s+effort=(\w+)\s+model=(\w+)"
+    r"\b(haiku|sonnet|opus)[-\d]*\s+\S\s+(low|medium|high|max)\b"
 )
 
 
@@ -170,21 +180,29 @@ def parse_stderr(stderr_text: str) -> dict | None:
     """Extract stats from one Claude Light stderr dump. Returns None on parse failure."""
     clean = strip_ansi(stderr_text)
     sm = STATS_RE.search(clean)
-    cm = COST_RE.search(clean)
     rm = ROUTER_RE.search(clean)
-    if not (sm and cm):
+    if not sm:
         return None
+    total_input  = int(sm.group(1).replace(",", ""))
+    cache_read   = int(sm.group(2).replace(",", ""))
+    hit_pct      = float(sm.group(3))
+    saved        = float(sm.group(4))
+    if "overhead" in clean[max(0, sm.start()-50):sm.end()]:
+        saved = -abs(saved)
+    savings_pct  = float(sm.group(5))
+    actual_cost  = float(sm.group(6))
     return {
-        "total_input":    int(sm.group(1).replace(",", "")),
-        "cache_read":     int(sm.group(2).replace(",", "")),
-        "hit_pct":        float(sm.group(3)),
-        "cache_write":    int(sm.group(4).replace(",", "")),
-        "actual_cost":    float(cm.group(1)),
-        "saved_nocache":  float(cm.group(2)),
-        "savings_pct":    float(cm.group(3)),
-        "session_cost":   float(cm.group(4)),
-        "effort":         rm.group(1) if rm else "unknown",
-        "model":          rm.group(2) if rm else "unknown",
+        "total_input":    total_input,
+        "cache_read":     cache_read,
+        "hit_pct":        hit_pct,
+        # Cache-write count is no longer printed; approximate as remaining input.
+        "cache_write":    max(0, total_input - cache_read),
+        "actual_cost":    actual_cost,
+        "saved_nocache":  saved,
+        "savings_pct":    savings_pct,
+        "session_cost":   actual_cost,  # per-query session cost; aggregate elsewhere
+        "effort":         rm.group(2) if rm else "unknown",
+        "model":          rm.group(1) if rm else "unknown",
     }
 
 
