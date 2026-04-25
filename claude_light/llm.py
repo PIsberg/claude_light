@@ -237,9 +237,15 @@ def _maybe_compress_history():
         state.conversation_history = state.conversation_history[-(MAX_HISTORY_TURNS * 2):]
 
 def _build_system_blocks(skeleton):
+    # Skeleton uses the 1-hour extended TTL: it changes only when source files
+    # or .md docs are edited (rare within a session), so the 5-minute default
+    # forces unnecessary cache writes on idle conversations. The 1h variant
+    # costs 2x on write but reads stay at $0.30/M for an hour, which dominates
+    # for any session with idle gaps over 5 min.
     blocks = [
         {"type": "text", "text": SYSTEM_PROMPT},
-        {"type": "text", "text": skeleton, "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": skeleton,
+         "cache_control": {"type": "ephemeral", "ttl": "1h"}},
     ]
     return blocks
 
