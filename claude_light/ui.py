@@ -216,7 +216,14 @@ def print_session_summary():
 
     print(f"{_B}└{'─'*24}┴{'─'*14}┴{'─'*10}┴{'─'*12}┘{_R}")
 
-    print(f"  Turns: {_ANSI_BOLD}{turns}{_R}  ·  Cache hit rate: {hit_str}")
+    cost_without_cache = (inp + cw + cr) / 1_000_000 * PRICE_INPUT + out / 1_000_000 * PRICE_OUTPUT
+    if cost_without_cache > 0:
+        saved_pct = (cost_without_cache - cost_tot) / cost_without_cache * 100
+        saved_str = f"{_ANSI_GREEN}{saved_pct:.1f}%{_R}"
+    else:
+        saved_str = "—"
+
+    print(f"  Turns: {_ANSI_BOLD}{turns}{_R}  ·  Cache hit rate: {hit_str}  ·  Saved: {saved_str}")
 
     # --- Global Lifetime Savings ---
     gs = state.global_stats
