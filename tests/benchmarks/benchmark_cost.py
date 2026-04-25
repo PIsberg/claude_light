@@ -494,22 +494,21 @@ def main():
     )
     args = parser.parse_args()
 
-    repo_root = Path(__file__).resolve().parent.parent
+    repo_root = Path(__file__).resolve().parent.parent.parent
     module_entry = repo_root / "claude_light" / "__main__.py"
     if not module_entry.exists():
         print(f"[error] claude_light module entrypoint not found at {module_entry}", file=sys.stderr)
         sys.exit(1)
 
-    # API key check (skip for dry-run)
+    # Auth check (skip for dry-run). Mirrors claude_light's resolution order:
+    # ANTHROPIC_API_KEY env / dotfile, then automation token, then Claude CLI OAuth (Pro).
     if not args.dry_run:
-        api_key = (
-            os.environ.get("ANTHROPIC_API_KEY")
-            or _read_key_file()
-        )
-        if not api_key:
+        if not _has_any_auth():
             print(
-                "[error] ANTHROPIC_API_KEY is not set.\n"
-                "Set it as an environment variable or use --dry-run to skip API calls.",
+                "[error] No authentication found.\n"
+                "Set ANTHROPIC_API_KEY, create ~/.anthropic/.env, install\n"
+                "~/.claude_light_automation_token, or run `claude auth login`.\n"
+                "Use --dry-run to skip API calls.",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -569,6 +568,23 @@ def _read_key_file() -> str | None:
             if line.startswith("ANTHROPIC_API_KEY="):
                 return line.split("=", 1)[1].strip()
     return None
+
+
+def _has_any_auth() -> bool:
+    """Mirror claude_light's auth resolution: API key OR automation token OR OAuth."""
+    if os.environ.get("ANTHROPIC_API_KEY") or _read_key_file():
+        return True
+    if (Path.home() / ".claude_light_automation_token").exists():
+        return True
+    cred = Path.home() / ".claude" / ".credentials.json"
+    if cred.exists():
+        try:
+            data = json.loads(cred.read_text(encoding="utf-8"))
+            if data.get("claudeAiOauth", {}).get("accessToken"):
+                return True
+        except Exception:
+            pass
+    return False
 
 
 if __name__ == "__main__":
