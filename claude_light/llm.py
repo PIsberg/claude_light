@@ -840,12 +840,53 @@ def refresh_md_file(path_str: str):
         warm_cache()
 
 
+_CLARIFY_PHRASES = frozenset({
+    "why", "how", "how come", "explain", "explain that", "elaborate",
+    "more", "tell me more", "go on", "continue", "and", "and then",
+    "what do you mean", "huh", "wait", "really", "ok", "okay",
+    "that's it", "is that all", "anything else", "go ahead", "please",
+})
+
+_PRONOUN_REFS = frozenset({"that", "this", "it", "those", "these", "them"})
+
+
+def _is_followup_clarification(query: str) -> bool:
+    """Detect short pronoun-reference follow-ups that don't need fresh RAG.
+
+    Returns True only when there's prior conversation history AND the query
+    is a short clarification ("why?", "explain that", "more"). Skipping
+    retrieval on these saves the full retrieval token budget (1.5K-9K) per
+    turn — they would have pulled chunks based on noise anyway, since
+    pronouns don't embed meaningfully.
+    """
+    if not state.conversation_history:
+        return False
+    q = query.lower().strip().rstrip("?.! ")
+    if not q:
+        return False
+    words = q.split()
+    if len(words) > 6:
+        return False
+    if q in _CLARIFY_PHRASES:
+        return True
+    # Short queries dominated by pronoun refs: "explain that", "more on it"
+    if len(words) <= 4 and any(w in _PRONOUN_REFS for w in words):
+        return True
+    return False
+
+
 def chat(query, auto_apply=False):
     routed_model, effort, max_tok = route_query(query)
     token_budget = _RETRIEVAL_BUDGET[effort]
 
     from claude_light.indexer import _chunk_label
-    retrieved_ctx, hits = retrieve(query, token_budget=token_budget, effort=effort)
+    if _is_followup_clarification(query):
+        retrieved_ctx, hits = "", []
+        print(
+            f"  {_T_RAG}  {_ANSI_DIM}skipping retrieval — clarification follow-up{_ANSI_RESET}"
+        )
+    else:
+        retrieved_ctx, hits = retrieve(query, token_budget=token_budget, effort=effort)
 
     compression_info = None
     if retrieved_ctx and config.LLMLINGUA_ENABLED:
