@@ -239,6 +239,9 @@ def run_query(repo_root: Path, repo_dir: Path, query: str,
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
+    # claude_light is not pip-installed; expose the source root so `python -m
+    # claude_light` works from the cloned repo's cwd.
+    env["PYTHONPATH"] = str(repo_root) + os.pathsep + env.get("PYTHONPATH", "")
     result = subprocess.run(
         [sys.executable, "-m", "claude_light", query],
         cwd=str(repo_dir),
