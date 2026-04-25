@@ -60,8 +60,8 @@ class TestClaudeLight(unittest.TestCase):
         model, effort, tokens = route_query("list all files")
         self.assertEqual(effort, "low")
         
-        # medium effort (default fallback)
-        model, effort, tokens = route_query("what does this function do")
+        # medium effort — single arch signal, no length bonus → score 4.0
+        model, effort, tokens = route_query("compare different approaches")
         self.assertEqual(effort, "medium")
         
         # high effort (code modifications)

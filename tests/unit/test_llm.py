@@ -34,8 +34,23 @@ class TestRouteQuery(unittest.TestCase):
 
     def test_medium_effort_default(self):
         print("\n  ▶ TestRouteQuery.test_medium_effort_default")
-        model, effort, tokens = route_query("what does this function do")
+        # Single arch signal ("compare"), no length bonus → score 4.0 → medium.
+        model, effort, tokens = route_query("compare different approaches")
         self.assertEqual(effort, "medium")
+
+    def test_low_effort_long_lookup(self):
+        # Regression: an infra-only lookup that happens to be 5+ words used to
+        # be promoted to medium by the word-count multiplier. It belongs on
+        # Haiku — "list all public classes or modules in this codebase" is
+        # still a lookup.
+        print("\n  ▶ TestRouteQuery.test_low_effort_long_lookup")
+        for q in (
+            "list all public classes or modules in this codebase",
+            "where is the main entry point defined",
+            "what python version is required by this project",
+        ):
+            _, effort, _ = route_query(q)
+            self.assertEqual(effort, "low", msg=f"query: {q!r}")
 
     def test_high_effort_code_modification(self):
         print("\n  ▶ TestRouteQuery.test_high_effort_code_modification")
