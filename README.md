@@ -7,7 +7,6 @@
 ![claude_light](https://github.com/user-attachments/assets/15dcb11d-c68a-4991-a5d8-adb1679e4e3b)
 
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/PIsberg/claude_light/badge)](https://scorecard.dev/viewer/?uri=github.com/PIsberg/claude_light/)
-[![CII Best Practices](https://bestpractices.coreinfrastructure.org/projects/badge_placeholder)](https://bestpractices.coreinfrastructure.org/projects/badge_placeholder)
 
 
 ## 📊 Real-World Benchmark Results
@@ -48,10 +47,10 @@ This tool is aggressively designed to prevent you from paying full price for tok
 
 *   **Hybrid RAG + Prompt Caching:** The tool uses a two-tier caching strategy. The project's directory tree source files and all `.md` files act as a cached "skeleton" system prompt.
 *   **Three-Tier Prompt Caching:** The tool places three `ephemeral` cache breakpoints in every request: (1) after the skeleton system prompt — stable for the whole session; (2) after the conversation history — stable for all but the newest turn; (3) after the retrieved RAG chunks in the current user message — stable across consecutive questions about the same code area. If you ask follow-up questions about the same module, the chunk block hits the cache and only your new question text is billed at full price ($3.00/M); everything above it costs $0.30/M.
-*   **The "Heartbeat" Auto-Warmer:** A background daemon checks the session every 30 seconds. If you are idle for more than 4 minutes, it sends a tiny background ping to keep your ephemeral cache alive.
+*   **The "Heartbeat" Auto-Warmer:** In API-key mode, a background daemon checks the session every 30 seconds and sends a tiny ping if you are idle for more than 4 minutes, keeping your ephemeral cache alive. The skeleton cache uses a 1-hour extended TTL so this rarely needs to fire. (OAuth/Pro-subscription mode skips the heartbeat: each turn already spawns a fresh `claude` CLI subprocess, so there is no persistent process to warm — the Anthropic backend's content-hashed prompt cache still hits across subprocess invocations on its own.)
 *   **Method-Level Chunking:** Instead of stuffing entire 1,500-line files into the context window, a brace-depth scanner splits source files into one chunk per method or constructor. Each chunk retains its package, imports, and class header to remain self-contained. This provides a massive 5–10× reduction in retrieved tokens.
 *   **Sliding Window History:** To prevent conversation history from growing unboundedly and costing you on every turn, the tool caps memory at the last 6 turns via the `MAX_HISTORY_TURNS` setting.
-*   **Strict Scoring Threshold:** The script drops irrelevant chunks below a cosine similarity score of 0.45 (`MIN_SCORE`) before sending them to Claude.
+*   **Strict Scoring Threshold:** Two filters drop low-quality chunks before sending them to Claude. `MIN_SCORE` (0.45) is an absolute cosine-similarity floor, and `RELATIVE_SCORE_FLOOR` (0.60) drops any chunk whose score is below 60% of the top-ranked chunk for that query. Together they prevent a single weak query from dragging in noise alongside one strong hit.
 *   **Compressed Skeleton Tree:** The directory tree sent in the cached system prompt is compacted in two ways: single-child directory chains are collapsed (`main/java/com/example/` on one line), and sibling files sharing an extension are brace-grouped (`{OrderService,UserService,PaymentService}.java`). This saves 30–50 % of skeleton tokens on typical Java/Go/Python projects.
 *   **Retrieved-Chunk Deduplication:** When multiple methods from the same file rank highly, the shared preamble (package, imports, class header) is emitted only once, with all retrieved methods listed underneath. This saves 5–20 % of retrieved-context tokens on class-heavy queries.
 
@@ -181,7 +180,7 @@ The script runs three concurrent threads to keep your workflow seamless:
 
 * **Main Thread:** Handles the input loop, retrieves relevant chunks per query, and manages the conversation history.
 * **Watchdog:** Monitors your directory for file saves. If a source file changes, it automatically re-chunks and re-embeds it; if a `.md` file changes, it rebuilds the skeleton cache.
-* **Heartbeat Daemon:** Keeps the Anthropic prompt cache warm while you step away.
+* **Heartbeat Daemon (API-key mode only):** Keeps the Anthropic prompt cache warm while you step away. Disabled in OAuth/Pro-subscription mode, where each turn spawns a fresh `claude` CLI subprocess and there is no persistent process to keep warm.
 
 ### Auto-Tuned Embedding Models
 The script automatically selects the most efficient embedding model based on the size of your repository:

@@ -236,10 +236,21 @@ def _maybe_compress_history():
         print(f"\n  {_T_ERR}  History compression failed ({e}) — truncating.")
         state.conversation_history = state.conversation_history[-(MAX_HISTORY_TURNS * 2):]
 
+# The 1h cache TTL used in _build_system_blocks() requires this beta header;
+# without it the API silently drops the cache_control block (no caching at all).
+_EXTENDED_CACHE_HEADERS = {"anthropic-beta": "extended-cache-ttl-2025-04-11"}
+
+
 def _build_system_blocks(skeleton):
+    # Skeleton uses the 1-hour extended TTL: it changes only when source files
+    # or .md docs are edited (rare within a session), so the 5-minute default
+    # forces unnecessary cache writes on idle conversations. The 1h variant
+    # costs 2x on write but reads stay at $0.30/M for an hour, which dominates
+    # for any session with idle gaps over 5 min.
     blocks = [
         {"type": "text", "text": SYSTEM_PROMPT},
-        {"type": "text", "text": skeleton, "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": skeleton,
+         "cache_control": {"type": "ephemeral", "ttl": "1h"}},
     ]
     return blocks
 
@@ -804,6 +815,7 @@ def warm_cache(quiet=False):
             max_tokens=1,
             system=_build_system_blocks(skeleton),
             messages=[{"role": "user", "content": "ok"}],
+            extra_headers=_EXTENDED_CACHE_HEADERS,
         )
         cost = calculate_cost(response.usage)
         _accumulate_usage(response.usage)
@@ -834,12 +846,53 @@ def refresh_md_file(path_str: str):
         warm_cache()
 
 
+_CLARIFY_PHRASES = frozenset({
+    "why", "how", "how come", "explain", "explain that", "elaborate",
+    "more", "tell me more", "go on", "continue", "and", "and then",
+    "what do you mean", "huh", "wait", "really", "ok", "okay",
+    "that's it", "is that all", "anything else", "go ahead", "please",
+})
+
+_PRONOUN_REFS = frozenset({"that", "this", "it", "those", "these", "them"})
+
+
+def _is_followup_clarification(query: str) -> bool:
+    """Detect short pronoun-reference follow-ups that don't need fresh RAG.
+
+    Returns True only when there's prior conversation history AND the query
+    is a short clarification ("why?", "explain that", "more"). Skipping
+    retrieval on these saves the full retrieval token budget (1.5K-9K) per
+    turn — they would have pulled chunks based on noise anyway, since
+    pronouns don't embed meaningfully.
+    """
+    if not state.conversation_history:
+        return False
+    q = query.lower().strip().rstrip("?.! ")
+    if not q:
+        return False
+    words = q.split()
+    if len(words) > 6:
+        return False
+    if q in _CLARIFY_PHRASES:
+        return True
+    # Short queries dominated by pronoun refs: "explain that", "more on it"
+    if len(words) <= 4 and any(w in _PRONOUN_REFS for w in words):
+        return True
+    return False
+
+
 def chat(query, auto_apply=False):
     routed_model, effort, max_tok = route_query(query)
     token_budget = _RETRIEVAL_BUDGET[effort]
 
     from claude_light.indexer import _chunk_label
-    retrieved_ctx, hits = retrieve(query, token_budget=token_budget, effort=effort)
+    if _is_followup_clarification(query):
+        retrieved_ctx, hits = "", []
+        print(
+            f"  {_T_RAG}  {_ANSI_DIM}skipping retrieval — clarification follow-up{_ANSI_RESET}"
+        )
+    else:
+        retrieved_ctx, hits = retrieve(query, token_budget=token_budget, effort=effort)
 
     compression_info = None
     if retrieved_ctx and config.LLMLINGUA_ENABLED:
@@ -847,10 +900,11 @@ def chat(query, auto_apply=False):
         _accumulate_compression_stats(compression_info)
         if compression_info and not compression_info.get("skipped"):
             pct = compression_info["ratio"] * 100
+            tag = "cached" if compression_info.get("cached") else f"{compression_info['elapsed_ms']:.0f} ms"
             print(
                 f"  {_T_RAG}  {_ANSI_DIM}LLMLingua "
                 f"{compression_info['tokens_before']:,}→{compression_info['tokens_after']:,} "
-                f"({pct:.0f}%, {compression_info['elapsed_ms']:.0f} ms){_ANSI_RESET}"
+                f"({pct:.0f}%, {tag}){_ANSI_RESET}"
             )
 
     if hits:
@@ -890,6 +944,7 @@ def chat(query, auto_apply=False):
         max_tokens=max_tok,
         system=system,
         messages=messages,
+        extra_headers=_EXTENDED_CACHE_HEADERS,
     )
     if effort == "max":
         create_kwargs["thinking"] = {"type": "enabled", "budget_tokens": 10_000}
@@ -1005,6 +1060,7 @@ def one_shot(prompt, auto_apply=False):
         max_tokens=max_tok,
         system=_build_system_blocks(skeleton),
         messages=[{"role": "user", "content": f"{ctx_prefix}Question:\n{prompt}"}],
+        extra_headers=_EXTENDED_CACHE_HEADERS,
     )
     if effort == "max":
         create_kwargs["thinking"] = {"type": "enabled", "budget_tokens": 10_000}

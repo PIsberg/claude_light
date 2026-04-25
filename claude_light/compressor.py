@@ -8,8 +8,10 @@ the original text is returned — this must never raise into the hot path.
 
 from __future__ import annotations
 
+import hashlib
 import threading
 import time
+from collections import OrderedDict
 
 from claude_light import config
 
@@ -19,6 +21,22 @@ _load_lock = threading.Lock()
 _load_attempted = False
 _load_thread: threading.Thread | None = None
 _load_done = threading.Event()
+
+# Memoize compression results by content hash. The retrieved-context block
+# is byte-identical across follow-up turns about the same module, but every
+# turn paid the 100-400 ms LLMLingua model run. Caching skips that cost AND
+# keeps the compressed bytes deterministic so the third-tier prompt cache
+# breakpoint actually hits on follow-ups.
+_CACHE_MAX = 32
+_compress_cache: "OrderedDict[str, tuple[str, dict]]" = OrderedDict()
+_compress_cache_lock = threading.Lock()
+
+
+def _cache_key(text: str, rate: float, force_tokens: tuple) -> str:
+    h = hashlib.sha256()
+    h.update(text.encode("utf-8", errors="replace"))
+    h.update(f"|{rate}|{force_tokens}".encode("utf-8"))
+    return h.hexdigest()
 
 
 def _estimate_tokens(text: str) -> int:
@@ -136,6 +154,14 @@ def compress_context(
     effective_rate = rate if rate is not None else config.LLMLINGUA_TARGET_RATE
     ft = force_tokens if force_tokens is not None else config.LLMLINGUA_FORCE_TOKENS
 
+    key = _cache_key(text, effective_rate, tuple(ft))
+    with _compress_cache_lock:
+        cached = _compress_cache.get(key)
+        if cached is not None:
+            _compress_cache.move_to_end(key)
+            cached_text, cached_info = cached
+            return cached_text, {**cached_info, "elapsed_ms": 0.0, "cached": True}
+
     t0 = time.perf_counter()
     try:
         result = comp.compress_prompt(text, rate=effective_rate, force_tokens=ft)
@@ -152,10 +178,18 @@ def compress_context(
     if tokens_after >= tokens_before:
         return _noop(text, "no_gain")
 
-    return compressed, {
+    info = {
         "tokens_before": tokens_before,
         "tokens_after": tokens_after,
         "ratio": ratio,
         "elapsed_ms": elapsed_ms,
         "skipped": False,
     }
+
+    with _compress_cache_lock:
+        _compress_cache[key] = (compressed, info)
+        _compress_cache.move_to_end(key)
+        while len(_compress_cache) > _CACHE_MAX:
+            _compress_cache.popitem(last=False)
+
+    return compressed, info
