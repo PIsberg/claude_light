@@ -484,6 +484,11 @@ def main():
         help="Emit full results as JSON to stdout (tables still go to stderr)",
     )
     parser.add_argument(
+        "--output",
+        metavar="FILE",
+        help="Write JSON results to FILE instead of stdout (avoids mixing with progress prints)",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Clone repos and count tokens but skip API calls",
@@ -553,7 +558,12 @@ def main():
     if len(all_results) > 1:
         print_aggregate_table(all_results)
 
-    if args.json:
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as f:
+            json.dump(all_results, f, indent=2, default=str)
+            f.write("\n")
+        print(f"\n  [json] wrote {args.output}")
+    elif args.json:
         json.dump(all_results, sys.stdout, indent=2, default=str)
         sys.stdout.write("\n")
 
