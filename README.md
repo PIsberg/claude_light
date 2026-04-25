@@ -62,6 +62,33 @@ For a deeper dive into the implementation, see [docs/architecture.md](docs/archi
 
 > **Note:** `sentence-transformers` pulls in PyTorch, which is approximately **1.5 GB** on the first install.
 
+### Install as a tool (recommended)
+
+If you have [`pipx`](https://pipx.pypa.io/) or [`uv`](https://docs.astral.sh/uv/) installed, the fastest path is to install `claude_light` as a globally-available CLI in its own isolated environment:
+
+```bash
+# pipx
+pipx install git+https://github.com/PIsberg/claude_light.git
+
+# uv
+uv tool install git+https://github.com/PIsberg/claude_light.git
+```
+
+Then run from any project root:
+
+```bash
+claude-light                 # interactive
+claude-light "what does OrderService do?"   # one-shot
+```
+
+Optional extras:
+
+```bash
+pipx install "git+https://github.com/PIsberg/claude_light.git#egg=claude-light[llmlingua]"
+```
+
+A PyPI release (so the `git+...` URL becomes plain `pipx install claude-light`) is planned — the existing methods below remain fully supported in the meantime.
+
 ### Quick Start
 
 1. **Install Dependencies**:

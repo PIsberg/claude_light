@@ -1,6 +1,13 @@
-"""Module entrypoint for ``python -m claude_light``."""
+"""Module entrypoint for ``python -m claude_light`` and the ``claude-light`` console script."""
 
+import os
 import sys
+
+# Fix for Windows: prevent Intel Fortran runtime (from NumPy/PyTorch) from
+# intercepting Ctrl+C and causing a 'forrtl: error (200)' crash. Must be set
+# before NumPy/PyTorch are imported transitively via .main.
+if os.name == "nt":
+    os.environ.setdefault("FOR_DISABLE_CONSOLE_CTRL_HANDLER", "1")
 
 # Reconfigure stdout/stderr to UTF-8 BEFORE any other imports so that
 # ui.py's _UNICODE detection (computed at import time) sees UTF-8 and
