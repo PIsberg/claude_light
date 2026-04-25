@@ -6,7 +6,7 @@ from claude_light.config import GLOBAL_STATS_FILE
 chunk_store = {}
 conversation_history = []
 session_cost = 0.0
-session_tokens = {"input": 0, "cache_write": 0, "cache_read": 0, "output": 0}
+session_tokens = {"input": 0, "cache_write": 0, "cache_read": 0, "output": 0, "compress_pre": 0, "compress_post": 0}
 
 # Global statistics accumulated across all sessions
 global_stats = {
