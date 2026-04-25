@@ -853,10 +853,11 @@ def chat(query, auto_apply=False):
         _accumulate_compression_stats(compression_info)
         if compression_info and not compression_info.get("skipped"):
             pct = compression_info["ratio"] * 100
+            tag = "cached" if compression_info.get("cached") else f"{compression_info['elapsed_ms']:.0f} ms"
             print(
                 f"  {_T_RAG}  {_ANSI_DIM}LLMLingua "
                 f"{compression_info['tokens_before']:,}→{compression_info['tokens_after']:,} "
-                f"({pct:.0f}%, {compression_info['elapsed_ms']:.0f} ms){_ANSI_RESET}"
+                f"({pct:.0f}%, {tag}){_ANSI_RESET}"
             )
 
     if hits:
