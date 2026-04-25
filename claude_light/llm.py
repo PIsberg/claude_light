@@ -236,6 +236,11 @@ def _maybe_compress_history():
         print(f"\n  {_T_ERR}  History compression failed ({e}) — truncating.")
         state.conversation_history = state.conversation_history[-(MAX_HISTORY_TURNS * 2):]
 
+# The 1h cache TTL used in _build_system_blocks() requires this beta header;
+# without it the API silently drops the cache_control block (no caching at all).
+_EXTENDED_CACHE_HEADERS = {"anthropic-beta": "extended-cache-ttl-2025-04-11"}
+
+
 def _build_system_blocks(skeleton):
     # Skeleton uses the 1-hour extended TTL: it changes only when source files
     # or .md docs are edited (rare within a session), so the 5-minute default
@@ -810,6 +815,7 @@ def warm_cache(quiet=False):
             max_tokens=1,
             system=_build_system_blocks(skeleton),
             messages=[{"role": "user", "content": "ok"}],
+            extra_headers=_EXTENDED_CACHE_HEADERS,
         )
         cost = calculate_cost(response.usage)
         _accumulate_usage(response.usage)
@@ -938,6 +944,7 @@ def chat(query, auto_apply=False):
         max_tokens=max_tok,
         system=system,
         messages=messages,
+        extra_headers=_EXTENDED_CACHE_HEADERS,
     )
     if effort == "max":
         create_kwargs["thinking"] = {"type": "enabled", "budget_tokens": 10_000}
@@ -1053,6 +1060,7 @@ def one_shot(prompt, auto_apply=False):
         max_tokens=max_tok,
         system=_build_system_blocks(skeleton),
         messages=[{"role": "user", "content": f"{ctx_prefix}Question:\n{prompt}"}],
+        extra_headers=_EXTENDED_CACHE_HEADERS,
     )
     if effort == "max":
         create_kwargs["thinking"] = {"type": "enabled", "budget_tokens": 10_000}
