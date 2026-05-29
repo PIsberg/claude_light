@@ -11,7 +11,10 @@ import claude_light.config as config
 from claude_light.config import (
     API_KEY, AUTH_MODE, API_KEY_SOURCE, ECONOMY_MODE, MODEL, MODEL_HAIKU, MODEL_SONNET, MODEL_OPUS, SUMMARY_MODEL,
     MAX_HISTORY_TURNS, SUMMARIZE_BATCH, _RETRIEVAL_BUDGET, SYSTEM_PROMPT,
-    ENABLE_STREAMING
+    ENABLE_STREAMING,
+    PRICE_INPUT, PRICE_OUTPUT,
+    ROUTER_SEMANTIC_WEIGHT, ROUTER_SEMANTIC_FLOOR, ROUTER_COST_CEILING,
+    ROUTER_ESCALATE_MARGIN, ROUTER_FIXED_INPUT_TOKENS, ROUTER_PROTOTYPES,
 )
 from claude_light.ui import (
     _T_ROUTE, _T_SYS, _T_ERR, _T_RAG, _T_CACHE, _T_EDIT,
@@ -50,52 +53,144 @@ else:
     # It is only used in API_KEY mode for actual chat — OAuth routes via CLI subprocess.
     client = anthropic.Anthropic(api_key=API_KEY if API_KEY else "sk-ant-placeholder")
 
+# ---------------------------------------------------------------------------
+# Router — module-level keyword sets (not re-allocated per call)
+# ---------------------------------------------------------------------------
+
+_META_SIGNALS = frozenset({
+    "hi", "hello", "help", "who are you", "what are you", "clear history", "compact"
+})
+_ARCH_SIGNALS = frozenset({
+    "architect", "architecture", "design system", "deeply", "deep analysis",
+    "performance", "optimize", "security", "scalability", "trade-off",
+    "trade off", "tradeoff", "cross-cutting", "evaluate", "compare",
+    "strategy", "reasoning", "step by step", "comprehensive", "deadlock", "race condition"
+})
+_LOGIC_SIGNALS = frozenset({
+    "implement", "write", "create", "add", "refactor", "fix", "debug",
+    "build", "develop", "generate", "update", "change", "modify",
+    "migrate", "convert", "extend", "integrate", "logic", "algorithm"
+})
+_INFRA_SIGNALS = frozenset({
+    "list", "show", "where", "what is", "what are",
+    "how many", "print", "display", "tell me", "which file",
+    "which files", "find", "locate", "count", "search", "grep"
+})
+
+# Prototype embedding cache — keyed by EMBED_MODEL, built once per model load.
+_PROTO_CACHE = {"model": None, "mat": None}
+
+# Side-channel: last routing diagnostic written by route_query, read by chat().
+_last_route_info: dict = {}
+
+
+def _get_prototype_embeddings():
+    """Return {dim: ndarray (P,D)} for the current embedder, or None.
+
+    Lazy, cached per EMBED_MODEL. Never blocks, never raises — returns None on
+    any problem (test mode, embedder mid-load, encode error).
+    """
+    if state.embedder is None or not state.embedder_ready.is_set():
+        return None
+    if _PROTO_CACHE["model"] == state.EMBED_MODEL and _PROTO_CACHE["mat"] is not None:
+        return _PROTO_CACHE["mat"]
+    try:
+        import numpy as np
+        from claude_light.config import _QUERY_PREFIX
+        prefix = _QUERY_PREFIX.get(state.EMBED_MODEL, "")
+        dims = list(ROUTER_PROTOTYPES.keys())
+        all_phrases = [prefix + p for d in dims for p in ROUTER_PROTOTYPES[d]]
+        with state.embedder_lock:
+            all_vecs = np.asarray(
+                state.embedder.encode(all_phrases, normalize_embeddings=True)
+            )
+        mat = {}
+        idx = 0
+        for d in dims:
+            n = len(ROUTER_PROTOTYPES[d])
+            mat[d] = all_vecs[idx:idx + n]
+            idx += n
+        _PROTO_CACHE.update(model=state.EMBED_MODEL, mat=mat)
+        return mat
+    except Exception:
+        return None
+
+
+def _lexical_dimension_scores(q: str) -> dict:
+    """Weighted substring match scores for each intent dimension."""
+    return {
+        "arch":  sum(4.0 for s in _ARCH_SIGNALS  if s in q),
+        "logic": sum(5.0 for s in _LOGIC_SIGNALS if s in q),
+        "infra": sum(0.5 for s in _INFRA_SIGNALS if s in q),
+    }
+
+
+def _semantic_dimension_scores(query: str):
+    """Embedding-based per-dimension scores in the same units as lexical.
+
+    Returns (scores: dict, used: bool). When embedder is unavailable, all
+    scores are 0 and used=False — the caller's fused score then equals the
+    pure lexical score exactly, keeping unit-test outcomes unchanged.
+    """
+    zeros = {"arch": 0.0, "logic": 0.0, "infra": 0.0}
+    protos = _get_prototype_embeddings()
+    if protos is None:
+        return zeros, False
+    try:
+        from claude_light.config import _QUERY_PREFIX
+        import numpy as np
+        prefix = _QUERY_PREFIX.get(state.EMBED_MODEL, "")
+        with state.embedder_lock:
+            q_emb = np.asarray(
+                state.embedder.encode(
+                    prefix + query,
+                    normalize_embeddings=True,
+                )
+            )
+        scores = {}
+        for dim, proto_mat in protos.items():
+            sim = float(np.max(proto_mat @ q_emb))
+            floor = ROUTER_SEMANTIC_FLOOR
+            scores[dim] = (
+                0.0 if sim < floor
+                else ROUTER_SEMANTIC_WEIGHT * (sim - floor) / (1.0 - floor)
+            )
+        return scores, True
+    except Exception:
+        return zeros, False
+
+
+def _estimate_query_cost(max_tokens: int, retrieval_budget: int) -> float:
+    """Rough per-query cost estimate used only for tier gating."""
+    expected_input  = retrieval_budget + ROUTER_FIXED_INPUT_TOKENS
+    expected_output = max_tokens * 0.5
+    return expected_input / 1e6 * PRICE_INPUT + expected_output / 1e6 * PRICE_OUTPUT
+
+
 def route_query(query: str) -> tuple[str, str, int]:
     import re
     q = query.lower()
     words = q.split()
     word_count = len(words)
-    
-    # 1. Hard Bounds & Quick Routes
-    _META_SIGNALS = {"hi", "hello", "help", "who are you", "what are you", "clear history", "compact"}
+
+    # 1. Meta quick-route — short greetings/commands → Haiku immediately
     if word_count < 5 and any(s in q for s in _META_SIGNALS):
-        # Extremely simple/meta queries → Haiku
         return _route_result("low", MODEL_HAIKU, 2_048)
-    
-    # 2. Define Weighted Signals
-    _ARCH_SIGNALS = {
-        "architect", "architecture", "design system", "deeply", "deep analysis",
-        "performance", "optimize", "security", "scalability", "trade-off",
-        "trade off", "tradeoff", "cross-cutting", "evaluate", "compare",
-        "strategy", "reasoning", "step by step", "comprehensive", "deadlock", "race condition"
-    }
-    _LOGIC_SIGNALS = {
-        "implement", "write", "create", "add", "refactor", "fix", "debug",
-        "build", "develop", "generate", "update", "change", "modify",
-        "migrate", "convert", "extend", "integrate", "logic", "algorithm"
-    }
-    _INFRA_SIGNALS = {
-        "list", "show", "where", "what is", "what are",
-        "how many", "print", "display", "tell me", "which file",
-        "which files", "find", "locate", "count", "search", "grep"
-    }
 
-    # 3. Calculate Base Score
-    arch_score  = sum(4.0 for s in _ARCH_SIGNALS  if s in q)
-    logic_score = sum(5.0 for s in _LOGIC_SIGNALS if s in q)
-    infra_score = sum(0.5 for s in _INFRA_SIGNALS if s in q)
-    score = arch_score + logic_score + infra_score
+    # 2. Fused intent scores (keyword + semantic, additive)
+    lex = _lexical_dimension_scores(q)
+    sem, sem_used = _semantic_dimension_scores(query)
+    arch  = lex["arch"]  + sem["arch"]
+    logic = lex["logic"] + sem["logic"]
+    infra = lex["infra"] + sem["infra"]
+    score = arch + logic + infra
 
-    # 4. Contextual Multipliers
-    # Mentioning a file path (e.g. main.py, lib/utils.py) suggests technical intent
+    # 3. Contextual multipliers (identical math to previous router)
     if re.search(r'[a-zA-Z0-9_\-/]+\.[a-zA-Z0-9]{2,4}', q):
         score += 3.0
 
-    # Word count implies complexity — but only when there is actual non-lookup
-    # intent. A long infra query ("what python version is required by this
-    # project") is still a lookup; verbosity alone shouldn't promote it past
-    # Haiku. Very long queries (>30 words) escalate regardless.
-    if arch_score + logic_score > 0:
+    # Word-count complexity bonus, gated on non-lookup intent
+    if arch + logic > 0:
         if word_count > 30:
             score += 5.0
         elif word_count > 10:
@@ -104,22 +199,63 @@ def route_query(query: str) -> tuple[str, str, int]:
             score += 1.5
     elif word_count > 30:
         score += 5.0
-    
-    # Conversation depth - deeper history requires better instruction following
+
+    # Deeper conversations need better instruction following
     history_depth = len(state.conversation_history) // 2
-    score += (history_depth * 0.5)
+    score += history_depth * 0.5
 
-    # 5. Determine Effort Level
+    # 4. Intent shape
+    intent_is_lookup = infra > (arch + logic)
+
+    # 5. Raw tier (same thresholds as before)
     if score >= 12.0:
-        effort, model, max_tokens = "max",    MODEL_OPUS,   16_000
+        effort, model, max_tokens = "max",    MODEL_OPUS,    16_000
     elif score >= 5.0:
-        effort, model, max_tokens = "high",   MODEL_SONNET,  8_192
-    elif score >= 1.5 or (word_count > 15):
-        effort, model, max_tokens = "medium", MODEL_SONNET,  4_096
+        effort, model, max_tokens = "high",   MODEL_SONNET,   8_192
+    elif score >= 1.5 or word_count > 15:
+        effort, model, max_tokens = "medium", MODEL_SONNET,   4_096
     else:
-        effort, model, max_tokens = "low",    MODEL_HAIKU,   2_048
+        effort, model, max_tokens = "low",    MODEL_HAIKU,    2_048
 
-    return _route_result(effort, model, max_tokens)
+    # 6. Cost-aware adjustments
+
+    def _record_and_return(effort, model, max_tokens):
+        _last_route_info.clear()
+        _last_route_info.update(
+            arch=arch, logic=logic, infra=infra,
+            semantic_used=sem_used,
+            est_cost=_estimate_query_cost(max_tokens, _RETRIEVAL_BUDGET[effort]),
+        )
+        return _route_result(effort, model, max_tokens)
+
+    # Explicit downgrade: lookup-dominant queries (no real arch/logic intent)
+    # should never be promoted by verbosity or file-path bonuses.
+    if intent_is_lookup and (arch + logic) < 1.0:
+        return _record_and_return("low", MODEL_HAIKU, 2_048)
+
+    # Escalation gate: only allow an expensive tier when the score justifiably clears
+    # a margin above its threshold. Uses raw score (not conf) so the gate stays
+    # reachable — conf caps at 1.0, which would block max-tier entirely.
+    _tier_threshold = {"max": 12.0, "high": 5.0, "medium": 1.5, "low": 0.0}
+    _tier_order     = ["max", "high", "medium", "low"]
+    _tier_params    = {
+        "max":    (MODEL_OPUS,    16_000),
+        "high":   (MODEL_SONNET,   8_192),
+        "medium": (MODEL_SONNET,   4_096),
+        "low":    (MODEL_HAIKU,    2_048),
+    }
+    while True:
+        cand_cost = _estimate_query_cost(max_tokens, _RETRIEVAL_BUDGET[effort])
+        required_score = _tier_threshold[effort] * (1.0 + ROUTER_ESCALATE_MARGIN)
+        if cand_cost <= ROUTER_COST_CEILING or score >= required_score:
+            break
+        next_idx = _tier_order.index(effort) + 1
+        if next_idx >= len(_tier_order):
+            break
+        effort = _tier_order[next_idx]
+        model, max_tokens = _tier_params[effort]
+
+    return _record_and_return(effort, model, max_tokens)
 
 def _route_result(effort, model, max_tokens) -> tuple[str, str, int]:
     _effort_color = {
@@ -920,7 +1056,8 @@ def chat(query, auto_apply=False):
         print(f"  {_T_RAG}  {_ANSI_DIM}{names}{_ANSI_RESET}")
 
     record_retrieval(query, routed_model, effort, token_budget, hits,
-                     compression=compression_info, skipped_reason=skipped_reason)
+                     compression=compression_info, skipped_reason=skipped_reason,
+                     routing=_last_route_info.copy() if _last_route_info else None)
 
     with state.lock:
         skeleton = state.skeleton_context

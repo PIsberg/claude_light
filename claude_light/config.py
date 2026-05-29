@@ -276,3 +276,21 @@ PRICE_INPUT  = 3.00
 PRICE_WRITE  = PRICE_INPUT * 1.25   # $3.75
 PRICE_READ   = PRICE_INPUT * 0.10   # $0.30
 PRICE_OUTPUT = 15.00
+
+# --- Dynamic router: hybrid (keyword+embedding) + cost-aware tuning ---
+ROUTER_SEMANTIC_WEIGHT    = 6.0    # max points a fully-on-prototype dimension adds
+ROUTER_SEMANTIC_FLOOR     = 0.30   # cosine below this contributes 0 (kills noise)
+ROUTER_COST_CEILING       = 0.12   # USD soft cap; only the Opus/max tier is gated
+ROUTER_ESCALATE_MARGIN    = 0.15   # confidence margin needed to keep a cost-gated tier
+ROUTER_FIXED_INPUT_TOKENS = 1500   # system+skeleton+query estimate for cost calc
+ROUTER_PROTOTYPES = {
+    "arch":  ["evaluate architecture trade-offs and design",
+              "analyze performance scalability security deeply",
+              "compare approaches and reason step by step"],
+    "logic": ["implement and refactor this code",
+              "fix the bug and debug the algorithm",
+              "write a new function to build the feature"],
+    "infra": ["list and show files in the codebase",
+              "where is this defined, find and locate it",
+              "what is the value, count how many"],
+}

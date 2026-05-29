@@ -13,12 +13,16 @@ from unittest.mock import MagicMock, patch
 os.environ.setdefault("ANTHROPIC_API_KEY", "sk-ant-dummy-test-key")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
+import numpy as np
+
 from claude_light.llm import (
     route_query, _extract_text, _build_system_blocks,
     _accumulate_usage, _summarize_turns, _maybe_compress_history,
+    _PROTO_CACHE,
 )
-from claude_light.config import SYSTEM_PROMPT, MAX_HISTORY_TURNS
+from claude_light.config import SYSTEM_PROMPT, MAX_HISTORY_TURNS, MODEL_HAIKU, MODEL_SONNET, MODEL_OPUS
 import claude_light.state as _state
+import claude_light.llm as _llm
 
 
 # ---------------------------------------------------------------------------
@@ -26,6 +30,21 @@ import claude_light.state as _state
 # ---------------------------------------------------------------------------
 
 class TestRouteQuery(unittest.TestCase):
+
+    def setUp(self):
+        # Ensure embedder is None and state is clean for every test
+        _state.embedder = None
+        _state.embedder_ready.clear()
+        _state.EMBED_MODEL = None
+        _state.conversation_history = []
+        _PROTO_CACHE.update(model=None, mat=None)
+
+    def tearDown(self):
+        _state.embedder = None
+        _state.embedder_ready.clear()
+        _state.EMBED_MODEL = None
+        _state.conversation_history = []
+        _PROTO_CACHE.update(model=None, mat=None)
 
     def test_low_effort_simple_lookup(self):
         print("\n  ▶ TestRouteQuery.test_low_effort_simple_lookup")
@@ -78,6 +97,108 @@ class TestRouteQuery(unittest.TestCase):
         print("\n  ▶ TestRouteQuery.test_max_hits_two_signals")
         _, effort, _ = route_query("evaluate the architecture and scalability deeply")
         self.assertEqual(effort, "max")
+
+    def test_embedder_none_fallback_matches_baseline(self):
+        # With embedder=None the fused score == pure keyword score.
+        # The existing tier expectations must all hold.
+        print("\n  ▶ TestRouteQuery.test_embedder_none_fallback_matches_baseline")
+        cases = [
+            ("list all files", "low"),
+            ("refactor the parse method to handle exceptions", "high"),
+            ("evaluate the architecture and scalability deeply", "max"),
+        ]
+        for q, expected in cases:
+            _, effort, _ = route_query(q)
+            self.assertEqual(effort, expected, msg=f"query: {q!r}")
+
+    def test_semantic_boost_promotes(self):
+        # A query with NO keyword signals should be promoted when semantic
+        # similarity to arch prototypes is high (sim > FLOOR).
+        print("\n  ▶ TestRouteQuery.test_semantic_boost_promotes")
+
+        # Baseline: embedder None → purely keyword, "overview of the system" = score 0 → low.
+        _, effort_no_embed, _ = route_query("overview of the system")
+        self.assertEqual(effort_no_embed, "low", msg="baseline (no embedder) should be low")
+
+        # Now install a mock embedder that returns vectors with high arch similarity.
+        # 9 prototype phrases → shape (9, 4); all arch prototypes (rows 0-2) point to dim 0.
+        all_proto_vecs = np.zeros((9, 4), dtype=np.float32)
+        all_proto_vecs[:3, 0] = 1.0   # arch protos: high sim to query below
+        all_proto_vecs[3:6, 1] = 1.0  # logic protos: orthogonal
+        all_proto_vecs[6:9, 2] = 1.0  # infra protos: orthogonal
+
+        query_vec = np.array([0.99, 0.0, 0.0, 0.14], dtype=np.float32)
+        query_vec /= np.linalg.norm(query_vec)
+
+        mock_embedder = MagicMock()
+        mock_embedder.encode.side_effect = lambda texts, **kw: (
+            all_proto_vecs if isinstance(texts, list) else query_vec
+        )
+
+        _PROTO_CACHE.update(model=None, mat=None)
+        _state.embedder = mock_embedder
+        _state.EMBED_MODEL = "mock-model"
+        _state.embedder_ready.set()
+
+        _, effort_with_embed, _ = route_query("overview of the system")
+
+        # Semantic arch score should lift the query above low.
+        self.assertNotEqual(effort_with_embed, "low",
+                            msg="semantic boost should lift keyword-free arch query above low")
+
+    def test_cost_ceiling_demotes_borderline_opus(self):
+        # A borderline score with a very high escalation margin → demote to high.
+        # "evaluate the architecture deeply" → 3 arch signals = score 12, +word bonus 1.5 = 13.5.
+        # With margin=0.99: required_score = 12 * 1.99 = 23.88 > 13.5 → demoted.
+        print("\n  ▶ TestRouteQuery.test_cost_ceiling_demotes_borderline_opus")
+        with patch.object(_llm, 'ROUTER_COST_CEILING', 0.001), \
+             patch.object(_llm, 'ROUTER_ESCALATE_MARGIN', 0.99):
+            _, effort, _ = route_query("evaluate the architecture deeply")
+        self.assertNotEqual(effort, "max",
+                            msg="extremely high margin should demote even a clearly architectural query")
+
+    def test_high_confidence_lookup_downgrades_to_haiku(self):
+        # A verbose infra-dominant query must stay on Haiku regardless of word count.
+        print("\n  ▶ TestRouteQuery.test_high_confidence_lookup_downgrades_to_haiku")
+        q = "list all public classes or modules or files or directories in this entire codebase"
+        model, effort, tokens = route_query(q)
+        self.assertEqual(effort, "low")
+        self.assertEqual(model, MODEL_HAIKU)
+        self.assertEqual(tokens, 2048)
+
+    def test_prototype_cache_built_once(self):
+        # The prototype embedder.encode should only be called once for the
+        # prototype build; a second route_query reuses the cache.
+        print("\n  ▶ TestRouteQuery.test_prototype_cache_built_once")
+        from unittest.mock import MagicMock
+
+        # 9 prototype phrases batched into one call → shape (9, 4).
+        all_proto_vecs = np.zeros((9, 4), dtype=np.float32)
+        all_proto_vecs[:, 0] = 1.0
+        query_vec = np.array([0.5, 0.5, 0.5, 0.5], dtype=np.float32)
+
+        call_log = []
+
+        def fake_encode(texts, **kw):
+            call_log.append(texts)
+            return all_proto_vecs if isinstance(texts, list) else query_vec
+
+        mock_embedder = MagicMock()
+        mock_embedder.encode.side_effect = fake_encode
+
+        _state.embedder = mock_embedder
+        _state.EMBED_MODEL = "cache-test-model"
+        _state.embedder_ready.set()
+
+        route_query("where is main defined")
+        route_query("where is the entry point")
+
+        # First call: 1 prototype batch + 1 query encode = 2 encode calls.
+        # Second call: cache hit (no prototype build) + 1 query encode = 1 encode call.
+        # Total proto-build calls = 1, i.e. exactly one list-valued call.
+        list_calls = [c for c in call_log if isinstance(c, list)]
+        self.assertEqual(len(list_calls), 1,
+                         msg=f"prototype encode should run only once; got {len(list_calls)}")
 
 
 # ---------------------------------------------------------------------------
