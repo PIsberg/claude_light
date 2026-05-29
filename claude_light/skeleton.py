@@ -48,7 +48,7 @@ def _file_hash_parallel(
             return (key, prev_hashes[key], list(stat))
         return (key, _file_hash(p), list(stat))
 
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    with ThreadPoolExecutor(max_workers=min(32, (os.cpu_count() or 4) * 2)) as executor:
         results = list(executor.map(hash_one, paths))
 
     hashes = {k: h for k, h, _ in results if h is not None}

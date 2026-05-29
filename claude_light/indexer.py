@@ -166,6 +166,7 @@ def index_files(quiet=False):
                 [doc_prefix + c["text"] for c in new_chunks],
                 normalize_embeddings=True,
                 show_progress_bar=show_bar,
+                batch_size=256,
             )
         if not show_bar and not quiet:
             print(f"{_T_RAG} Embedded  {len(new_chunks)} chunk(s).")
@@ -216,6 +217,7 @@ def reindex_file(path):
             embeddings = state.embedder.encode(
                 [doc_prefix + c["text"] for c in chunks],
                 normalize_embeddings=True,
+                batch_size=256,
             )
 
         with state.lock:
