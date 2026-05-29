@@ -184,6 +184,58 @@ def _render_retrieved_context(top_pairs, effort: str) -> str:
     return summary + "\n\nDetailed Code Context:\n" + details
 
 
+def explain_last_retrieval() -> str:
+    """Render a human-readable explanation of the most recent query's routing
+    and retrieval, for the /why command. Returns a message if nothing is recorded.
+    """
+    info = state.last_retrieval
+    if not info:
+        return "  No query has been run yet — ask something first, then /why."
+
+    lines = []
+    lines.append(f"  Query   : {info['query']}")
+    lines.append(f"  Routed  : {info['model']}  ·  effort={info['effort']}  "
+                 f"·  budget={info['token_budget']} tok")
+
+    if info.get("skipped_reason"):
+        lines.append(f"  Retrieval skipped: {info['skipped_reason']}")
+    else:
+        hits = info.get("hits") or []
+        if not hits:
+            lines.append("  Retrieved: (no chunks cleared the score floor)")
+        else:
+            top = hits[0][1]
+            lines.append(f"  Retrieved {len(hits)} chunk(s) "
+                         f"(MIN_SCORE={MIN_SCORE}, floor={RELATIVE_SCORE_FLOOR:.0%} of top):")
+            for cid, score in hits:
+                rel = (score / top) if top else 0.0
+                file = _chunk_id_to_file(cid)
+                sym = _chunk_id_to_symbol(cid)
+                label = f"{Path(file).name}::{sym}" if "::" in cid else Path(file).name
+                lines.append(f"    {score:5.3f}  ({rel:4.0%})  {label}")
+
+    ci = info.get("compression")
+    if ci and not ci.get("skipped"):
+        pre, post = ci.get("tokens_before"), ci.get("tokens_after")
+        lines.append(f"  Compressed: {pre} → {post} tok "
+                     f"({ci.get('ratio', 0) * 100:.0f}% kept)")
+    return "\n".join(lines)
+
+
+def record_retrieval(query, model, effort, token_budget, hits,
+                     compression=None, skipped_reason=None):
+    """Store diagnostics for the last query so /why can explain it."""
+    state.last_retrieval = {
+        "query": query,
+        "model": model,
+        "effort": effort,
+        "token_budget": token_budget,
+        "hits": list(hits) if hits else [],
+        "compression": compression,
+        "skipped_reason": skipped_reason,
+    }
+
+
 def retrieve(query, token_budget=None, effort="medium"):
     budget = token_budget or TARGET_RETRIEVED_TOKENS
     base_k = state.TOP_K or 4

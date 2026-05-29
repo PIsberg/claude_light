@@ -21,7 +21,7 @@ from claude_light.ui import (
 import claude_light.state as state
 from claude_light.skeleton import build_skeleton, _refresh_tree_only, _assemble_skeleton, _refresh_single_md
 from claude_light.indexer import index_files
-from claude_light.retrieval import retrieve
+from claude_light.retrieval import retrieve, record_retrieval
 from claude_light.editor import parse_edit_blocks, apply_edits
 from claude_light.retry import retry_with_backoff
 from claude_light.compressor import compress_context
@@ -892,8 +892,10 @@ def chat(query, auto_apply=False):
     token_budget = _RETRIEVAL_BUDGET[effort]
 
     from claude_light.indexer import _chunk_label
+    skipped_reason = None
     if _is_followup_clarification(query):
         retrieved_ctx, hits = "", []
+        skipped_reason = "clarification follow-up"
         print(
             f"  {_T_RAG}  {_ANSI_DIM}skipping retrieval — clarification follow-up{_ANSI_RESET}"
         )
@@ -916,6 +918,9 @@ def chat(query, auto_apply=False):
     if hits:
         names = "  ".join(_chunk_label(p) for p, _ in hits)
         print(f"  {_T_RAG}  {_ANSI_DIM}{names}{_ANSI_RESET}")
+
+    record_retrieval(query, routed_model, effort, token_budget, hits,
+                     compression=compression_info, skipped_reason=skipped_reason)
 
     with state.lock:
         skeleton = state.skeleton_context

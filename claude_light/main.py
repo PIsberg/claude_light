@@ -104,7 +104,7 @@ def start_chat(auto_apply=False):
 
         CACHE_DIR.mkdir(exist_ok=True)
         _slash_completer = _WordCompleter(
-            ["/compact", "/clear", "/cost", "/help", "/run", "/undo", "exit", "quit"],
+            ["/compact", "/clear", "/cost", "/help", "/run", "/undo", "/why", "exit", "quit"],
             sentence=True,
         )
         _session = _PromptSession(
@@ -156,8 +156,13 @@ def start_chat(auto_apply=False):
                     f"  /cost             show session token usage and cost\n"
                     f"  /run <cmd>        run a shell command, feed output to Claude\n"
                     f"  /undo             revert last AI file change (git reset)\n"
+                    f"  /why              explain the last query's routing + retrieval\n"
                     f"  exit              quit\n"
                 )
+                continue
+            if query == "/why":
+                from claude_light.retrieval import explain_last_retrieval
+                print(f"\n{explain_last_retrieval()}\n")
                 continue
             if query == "/run" or query.startswith("/run "):
                 cmd = query[4:].strip()
