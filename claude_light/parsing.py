@@ -92,18 +92,30 @@ def chunk_file(filepath, source):
 
 
 def _strip_comments(text: str, ext: str) -> str:
-    """Remove comments from a code chunk to cut retrieved-context token usage.
+    """Remove low-value comments from a code chunk to cut retrieved-context tokens.
 
     Strips only code comments — not the file-path header line or preamble —
     so the structural context (package, imports, class declaration) is preserved.
+
+    Docstrings (Python) and Javadoc (`/** ... */`) carry the natural-language
+    description of what the code does, which is exactly what the model needs to
+    answer "what does X do?". They are kept by default; set STRIP_DOCSTRINGS
+    (CLAUDE_LIGHT_STRIP_DOCS=1) to remove them too.
     """
+    from claude_light.config import STRIP_DOCSTRINGS
+
     if ext in _COMMENT_EXTS_C:
-        text = re.sub(r'/\*.*?\*/', '', text, flags=re.DOTALL)   # /* block */
-        text = re.sub(r'//[^\n]*',  '', text)                    # // line
+        if STRIP_DOCSTRINGS:
+            text = re.sub(r'/\*.*?\*/', '', text, flags=re.DOTALL)   # all /* */ blocks
+        else:
+            # Drop plain /* */ blocks but keep Javadoc /** */ doc comments.
+            text = re.sub(r'/\*(?!\*).*?\*/', '', text, flags=re.DOTALL)
+        text = re.sub(r'//[^\n]*',  '', text)                        # // line
     elif ext == ".py":
-        text = re.sub(r'#.*', '', text)                          # # line
-        text = re.sub(r'"""[\s\S]*?"""', '', text)               # """ docstring """
-        text = re.sub(r"'''[\s\S]*?'''", '', text)               # ''' docstring '''
+        text = re.sub(r'#.*', '', text)                             # # line
+        if STRIP_DOCSTRINGS:
+            text = re.sub(r'"""[\s\S]*?"""', '', text)             # """ docstring """
+            text = re.sub(r"'''[\s\S]*?'''", '', text)             # ''' docstring '''
     # Collapse runs of 3+ blank lines left behind by removal
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text

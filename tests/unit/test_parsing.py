@@ -109,6 +109,31 @@ class TestStripComments(unittest.TestCase):
         self.assertNotIn("tsx comment", result)
         self.assertIn("const App", result)
 
+    def test_python_docstring_preserved_by_default(self):
+        print("\n  ▶ TestStripComments.test_python_docstring_preserved_by_default")
+        code = 'def foo():\n    """Return the answer to everything."""\n    # noise\n    return 42\n'
+        result = _strip_comments(code, ".py")
+        self.assertIn("Return the answer to everything", result)  # docstring kept
+        self.assertNotIn("# noise", result)                       # line comment dropped
+
+    def test_javadoc_preserved_but_plain_block_stripped(self):
+        print("\n  ▶ TestStripComments.test_javadoc_preserved_but_plain_block_stripped")
+        code = ("/** Computes the checksum. */\n"
+                "/* internal note */\n"
+                "int crc() { return 0; }")
+        result = _strip_comments(code, ".java")
+        self.assertIn("Computes the checksum", result)  # Javadoc kept
+        self.assertNotIn("internal note", result)       # plain block dropped
+
+    def test_docstrings_stripped_when_flag_set(self):
+        print("\n  ▶ TestStripComments.test_docstrings_stripped_when_flag_set")
+        from unittest.mock import patch
+        py = 'def foo():\n    """describe me"""\n    return 1\n'
+        java = "/** javadoc text */\nint x() { return 0; }"
+        with patch("claude_light.config.STRIP_DOCSTRINGS", True):
+            self.assertNotIn("describe me", _strip_comments(py, ".py"))
+            self.assertNotIn("javadoc text", _strip_comments(java, ".java"))
+
 
 # ---------------------------------------------------------------------------
 # _walk
