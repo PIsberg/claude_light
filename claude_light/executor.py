@@ -44,6 +44,20 @@ except ImportError:
 _RUN_HEAD_LINES   = 20
 _RUN_TAIL_LINES   = 80
 _RUN_MAX_CHARS    = 8_000
+# Wall-clock cap for `/run <cmd>`. Without it a hanging command (a server,
+# `tail -f`, an interactive prompt) blocks the whole chat loop indefinitely.
+# Override with CLAUDE_LIGHT_RUN_TIMEOUT (seconds); 0/blank disables the cap.
+def _resolve_run_timeout():
+    raw = os.environ.get("CLAUDE_LIGHT_RUN_TIMEOUT", "").strip()
+    if not raw:
+        return 120
+    try:
+        val = float(raw)
+    except ValueError:
+        return 120
+    return val if val > 0 else None
+
+_RUN_TIMEOUT_SECS = _resolve_run_timeout()
 
 # Model sizes in MB (approximate for common models)
 _MODEL_SIZES = {
@@ -151,28 +165,40 @@ def _load_embedding_model(model_name: str, quiet: bool = False) -> SentenceTrans
 
 
 def _run_command(cmd: str) -> str:
-    import subprocess, shlex
+    import subprocess
     _T_RUN = f"{_ANSI_YELLOW}[Run]{_ANSI_RESET}"
     print(f"\n{_T_RUN} {_ANSI_DIM}$ {cmd}{_ANSI_RESET}")
     print(f"{_ANSI_DIM}{'-'*60}{_ANSI_RESET}")
+    timed_out = False
     try:
         proc = subprocess.run(
             cmd, shell=True,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, encoding="utf-8", errors="replace",
+            timeout=_RUN_TIMEOUT_SECS,
         )
+        raw = proc.stdout or ""
+        exit_code = proc.returncode
+    except subprocess.TimeoutExpired as exc:
+        # The child is killed on timeout; surface whatever it printed so far.
+        timed_out = True
+        raw = exc.stdout or ""
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="replace")
+        exit_code = None
     except Exception as exc:
         msg = f"[Run] Failed to start process: {exc}"
         print(f"{_T_ERR} {msg}")
         return msg
 
-    raw = proc.stdout or ""
-    exit_code = proc.returncode
-
     print(raw, end="")
-    status_color = _ANSI_GREEN if exit_code == 0 else "\033[31m" # RED
     print(f"{_ANSI_DIM}{'-'*60}{_ANSI_RESET}")
-    print(f"{_T_RUN} Exit code: {status_color}{exit_code}{_ANSI_RESET}\n")
+    if timed_out:
+        print(f"{_T_RUN} {_ANSI_YELLOW}Timed out after {_RUN_TIMEOUT_SECS}s "
+              f"(process killed){_ANSI_RESET}\n")
+    else:
+        status_color = _ANSI_GREEN if exit_code == 0 else "\033[31m" # RED
+        print(f"{_T_RUN} Exit code: {status_color}{exit_code}{_ANSI_RESET}\n")
 
     lines = raw.splitlines()
     if len(lines) <= _RUN_HEAD_LINES + _RUN_TAIL_LINES:
@@ -187,7 +213,9 @@ def _run_command(cmd: str) -> str:
         trimmed = trimmed[-_RUN_MAX_CHARS:]
         trimmed = f"... (truncated to last {_RUN_MAX_CHARS} chars) ...\n" + trimmed
 
-    return f"$ {cmd}\n(exit {exit_code})\n{trimmed}"
+    status_line = (f"[TIMEOUT after {_RUN_TIMEOUT_SECS}s]"
+                   if timed_out else f"(exit {exit_code})")
+    return f"$ {cmd}\n{status_line}\n{trimmed}"
 
 def auto_tune(source_files, chunks=None, quiet=False, load_model=True):
     n = len(source_files)

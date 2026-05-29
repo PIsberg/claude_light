@@ -58,20 +58,38 @@ def _load_cache(source_files: list, embed_model: str, file_hashes: dict, quiet=F
     return cached_store, stale
 
 
+def _atomic_write(path: Path, data) -> None:
+    """Write bytes/str to a sibling temp file then os.replace() into place.
+
+    os.replace is atomic on POSIX and Windows, so a crash mid-write leaves the
+    previous cache intact instead of a truncated/corrupt file.
+    """
+    import os
+    tmp = path.with_name(path.name + ".tmp")
+    if isinstance(data, bytes):
+        tmp.write_bytes(data)
+    else:
+        tmp.write_text(data, encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def _save_cache(embed_model: str) -> None:
-    try:
-        CACHE_DIR.mkdir(exist_ok=True)
-        manifest = {
-            "embed_model": embed_model,
-            "files": dict(state._file_hashes),
-            "file_stats": dict(state._file_stats),
-        }
-        with state.lock:
-            store_snapshot = dict(state.chunk_store)
-        CACHE_INDEX.write_bytes(pickle.dumps(store_snapshot, protocol=pickle.HIGHEST_PROTOCOL))
-        CACHE_MANIFEST.write_text(json.dumps(manifest), encoding="utf-8")
-    except Exception as e:
-        print(f"[Cache] Failed to save: {e}")
+    # cache_io_lock serializes concurrent writers (multiple reindex timers);
+    # combined with _atomic_write the on-disk cache can never be left partial.
+    with state.cache_io_lock:
+        try:
+            CACHE_DIR.mkdir(exist_ok=True)
+            manifest = {
+                "embed_model": embed_model,
+                "files": dict(state._file_hashes),
+                "file_stats": dict(state._file_stats),
+            }
+            with state.lock:
+                store_snapshot = dict(state.chunk_store)
+            _atomic_write(CACHE_INDEX, pickle.dumps(store_snapshot, protocol=pickle.HIGHEST_PROTOCOL))
+            _atomic_write(CACHE_MANIFEST, json.dumps(manifest))
+        except Exception as e:
+            print(f"[Cache] Failed to save: {e}")
 
 def index_files(quiet=False):
     if not quiet:
@@ -143,11 +161,12 @@ def index_files(quiet=False):
         show_bar   = (len(new_chunks) > 100) and not quiet
         if not show_bar and not quiet:
             print(f"{_T_RAG} Embedding {len(new_chunks)} chunk(s)...", flush=True)
-        embeddings = state.embedder.encode(
-            [doc_prefix + c["text"] for c in new_chunks],
-            normalize_embeddings=True,
-            show_progress_bar=show_bar,
-        )
+        with state.embedder_lock:
+            embeddings = state.embedder.encode(
+                [doc_prefix + c["text"] for c in new_chunks],
+                normalize_embeddings=True,
+                show_progress_bar=show_bar,
+            )
         if not show_bar and not quiet:
             print(f"{_T_RAG} Embedded  {len(new_chunks)} chunk(s).")
         new_store = {
@@ -193,10 +212,11 @@ def reindex_file(path):
         chunks = chunk_file(path, text)
 
         doc_prefix = _DOC_PREFIX.get(state.EMBED_MODEL, "")
-        embeddings = state.embedder.encode(
-            [doc_prefix + c["text"] for c in chunks],
-            normalize_embeddings=True,
-        )
+        with state.embedder_lock:
+            embeddings = state.embedder.encode(
+                [doc_prefix + c["text"] for c in chunks],
+                normalize_embeddings=True,
+            )
 
         with state.lock:
             for k in _chunks_for_file(path):

@@ -112,6 +112,13 @@ LLMLINGUA_TARGET_RATE  = float(os.environ.get("CLAUDE_LIGHT_LLMLINGUA_RATE", "0.
 LLMLINGUA_MIN_TOKENS   = 800      # below this, skip — compression overhead > savings
 LLMLINGUA_FORCE_TOKENS = ["\n", "```", "::", "//"]
 
+# Comment stripping of retrieved context (see parsing._strip_comments).
+# Docstrings / Javadoc are the natural-language description of what code does —
+# exactly the signal that answers "what does X do?" — so they are PRESERVED by
+# default and only line-noise comments are removed. Set CLAUDE_LIGHT_STRIP_DOCS=1
+# to also strip docstrings/Javadoc when you need to squeeze the context further.
+STRIP_DOCSTRINGS = os.environ.get("CLAUDE_LIGHT_STRIP_DOCS", "0") == "1"
+
 SKIP_DIRS      = {
     ".git", "target", "build", "node_modules",
     ".idea", "__pycache__", ".mvn", ".gradle",

@@ -273,6 +273,48 @@ class TestResolveNewContent(unittest.TestCase):
             finally:
                 os.chdir(orig)
 
+    def test_traversal_escape_rejected(self):
+        print("\n  ▶ TestResolveNewContent.test_traversal_escape_rejected")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            orig = os.getcwd()
+            # Nest a subdir so '..' has room to escape the project root.
+            root = Path(tmpdir) / "project"
+            root.mkdir()
+            os.chdir(root)
+            try:
+                edit = {"type": "new", "path": "../escape.txt", "content": "pwned"}
+                with self.assertRaises(ValueError):
+                    _resolve_new_content(edit)
+                self.assertFalse((Path(tmpdir) / "escape.txt").exists())
+            finally:
+                os.chdir(orig)
+
+    def test_absolute_path_rejected(self):
+        print("\n  ▶ TestResolveNewContent.test_absolute_path_rejected")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            orig = os.getcwd()
+            os.chdir(tmpdir)
+            try:
+                # An absolute path outside cwd must be refused regardless of OS.
+                outside = Path(tempfile.gettempdir()).resolve() / "cl_abs_escape.txt"
+                edit = {"type": "new", "path": str(outside), "content": "pwned"}
+                with self.assertRaises(ValueError):
+                    _resolve_new_content(edit)
+            finally:
+                os.chdir(orig)
+
+    def test_nested_relative_path_allowed(self):
+        print("\n  ▶ TestResolveNewContent.test_nested_relative_path_allowed")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            orig = os.getcwd()
+            os.chdir(tmpdir)
+            try:
+                edit = {"type": "new", "path": "pkg/sub/mod.py", "content": "ok"}
+                old, new = _resolve_new_content(edit)
+                self.assertEqual(new, "ok")
+            finally:
+                os.chdir(orig)
+
 
 # ---------------------------------------------------------------------------
 # apply_edits (check_only mode)

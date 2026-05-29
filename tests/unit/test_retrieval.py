@@ -11,7 +11,50 @@ from unittest.mock import MagicMock
 os.environ.setdefault("ANTHROPIC_API_KEY", "sk-ant-dummy-test-key")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from claude_light.retrieval import _dedup_retrieved_context
+from claude_light.retrieval import _dedup_retrieved_context, record_retrieval, explain_last_retrieval
+import claude_light.state as _state
+
+
+class TestExplainLastRetrieval(unittest.TestCase):
+
+    def setUp(self):
+        self._orig = _state.last_retrieval
+
+    def tearDown(self):
+        _state.last_retrieval = self._orig
+
+    def test_no_query_yet(self):
+        print("\n  ▶ TestExplainLastRetrieval.test_no_query_yet")
+        _state.last_retrieval = None
+        self.assertIn("No query", explain_last_retrieval())
+
+    def test_records_and_explains_hits(self):
+        print("\n  ▶ TestExplainLastRetrieval.test_records_and_explains_hits")
+        record_retrieval("what does X do?", "claude-sonnet-4-6", "high", 8192,
+                         [("src/A.py::foo", 0.80), ("src/B.py::bar", 0.50)])
+        out = explain_last_retrieval()
+        self.assertIn("what does X do?", out)
+        self.assertIn("claude-sonnet-4-6", out)
+        self.assertIn("effort=high", out)
+        self.assertIn("A.py::foo", out)
+        self.assertIn("0.800", out)
+
+    def test_skip_reason_shown(self):
+        print("\n  ▶ TestExplainLastRetrieval.test_skip_reason_shown")
+        record_retrieval("and that?", "claude-haiku-4-5", "low", 1500, [],
+                         skipped_reason="clarification follow-up")
+        out = explain_last_retrieval()
+        self.assertIn("skipped", out.lower())
+        self.assertIn("clarification follow-up", out)
+
+    def test_compression_line_shown(self):
+        print("\n  ▶ TestExplainLastRetrieval.test_compression_line_shown")
+        record_retrieval("q", "m", "medium", 3000, [("f.py::g", 0.7)],
+                         compression={"skipped": False, "tokens_before": 900,
+                                      "tokens_after": 450, "ratio": 0.5})
+        out = explain_last_retrieval()
+        self.assertIn("900", out)
+        self.assertIn("450", out)
 
 
 class TestDedupRetrievedContext(unittest.TestCase):
