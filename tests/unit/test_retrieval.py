@@ -172,9 +172,12 @@ class TestRetrieve(unittest.TestCase):
         cl.EMBED_MODEL = "all-MiniLM-L6-v2"
         cl.MIN_SCORE = 0.0
         cl.RELATIVE_SCORE_FLOOR = 0.0
+        import claude_light.state as _st
+        _st.embedder_ready.set()
 
     def tearDown(self):
         import claude_light as cl
+        import claude_light.state as _st
         cl.chunk_store.clear()
         cl.chunk_store.update(self._orig_store)
         cl.TOP_K = self._orig_top_k
@@ -182,6 +185,7 @@ class TestRetrieve(unittest.TestCase):
         cl.embedder = self._orig_embedder
         cl.MIN_SCORE = self._orig_min_score
         cl.RELATIVE_SCORE_FLOOR = self._orig_rel_floor
+        _st.embedder_ready.clear()
 
     def test_retrieve_returns_context_and_hits(self):
         print("\n  ▶ TestRetrieve.test_retrieve_returns_context_and_hits")

@@ -388,7 +388,7 @@ The Retrieval-Augmented Generation pipeline finds and injects only relevant code
 
 ### Key Optimizations
 
-1. **Smarter Query Routing** - Weighted scoring (Arch vs Logic vs Infra) + context awareness
+1. **Hybrid Query Routing** - Keyword signals fused with embedding-based semantic scores against intent prototypes; cost-aware tier gating prevents over-spending on simple queries
 2. **Effort-Based Budget** - Low effort = 1.5K tokens, Max effort = 9K tokens
 3. **Two-Stage Filtering** - Absolute floor (0.45) + Relative floor (60% of top score)
 4. **Deduplication** - Shared preamble emitted once for multi-method results
@@ -404,6 +404,45 @@ The Retrieval-Augmented Generation pipeline finds and injects only relevant code
 | high | Sonnet | 8,192 | 6,000 | off |
 | max | Opus | 16,000 | 9,000 | on |
 
+### Hybrid Router (`route_query`)
+
+`route_query()` (`llm.py`) classifies every query into one of the four effort tiers using a two-signal hybrid:
+
+**1. Lexical signals** — substring matching over three module-level `frozenset`s:
+
+| Dimension | Weight per match | Examples |
+|-----------|-----------------|---------|
+| Arch | 4.0 | `evaluate`, `architecture`, `scalability`, `trade-off`, `deeply` |
+| Logic | 5.0 | `implement`, `refactor`, `fix`, `debug`, `create` |
+| Infra | 0.5 | `list`, `where`, `find`, `show`, `count` |
+
+**2. Semantic signals** — if the `SentenceTransformer` embedder is loaded, the query is encoded once and compared (cosine dot product, already L2-normalised) against 9 precomputed prototype phrases — 3 per dimension. The closest prototype per dimension contributes up to `ROUTER_SEMANTIC_WEIGHT = 6.0` points, scaled linearly above `ROUTER_SEMANTIC_FLOOR = 0.30`. Prototype embeddings are built lazily in a single batched encode call and cached for the lifetime of the loaded model (`_PROTO_CACHE`). **When the embedder is absent** (test mode, pre-index), all semantic scores are 0 and the fused score equals the pure keyword score exactly.
+
+**Fusion** — lexical and semantic dimension scores are added directly (same units):
+
+```
+arch  = lex_arch  + sem_arch
+logic = lex_logic + sem_logic
+infra = lex_infra + sem_infra
+score = arch + logic + infra
+```
+
+**Contextual multipliers** (applied after fusion):
+- File-path mention detected by regex → `+3.0`
+- Word-count complexity bonus (`+1.5` / `+2.0` / `+5.0` for >4 / >10 / >30 words), gated: only applies when `arch + logic > 0` (a long lookup query does not get promoted by verbosity alone)
+- Conversation depth → `+0.5 × (turns // 2)`
+
+**Tier selection** — raw thresholds as before: `≥12 → max`, `≥5 → high`, `≥1.5 or wc>15 → medium`, else `low`.
+
+**Cost-aware adjustments** (applied after tier selection):
+
+1. *Lookup downgrade*: if `infra > (arch + logic)` and `(arch + logic) < 1.0`, the query is lookup-dominant and forced to `low/Haiku/2048` regardless of score or word count.
+2. *Escalation gate*: for any tier whose estimated cost exceeds `ROUTER_COST_CEILING = $0.12`, the router requires `score ≥ tier_threshold × (1 + ROUTER_ESCALATE_MARGIN)` (default margin 0.15). At the defaults this gate only fires for the `max/Opus` tier (~$0.15 per query); `high` (~$0.08) and below are never demoted by cost. A clearly architectural query (score ≫ 13.8) clears the bar and keeps Opus; a borderline one is demoted to `high`.
+
+Cost is estimated as: `(retrieval_budget + 1500) / 1M × $3.00 + max_tokens × 0.5 / 1M × $15.00`.
+
+**`/why` output** includes a `Routing:` line showing per-dimension scores, whether semantic scoring was active, and the estimated cost.
+
 <details>
 <summary>View PlantUML Source</summary>
 
@@ -415,12 +454,16 @@ start
 
 :User enters query;
 partition "1. Query Routing" {
-  :Analyze query keywords (weighted);
-  :Detect technical intent (regex);
-  :Check conversation depth (context);
-  if (Score >= 12.0?\n(High Arch/Logic + History)) then (yes)
+  :Lexical keyword scores\n(Arch 4.0 / Logic 5.0 / Infra 0.5 each);
+  :Semantic scores via embedder\n(cosine vs intent prototypes, FLOOR=0.30);
+  :Fuse scores additively per dimension;
+  :Apply multipliers:\nfile-path +3.0, word-count, history depth;
+  if (Lookup-dominant?\n(infra > arch+logic, arch+logic < 1.0)) then (yes)
+    :effort = low\nmodel = Haiku\nmax_tokens = 2,048;
+  elseif (Score >= 12.0?) then (yes)
     :effort = max\nmodel = Opus\nmax_tokens = 16,000;
-  elseif (Score >= 5.0?\n(Edit intent + Path)) then (yes)
+    :Cost gate: est_cost > $0.12\nAND score < 12*1.15?\n→ demote to high;
+  elseif (Score >= 5.0?) then (yes)
     :effort = high\nmodel = Sonnet\nmax_tokens = 8,192;
   elseif (Score >= 1.5 or WordCount > 15?) then (yes)
     :effort = medium\nmodel = Sonnet\nmax_tokens = 4,096;

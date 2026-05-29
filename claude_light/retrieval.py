@@ -219,11 +219,20 @@ def explain_last_retrieval() -> str:
         pre, post = ci.get("tokens_before"), ci.get("tokens_after")
         lines.append(f"  Compressed: {pre} → {post} tok "
                      f"({ci.get('ratio', 0) * 100:.0f}% kept)")
+
+    r = info.get("routing")
+    if r:
+        sem_flag = "semantic on" if r.get("semantic_used") else "semantic off"
+        lines.append(
+            f"  Routing   : arch={r['arch']:.1f}  logic={r['logic']:.1f}  "
+            f"infra={r['infra']:.1f}  ({sem_flag})  est≈${r['est_cost']:.4f}"
+        )
+
     return "\n".join(lines)
 
 
 def record_retrieval(query, model, effort, token_budget, hits,
-                     compression=None, skipped_reason=None):
+                     compression=None, skipped_reason=None, routing=None):
     """Store diagnostics for the last query so /why can explain it."""
     state.last_retrieval = {
         "query": query,
@@ -233,6 +242,7 @@ def record_retrieval(query, model, effort, token_budget, hits,
         "hits": list(hits) if hits else [],
         "compression": compression,
         "skipped_reason": skipped_reason,
+        "routing": routing,
     }
 
 
