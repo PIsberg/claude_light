@@ -202,7 +202,10 @@ def retrieve(query, token_budget=None, effort="medium"):
         raise state.embedder_load_error
 
     query_prefix = _QUERY_PREFIX.get(state.EMBED_MODEL, "")
-    q_emb        = state.embedder.encode(query_prefix + query, normalize_embeddings=True)
+    # Serialize with concurrent reindex encodes (watchdog timers) — see
+    # state.embedder_lock.
+    with state.embedder_lock:
+        q_emb    = state.embedder.encode(query_prefix + query, normalize_embeddings=True)
     scores       = embs @ q_emb
 
     top_pairs = _adaptive_select_pairs(ids, scores, budget, k)

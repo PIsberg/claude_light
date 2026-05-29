@@ -63,3 +63,12 @@ device: str | None = None   # "cuda" | "mps" | "cpu" — detected on first model
 # and retrieve() waits on this before using state.embedder.
 embedder_ready = threading.Event()
 embedder_load_error: Exception | None = None
+
+# Serializes calls into state.embedder.encode(). Several watchdog debounce
+# timers can fire concurrently (one per changed file), and PyTorch CPU
+# inference is not guaranteed safe under concurrent forward passes.
+embedder_lock = threading.Lock()
+
+# Serializes on-disk cache writes (index.pkl + manifest.json). Without it two
+# concurrent reindex_file() timers can interleave writes and corrupt the cache.
+cache_io_lock = threading.Lock()
