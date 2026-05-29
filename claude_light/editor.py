@@ -43,8 +43,27 @@ def parse_edit_blocks(text):
             edits.append({"type": "new", "path": path, "content": body})
     return edits
 
+def _safe_target(path_str):
+    """Resolve an edit target and confirm it stays inside the project root.
+
+    Claude-authored paths are untrusted: content in indexed files can steer
+    the model (prompt injection), so a reply could carry an absolute path or
+    a '../' escape. parse_edit_blocks only strips leading separators — it does
+    not stop traversal. Reject anything that resolves outside the cwd.
+    """
+    root = Path.cwd().resolve()
+    candidate = (root / path_str).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        raise ValueError(
+            f"Refusing to touch '{path_str}': path resolves outside the project root"
+        )
+    return candidate
+
+
 def _resolve_new_content(edit):
-    p = Path(edit["path"])
+    p = _safe_target(edit["path"])
     if edit["type"] == "new":
         old = p.read_text(encoding="utf-8", errors="ignore") if p.exists() else ""
         return old, edit["content"]
