@@ -55,6 +55,24 @@ class TestRunCommand(unittest.TestCase):
         result = _run_command('python -c "raise SystemExit(42)"')
         self.assertIn("42", result)
 
+    def test_run_times_out(self):
+        print("\n  ▶ TestRunCommand.test_run_times_out")
+        # Force a tiny timeout so a sleeping command is killed instead of
+        # blocking the chat loop forever.
+        with patch("claude_light.executor._RUN_TIMEOUT_SECS", 1):
+            result = _run_command('python -c "import time; time.sleep(30)"')
+        self.assertIn("TIMEOUT", result)
+
+    def test_run_timeout_surfaces_partial_output(self):
+        print("\n  ▶ TestRunCommand.test_run_timeout_surfaces_partial_output")
+        with patch("claude_light.executor._RUN_TIMEOUT_SECS", 2):
+            result = _run_command(
+                'python -c "import time,sys; '
+                'print(\'PARTIAL_TOKEN\', flush=True); time.sleep(30)"'
+            )
+        self.assertIn("TIMEOUT", result)
+        self.assertIn("PARTIAL_TOKEN", result)
+
 
 class TestAutoTune(unittest.TestCase):
     """Tests for embedding model auto-selection."""
