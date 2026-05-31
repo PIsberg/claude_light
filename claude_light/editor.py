@@ -2,12 +2,41 @@ import sys
 import re
 import difflib
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from claude_light.ui import _T_EDIT, _T_ERR, _ANSI_CYAN, _ANSI_GREEN, _ANSI_RED, _ANSI_BOLD, _ANSI_DIM, _ANSI_RESET, show_diff
+from claude_light.ui import _T_EDIT, _T_ERR, _ANSI_CYAN, _ANSI_GREEN, _ANSI_RED, _ANSI_BOLD, _ANSI_DIM, _ANSI_RESET, show_diff, ToolExecutionManager
 from claude_light.linter import _lint_content
 from claude_light import git_manager
 
 _ANY_BLOCK = re.compile(r"```[a-zA-Z0-9_+-]*(?::([^\n`]+))?[ \t]*\n(.*?)```", re.DOTALL)
+
+
+def _prompt_approval(n: int) -> bool:
+    """Keyboard-navigable approval prompt. Falls back to plain input() if
+    prompt_toolkit is unavailable or the dialog is cancelled."""
+    try:
+        from prompt_toolkit.shortcuts import radiolist_dialog
+        from prompt_toolkit.styles import Style
+        result = radiolist_dialog(
+            title=f"Apply {n} change{'s' if n != 1 else ''}?",
+            text="Use arrow keys to select, Enter to confirm.",
+            values=[("y", "Approve — apply the changes"), ("n", "Reject — discard")],
+            style=Style.from_dict({"dialog.body": "bg:#1e1e1e #ffffff"}),
+        ).run()
+        return result == "y"
+    except Exception:
+        pass
+    # Plain fallback
+    print(
+        f"  Apply {_ANSI_BOLD}{n}{_ANSI_RESET} change(s)? "
+        f"[{_ANSI_GREEN}y{_ANSI_RESET}/{_ANSI_RED}n{_ANSI_RESET}] ",
+        end="",
+        flush=True,
+    )
+    try:
+        return input().strip().lower() in ("y", "yes")
+    except (KeyboardInterrupt, EOFError):
+        return False
 _SR_PATTERN = re.compile(
     r"^<<<<<<< SEARCH\n(.*?)=======\n(.*?)>>>>>>> REPLACE\n?$",
     re.DOTALL,
@@ -239,32 +268,42 @@ def apply_edits(edits, check_only=False, explanation="", auto_apply=False):
     elif not sys.stdin.isatty():
         auto = True
     else:
-        print(f"  Apply {_ANSI_BOLD}{len(applicable)}{_ANSI_RESET} change(s)? "
-              f"[{_ANSI_GREEN}y{_ANSI_RESET}/{_ANSI_RED}n{_ANSI_RESET}] ", end="", flush=True)
-        try:
-            auto = input().strip().lower() in ("y", "yes")
-        except (KeyboardInterrupt, EOFError):
-            auto = False
+        auto = _prompt_approval(len(applicable))
 
     if not auto:
         print(f"  {_T_EDIT}  Cancelled.\n")
         return
 
-    written = 0
+    n = len(applicable)
+    label = f"Applying {n} change{'s' if n != 1 else ''}"
+    errors = []
     written_files = []
-    for r in applicable:
-        try:
-            p = Path(r["path"])
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(r["_new"], encoding="utf-8")
-            print(f"  {_T_EDIT}  {_ANSI_CYAN}{r['path']}{_ANSI_RESET}")
-            written += 1
-            written_files.append(r["path"])
-        except Exception as ex:
-            print(f"  {_T_ERR}  Failed to write {r['path']}: {ex}")
 
-    print(f"  {_T_EDIT}  {_ANSI_GREEN}{written}/{len(applicable)}{_ANSI_RESET} change(s) applied.\n")
-    
-    # Attempt auto-commit if in a git repo
+    def _write_one(r):
+        p = Path(r["path"])
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(r["_new"], encoding="utf-8")
+        return r["path"]
+
+    with ToolExecutionManager(label):
+        if len(applicable) > 1:
+            with ThreadPoolExecutor(max_workers=min(len(applicable), 8)) as pool:
+                futures = {pool.submit(_write_one, r): r for r in applicable}
+                for fut in as_completed(futures):
+                    try:
+                        written_files.append(fut.result())
+                    except Exception as ex:
+                        errors.append(f"{futures[fut]['path']}: {ex}")
+        else:
+            try:
+                written_files.append(_write_one(applicable[0]))
+            except Exception as ex:
+                errors.append(f"{applicable[0]['path']}: {ex}")
+
+    for path in written_files:
+        print(f"  {_T_EDIT}  {_ANSI_CYAN}{path}{_ANSI_RESET}")
+    for err in errors:
+        print(f"  {_T_ERR}  Failed to write {err}")
+
     if written_files and git_manager.is_git_repo():
         git_manager.auto_commit(written_files, explanation)

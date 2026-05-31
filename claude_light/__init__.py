@@ -4,7 +4,6 @@ import sys
 import types
 from pathlib import Path
 
-from sentence_transformers import SentenceTransformer
 from watchdog.observers import Observer
 
 from . import config, editor, executor, indexer, linter, llm, main, parsing, retrieval, skeleton, state, ui

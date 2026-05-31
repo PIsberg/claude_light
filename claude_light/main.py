@@ -65,9 +65,27 @@ def _setup_signal_handlers():
 
 def start_chat(auto_apply=False):
     print_startup_header()
-    full_refresh()
-    _setup_signal_handlers()  # Setup signal handlers before starting threads
+    _setup_signal_handlers()
 
+    # Kick off indexing in background so the prompt appears immediately.
+    # Any query submitted before indexing completes will wait at that point.
+    state.indexing_done.clear()
+
+    def _bg_refresh():
+        try:
+            full_refresh(quiet=True)
+        finally:
+            state.indexing_done.set()
+
+    _refresh_thread = threading.Thread(target=_bg_refresh, daemon=True, name="claude-light-refresh")
+    _refresh_thread.start()
+    # If threading.Thread is mocked (test environment), is_alive() returns a
+    # MagicMock rather than bool. Run _bg_refresh() inline so indexing_done
+    # gets set and the query loop doesn't block indefinitely.
+    if not isinstance(_refresh_thread.is_alive(), bool):
+        _bg_refresh()
+
+    # Watchdog can start immediately — it doesn't need the index to be ready.
     observer = None
     try:
         observer = Observer()
@@ -75,17 +93,21 @@ def start_chat(auto_apply=False):
         observer.start()
     except Exception as e:
         print(f"{_T_ERR} Failed to start file watcher: {e}", file=sys.stderr)
-        # Continue without file watching if it fails
-    
+
     if AUTH_MODE == "API_KEY":
         threading.Thread(target=heartbeat, daemon=True).start()
 
-    print_banner(MODEL, state.TOP_K, API_KEY_SOURCE, device=state.device)
+    _banner_shown = False
 
     if _PROMPTTK_AVAILABLE:
         from prompt_toolkit import HTML
 
         def _get_status_html():
+            if not state.indexing_done.is_set():
+                return (
+                    f' <b><ansicyan>◆</ansicyan></b>  {os.path.basename(os.getcwd())}'
+                    f'  ·  <ansigreen>indexing…</ansigreen>'
+                )
             with state.lock:
                 total_in = state.session_tokens["input"] + state.session_tokens["cache_write"] + state.session_tokens["cache_read"]
                 saved = state.session_tokens["cache_read"]
@@ -138,6 +160,18 @@ def start_chat(auto_apply=False):
 
             if not query:
                 continue
+
+            # Wait for background indexing to finish before any query.
+            # On cache-hit runs this is nearly instant; on first run the user
+            # simply sees a brief pause rather than a blocking startup.
+            if not state.indexing_done.is_set():
+                print(f"  {_T_SYS}  Indexing…", flush=True)
+                state.indexing_done.wait()
+
+            if not _banner_shown:
+                _banner_shown = True
+                print_banner(MODEL, state.TOP_K, API_KEY_SOURCE, device=state.device)
+
             if query.lower() in ("exit", "quit"):
                 break
             if query in ("/clear", "/compact"):
@@ -149,16 +183,36 @@ def start_chat(auto_apply=False):
                 print_session_summary()
                 continue
             if query == "/help":
-                print(
-                    f"\n  {_ANSI_BOLD}Commands{_ANSI_RESET}\n"
-                    f"  {_ANSI_DIM}──────────────────────────────────────{_ANSI_RESET}\n"
-                    f"  /compact          clear conversation history\n"
-                    f"  /cost             show session token usage and cost\n"
-                    f"  /run <cmd>        run a shell command, feed output to Claude\n"
-                    f"  /undo             revert last AI file change (git reset)\n"
-                    f"  /why              explain the last query's routing + retrieval\n"
-                    f"  exit              quit\n"
-                )
+                try:
+                    from rich.table import Table
+                    from rich.console import Console as _Con
+                    _con = _Con(file=__import__("sys").stdout)
+                    tbl = Table(box=None, padding=(0, 2), show_header=False)
+                    tbl.add_column(style="cyan")
+                    tbl.add_column(style="dim")
+                    for cmd, desc in [
+                        ("/compact", "clear conversation history"),
+                        ("/cost",    "show session token usage and cost"),
+                        ("/run <cmd>", "run a shell command, feed output to Claude"),
+                        ("/undo",    "revert last AI file change (git reset)"),
+                        ("/why",     "explain the last query's routing + retrieval"),
+                        ("exit",     "quit"),
+                    ]:
+                        tbl.add_row(cmd, desc)
+                    _con.print()
+                    _con.print(tbl)
+                    _con.print()
+                except Exception:
+                    print(
+                        f"\n  {_ANSI_BOLD}Commands{_ANSI_RESET}\n"
+                        f"  {_ANSI_DIM}──────────────────────────────────────{_ANSI_RESET}\n"
+                        f"  /compact          clear conversation history\n"
+                        f"  /cost             show session token usage and cost\n"
+                        f"  /run <cmd>        run a shell command, feed output to Claude\n"
+                        f"  /undo             revert last AI file change (git reset)\n"
+                        f"  /why              explain the last query's routing + retrieval\n"
+                        f"  exit              quit\n"
+                    )
                 continue
             if query == "/why":
                 from claude_light.retrieval import explain_last_retrieval

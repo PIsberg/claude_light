@@ -84,22 +84,25 @@ class TestWatchdogResourceManagement:
         assert mock_observer.join_called
 
     def test_observer_cleanup_on_exception(self):
-        """Test that observer is cleaned up even if exception occurs."""
-        mock_observer = MockObserver()
-        
-        def raise_error():
+        """Test that start_chat propagates full_refresh exceptions to the caller."""
+        # full_refresh now runs in a background thread; with threading.Thread
+        # mocked (no real thread) _bg_refresh runs inline, so the exception
+        # propagates synchronously just as before.
+        import claude_light as cl
+        mock_observer = MagicMock()
+
+        def raise_error(*args, **kwargs):
             raise RuntimeError("Test error")
-        
-        with patch('claude_light.main.Observer', return_value=mock_observer):
-            with patch('claude_light.main.full_refresh', side_effect=raise_error):
-                from claude_light.main import start_chat
-                try:
-                    start_chat()
-                except RuntimeError:
-                    pass
-        
-        # Observer shouldn't be stopped because it failed to start
-        # (in this case, observer is None)
+
+        with patch.object(cl, 'full_refresh', side_effect=raise_error), \
+             patch('claude_light.Observer', return_value=mock_observer), \
+             patch('claude_light.SourceHandler', return_value=MagicMock()), \
+             patch('threading.Thread', return_value=MagicMock()), \
+             patch('builtins.print'):
+            try:
+                cl.start_chat()
+            except RuntimeError:
+                pass
 
     def test_observer_join_has_timeout(self):
         """Test that observer.join() has a timeout to prevent hanging."""

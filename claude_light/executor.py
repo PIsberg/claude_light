@@ -5,22 +5,10 @@ import threading
 import contextlib
 import warnings
 import logging
-from typing import Optional
 
 os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
 os.environ.setdefault("HF_HUB_VERBOSITY", "error")
 logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
-
-# Silence the transformers "LOAD REPORT" table (e.g. "embeddings.position_ids
-# | UNEXPECTED") emitted from transformers.utils.loading_report via
-# logger.warning(). transformers installs its own library-root logger and
-# resets the level on first use, so plain logging.getLogger(...).setLevel()
-# has no effect — use their official API.
-try:
-    import transformers.utils.logging as _tf_logging
-    _tf_logging.set_verbosity_error()
-except Exception:
-    pass
 warnings.filterwarnings(
     "ignore",
     message=".*unauthenticated requests.*",
@@ -28,11 +16,15 @@ warnings.filterwarnings(
     module="huggingface_hub.*",
 )
 
-from sentence_transformers import SentenceTransformer
 from pathlib import Path
 from claude_light.config import TARGET_RETRIEVED_TOKENS
 from claude_light.ui import _Spinner, _T_RAG, _T_ERR, _ANSI_GREEN, _ANSI_BOLD, _ANSI_RESET, _ANSI_DIM, _ANSI_YELLOW
 import claude_light.state as state
+
+# Sentinel — None until first model load.  Tests that patch
+# `claude_light.SentenceTransformer` propagate here via _MODULE_ATTR_MAP so
+# _load_embedding_model sees the mock instead of doing a real import.
+SentenceTransformer = None
 
 try:
     from tqdm import tqdm
@@ -113,34 +105,45 @@ def _detect_device() -> tuple[str, str]:
     return "cpu", hint
 
 
-def _load_embedding_model(model_name: str, quiet: bool = False) -> SentenceTransformer:
-    """
-    Load embedding model with optional download progress display.
+def _load_embedding_model(model_name: str, quiet: bool = False):
+    """Load embedding model; heavy ML imports are deferred to here."""
+    global SentenceTransformer
+    # Snapshot into a local so that a concurrent test patch restoring the
+    # module-level sentinel to None cannot cause a TypeError on the call below.
+    _cls = SentenceTransformer
+    if _cls is None:
+        # Real import path — sentence_transformers pulls in PyTorch, transformers,
+        # tokenizers, etc. (~1.5 GB, ~2-5s). Deferred here so startup is fast.
+        from sentence_transformers import SentenceTransformer as _cls
+        SentenceTransformer = _cls  # cache for next call
+        try:
+            import transformers.utils.logging as _tf_logging
+            _tf_logging.set_verbosity_error()
+        except Exception:
+            pass
+        # Detect device only alongside the real model load. torch's first import
+        # touches importlib.metadata (entry_points discovery); doing it here
+        # ensures it never runs inside a test that has Path.read_text patched.
+        if state.device is None:
+            state.device, _device_hint = _detect_device()
+            if _device_hint and not quiet:
+                print(f"{_T_RAG} {_ANSI_YELLOW}{_device_hint}{_ANSI_RESET}")
 
-    Args:
-        model_name: HuggingFace model identifier
-        quiet: If True, suppress progress output
-
-    Returns:
-        Loaded SentenceTransformer instance
-    """
     if state.device is None:
-        state.device, _device_hint = _detect_device()
-        if _device_hint and not quiet:
-            print(f"{_T_RAG} {_ANSI_YELLOW}{_device_hint}{_ANSI_RESET}")
+        # Fallback: real model not loaded yet (e.g. mock/test), use CPU.
+        state.device = "cpu"
 
     is_cached = _check_model_cached(model_name)
     model_size_mb = _MODEL_SIZES.get(model_name, 100)
 
     if quiet or is_cached:
         with contextlib.redirect_stderr(io.StringIO()):
-            return SentenceTransformer(model_name, trust_remote_code=True, device=state.device)
-    
+            return _cls(model_name, trust_remote_code=True, device=state.device)
+
     # Show download progress for first-time model loads
     if _TQDM_AVAILABLE:
         print(f"\n{_T_RAG} Downloading {_ANSI_BOLD}{model_name}{_ANSI_RESET} ({model_size_mb} MB)...")
-        
-        # Use tqdm to track download
+
         with tqdm(
             total=100,
             desc=f"  {model_name}",
@@ -149,18 +152,17 @@ def _load_embedding_model(model_name: str, quiet: bool = False) -> SentenceTrans
             bar_format="{desc}: {percentage:3.0f}% {bar}",
         ) as pbar:
             with contextlib.redirect_stderr(io.StringIO()):
-                model = SentenceTransformer(model_name, trust_remote_code=True, device=state.device)
-            pbar.update(100)  # Mark as complete
-        
+                model = _cls(model_name, trust_remote_code=True, device=state.device)
+            pbar.update(100)
+
         print(f"{_T_RAG} {_ANSI_GREEN}Downloaded{_ANSI_RESET} {model_name}\n")
     else:
-        # Fallback without tqdm
         print(f"\n{_T_RAG} Downloading {_ANSI_BOLD}{model_name}{_ANSI_RESET} ({model_size_mb} MB)...")
         print(f"  (This may take a minute on first run...)")
         with contextlib.redirect_stderr(io.StringIO()):
-            model = SentenceTransformer(model_name, trust_remote_code=True, device=state.device)
+            model = _cls(model_name, trust_remote_code=True, device=state.device)
         print(f"{_T_RAG} {_ANSI_GREEN}Downloaded{_ANSI_RESET} {model_name}\n")
-    
+
     return model
 
 

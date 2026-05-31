@@ -53,12 +53,17 @@ class TestCompressContext(unittest.TestCase):
         self.assertEqual(info["reason"], "below_min_tokens")
 
     def test_fallback_when_llmlingua_missing(self):
-        # Simulate ImportError on first get_compressor() call.
+        # Directly inject the "not installed" state to avoid a race where a
+        # background compressor thread (started by an earlier test) runs
+        # concurrently and corrupts the singleton between _reset_singleton()
+        # and get_compressor(), causing reason="load_failed" instead.
         long_text = "x" * 10_000  # ~2500 tokens estimated
-        with patch.object(compressor.config, "LLMLINGUA_ENABLED", True), \
-             patch.dict(sys.modules, {"llmlingua": None}):
-            # Force the load attempt synchronously so _load_done is set.
-            compressor.get_compressor()
+        with patch.object(compressor.config, "LLMLINGUA_ENABLED", True):
+            _reset_singleton()
+            with compressor._load_lock:
+                compressor._load_attempted = True
+                compressor._load_error = ImportError("No module named 'llmlingua'")
+                compressor._load_done.set()
             out, info = compressor.compress_context(long_text)
         self.assertEqual(out, long_text)
         self.assertTrue(info["skipped"])

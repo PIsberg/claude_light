@@ -11,6 +11,9 @@ import claude_light.state as state
 try:
     from rich.console import Console as _RichConsole
     from rich.markdown import Markdown as _RichMarkdown
+    from rich.status import Status as _RichStatus
+    from rich.syntax import Syntax as _RichSyntax
+    from rich.panel import Panel as _RichPanel
     _RICH_AVAILABLE = True
 except ImportError:
     _RICH_AVAILABLE = False
@@ -97,17 +100,29 @@ def _display_path() -> str:
 
 def print_startup_header():
     """Print name and working directory immediately on startup, before indexing."""
-    print(f"\n  {_ANSI_CYAN}{_ANSI_BOLD}{_SYM_MARK} claude light{_ANSI_RESET}")
-    print(f"  {_ANSI_DIM}{_display_path()}{_ANSI_RESET}\n", flush=True)
+    if _RICH_AVAILABLE:
+        from rich.text import Text as _T
+        t = _T()
+        t.append(f"\n  {_SYM_MARK} claude light", style="bold cyan")
+        console.print(t)
+        console.print(f"  [dim]{_display_path()}[/dim]\n")
+    else:
+        print(f"\n  {_ANSI_CYAN}{_ANSI_BOLD}{_SYM_MARK} claude light{_ANSI_RESET}")
+        print(f"  {_ANSI_DIM}{_display_path()}{_ANSI_RESET}\n", flush=True)
 
 
 def print_banner(model: str, top_k: int, access_mode: str, device: str | None = None):
     """Print model/stats line and help text after indexing completes."""
     model_short = model.replace("claude-", "").replace("-20251001", "")
     device_str = f"  ·  {device.upper()}" if device else ""
-
-    print(f"  {_ANSI_DIM}{model_short}  ·  RAG top-{top_k}{device_str}  ·  {access_mode}{_ANSI_RESET}")
-    print(f"  {_ANSI_DIM}/help for commands  ·  Ctrl+C to exit{_ANSI_RESET}\n")
+    if _RICH_AVAILABLE:
+        console.print(
+            f"  [dim]{model_short}  ·  RAG top-{top_k}{device_str}  ·  {access_mode}[/dim]"
+        )
+        console.print("  [dim]/help for commands  ·  Ctrl+C to exit[/dim]\n")
+    else:
+        print(f"  {_ANSI_DIM}{model_short}  ·  RAG top-{top_k}{device_str}  ·  {access_mode}{_ANSI_RESET}")
+        print(f"  {_ANSI_DIM}/help for commands  ·  Ctrl+C to exit{_ANSI_RESET}\n")
 
 
 def calculate_cost(usage):
@@ -265,20 +280,83 @@ def show_diff(path, new_content, old_content=None):
     p = Path(path)
     if old_content is None:
         old_content = p.read_text(encoding="utf-8", errors="ignore") if p.exists() else ""
-    if old_content:
-        old_lines = old_content.splitlines(keepends=True)
-        new_lines = new_content.splitlines(keepends=True)
-        diff = list(difflib.unified_diff(
-            old_lines, new_lines,
-            fromfile=f"a/{path}", tofile=f"b/{path}", lineterm=""
-        ))
-        if diff:
-            print("".join(_colorize_diff(line + "\n" for line in diff)))
+
+    if not old_content:
+        if _RICH_AVAILABLE:
+            # Use a per-call Console pointing at the current sys.stdout so that
+            # output respects any sys.stdout patches active during tests.
+            _con = _RichConsole(file=sys.stdout)
+            preview = new_content[:800] + ("…" if len(new_content) > 800 else "")
+            _con.print(
+                _RichPanel(
+                    _RichSyntax(preview, Path(path).suffix.lstrip(".") or "text",
+                                theme="monokai", line_numbers=True),
+                    title=f"[green][NEW FILE][/green]  {path}",
+                    border_style="dim green",
+                )
+            )
         else:
-            print(f"  {_ANSI_DIM}(no changes detected in {path}){_ANSI_RESET}\n")
+            preview = new_content[:600] + ("…" if len(new_content) > 600 else "")
+            print(f"{_ANSI_GREEN}  [NEW FILE]{_ANSI_RESET} {path}\n{preview}\n")
+        return
+
+    old_lines = old_content.splitlines(keepends=True)
+    new_lines = new_content.splitlines(keepends=True)
+    diff = list(difflib.unified_diff(
+        old_lines, new_lines,
+        fromfile=f"a/{path}", tofile=f"b/{path}", lineterm="",
+    ))
+    if not diff:
+        print(f"  {_ANSI_DIM}(no changes detected in {path}){_ANSI_RESET}\n")
+        return
+
+    if _RICH_AVAILABLE:
+        _con = _RichConsole(file=sys.stdout)
+        diff_text = "\n".join(diff)
+        _con.print(
+            _RichPanel(
+                _RichSyntax(diff_text, "diff", theme="monokai", line_numbers=False),
+                title=f"[cyan]{path}[/cyan]",
+                border_style="dim blue",
+            )
+        )
     else:
-        preview = new_content[:600] + ("…" if len(new_content) > 600 else "")
-        print(f"{_ANSI_GREEN}  [NEW FILE]{_ANSI_RESET} {path}\n{preview}\n")
+        print("".join(_colorize_diff(line + "\n" for line in diff)))
+
+
+class ToolExecutionManager:
+    """Context manager that shows a rich status spinner while a tool runs,
+    then prints a concise success/failure summary line on exit."""
+
+    def __init__(self, label: str):
+        self._label = label
+        self._start = 0.0
+        self._status = None
+
+    def __enter__(self):
+        self._start = time.monotonic()
+        if _RICH_AVAILABLE and console is not None:
+            self._status = _RichStatus(
+                f"[dim]{self._label}…[/dim]",
+                console=console,
+                spinner="dots",
+            )
+            self._status.__enter__()
+        else:
+            print(f"  {_T_SYS}  {self._label}…", flush=True)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        elapsed = time.monotonic() - self._start
+        if self._status is not None:
+            self._status.__exit__(exc_type, exc_val, exc_tb)
+        sym = _SYM_ERR if exc_type else ("✔" if _UNICODE else "+")
+        color = _ANSI_RED if exc_type else _ANSI_GREEN
+        print(
+            f"  {color}{sym}{_ANSI_RESET}  "
+            f"{_ANSI_DIM}{self._label} ({elapsed:.1f}s){_ANSI_RESET}"
+        )
+        return False  # don't suppress exceptions
 
 
 def _print_reply(text):

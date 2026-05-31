@@ -67,6 +67,11 @@ device: str | None = None   # "cuda" | "mps" | "cpu" — detected on first model
 # defer model load (full cache hit), index_files() starts a background thread
 # and retrieve() waits on this before using state.embedder.
 embedder_ready = threading.Event()
+
+# Set once the initial full_refresh() (skeleton + index + cache warm) finishes.
+# The prompt loop starts before this — any query submitted before it's set will
+# wait briefly rather than blocking startup.
+indexing_done = threading.Event()
 embedder_load_error: Exception | None = None
 
 # Serializes calls into state.embedder.encode(). Several watchdog debounce
