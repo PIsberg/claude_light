@@ -11,6 +11,7 @@ import claude_light.state as state
 try:
     from rich.console import Console as _RichConsole
     from rich.markdown import Markdown as _RichMarkdown
+    from rich.status import Status as _RichStatus
     _RICH_AVAILABLE = True
 except ImportError:
     _RICH_AVAILABLE = False
@@ -279,6 +280,41 @@ def show_diff(path, new_content, old_content=None):
     else:
         preview = new_content[:600] + ("…" if len(new_content) > 600 else "")
         print(f"{_ANSI_GREEN}  [NEW FILE]{_ANSI_RESET} {path}\n{preview}\n")
+
+
+class ToolExecutionManager:
+    """Context manager that shows a rich status spinner while a tool runs,
+    then prints a concise success/failure summary line on exit."""
+
+    def __init__(self, label: str):
+        self._label = label
+        self._start = 0.0
+        self._status = None
+
+    def __enter__(self):
+        self._start = time.monotonic()
+        if _RICH_AVAILABLE and console is not None:
+            self._status = _RichStatus(
+                f"[dim]{self._label}…[/dim]",
+                console=console,
+                spinner="dots",
+            )
+            self._status.__enter__()
+        else:
+            print(f"  {_T_SYS}  {self._label}…", flush=True)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        elapsed = time.monotonic() - self._start
+        if self._status is not None:
+            self._status.__exit__(exc_type, exc_val, exc_tb)
+        sym = _SYM_ERR if exc_type else ("✔" if _UNICODE else "+")
+        color = _ANSI_RED if exc_type else _ANSI_GREEN
+        print(
+            f"  {color}{sym}{_ANSI_RESET}  "
+            f"{_ANSI_DIM}{self._label} ({elapsed:.1f}s){_ANSI_RESET}"
+        )
+        return False  # don't suppress exceptions
 
 
 def _print_reply(text):
