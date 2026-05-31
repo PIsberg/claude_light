@@ -9,6 +9,34 @@ from claude_light.linter import _lint_content
 from claude_light import git_manager
 
 _ANY_BLOCK = re.compile(r"```[a-zA-Z0-9_+-]*(?::([^\n`]+))?[ \t]*\n(.*?)```", re.DOTALL)
+
+
+def _prompt_approval(n: int) -> bool:
+    """Keyboard-navigable approval prompt. Falls back to plain input() if
+    prompt_toolkit is unavailable or the dialog is cancelled."""
+    try:
+        from prompt_toolkit.shortcuts import radiolist_dialog
+        from prompt_toolkit.styles import Style
+        result = radiolist_dialog(
+            title=f"Apply {n} change{'s' if n != 1 else ''}?",
+            text="Use arrow keys to select, Enter to confirm.",
+            values=[("y", "Approve — apply the changes"), ("n", "Reject — discard")],
+            style=Style.from_dict({"dialog.body": "bg:#1e1e1e #ffffff"}),
+        ).run()
+        return result == "y"
+    except Exception:
+        pass
+    # Plain fallback
+    print(
+        f"  Apply {_ANSI_BOLD}{n}{_ANSI_RESET} change(s)? "
+        f"[{_ANSI_GREEN}y{_ANSI_RESET}/{_ANSI_RED}n{_ANSI_RESET}] ",
+        end="",
+        flush=True,
+    )
+    try:
+        return input().strip().lower() in ("y", "yes")
+    except (KeyboardInterrupt, EOFError):
+        return False
 _SR_PATTERN = re.compile(
     r"^<<<<<<< SEARCH\n(.*?)=======\n(.*?)>>>>>>> REPLACE\n?$",
     re.DOTALL,
@@ -240,12 +268,7 @@ def apply_edits(edits, check_only=False, explanation="", auto_apply=False):
     elif not sys.stdin.isatty():
         auto = True
     else:
-        print(f"  Apply {_ANSI_BOLD}{len(applicable)}{_ANSI_RESET} change(s)? "
-              f"[{_ANSI_GREEN}y{_ANSI_RESET}/{_ANSI_RED}n{_ANSI_RESET}] ", end="", flush=True)
-        try:
-            auto = input().strip().lower() in ("y", "yes")
-        except (KeyboardInterrupt, EOFError):
-            auto = False
+        auto = _prompt_approval(len(applicable))
 
     if not auto:
         print(f"  {_T_EDIT}  Cancelled.\n")

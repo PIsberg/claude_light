@@ -12,6 +12,8 @@ try:
     from rich.console import Console as _RichConsole
     from rich.markdown import Markdown as _RichMarkdown
     from rich.status import Status as _RichStatus
+    from rich.syntax import Syntax as _RichSyntax
+    from rich.panel import Panel as _RichPanel
     _RICH_AVAILABLE = True
 except ImportError:
     _RICH_AVAILABLE = False
@@ -266,20 +268,48 @@ def show_diff(path, new_content, old_content=None):
     p = Path(path)
     if old_content is None:
         old_content = p.read_text(encoding="utf-8", errors="ignore") if p.exists() else ""
-    if old_content:
-        old_lines = old_content.splitlines(keepends=True)
-        new_lines = new_content.splitlines(keepends=True)
-        diff = list(difflib.unified_diff(
-            old_lines, new_lines,
-            fromfile=f"a/{path}", tofile=f"b/{path}", lineterm=""
-        ))
-        if diff:
-            print("".join(_colorize_diff(line + "\n" for line in diff)))
+
+    if not old_content:
+        if _RICH_AVAILABLE:
+            # Use a per-call Console pointing at the current sys.stdout so that
+            # output respects any sys.stdout patches active during tests.
+            _con = _RichConsole(file=sys.stdout)
+            preview = new_content[:800] + ("…" if len(new_content) > 800 else "")
+            _con.print(
+                _RichPanel(
+                    _RichSyntax(preview, Path(path).suffix.lstrip(".") or "text",
+                                theme="monokai", line_numbers=True),
+                    title=f"[green][NEW FILE][/green]  {path}",
+                    border_style="dim green",
+                )
+            )
         else:
-            print(f"  {_ANSI_DIM}(no changes detected in {path}){_ANSI_RESET}\n")
+            preview = new_content[:600] + ("…" if len(new_content) > 600 else "")
+            print(f"{_ANSI_GREEN}  [NEW FILE]{_ANSI_RESET} {path}\n{preview}\n")
+        return
+
+    old_lines = old_content.splitlines(keepends=True)
+    new_lines = new_content.splitlines(keepends=True)
+    diff = list(difflib.unified_diff(
+        old_lines, new_lines,
+        fromfile=f"a/{path}", tofile=f"b/{path}", lineterm="",
+    ))
+    if not diff:
+        print(f"  {_ANSI_DIM}(no changes detected in {path}){_ANSI_RESET}\n")
+        return
+
+    if _RICH_AVAILABLE:
+        _con = _RichConsole(file=sys.stdout)
+        diff_text = "\n".join(diff)
+        _con.print(
+            _RichPanel(
+                _RichSyntax(diff_text, "diff", theme="monokai", line_numbers=False),
+                title=f"[cyan]{path}[/cyan]",
+                border_style="dim blue",
+            )
+        )
     else:
-        preview = new_content[:600] + ("…" if len(new_content) > 600 else "")
-        print(f"{_ANSI_GREEN}  [NEW FILE]{_ANSI_RESET} {path}\n{preview}\n")
+        print("".join(_colorize_diff(line + "\n" for line in diff)))
 
 
 class ToolExecutionManager:
