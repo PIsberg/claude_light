@@ -183,16 +183,36 @@ def start_chat(auto_apply=False):
                 print_session_summary()
                 continue
             if query == "/help":
-                print(
-                    f"\n  {_ANSI_BOLD}Commands{_ANSI_RESET}\n"
-                    f"  {_ANSI_DIM}──────────────────────────────────────{_ANSI_RESET}\n"
-                    f"  /compact          clear conversation history\n"
-                    f"  /cost             show session token usage and cost\n"
-                    f"  /run <cmd>        run a shell command, feed output to Claude\n"
-                    f"  /undo             revert last AI file change (git reset)\n"
-                    f"  /why              explain the last query's routing + retrieval\n"
-                    f"  exit              quit\n"
-                )
+                try:
+                    from rich.table import Table
+                    from rich.console import Console as _Con
+                    _con = _Con(file=__import__("sys").stdout)
+                    tbl = Table(box=None, padding=(0, 2), show_header=False)
+                    tbl.add_column(style="cyan")
+                    tbl.add_column(style="dim")
+                    for cmd, desc in [
+                        ("/compact", "clear conversation history"),
+                        ("/cost",    "show session token usage and cost"),
+                        ("/run <cmd>", "run a shell command, feed output to Claude"),
+                        ("/undo",    "revert last AI file change (git reset)"),
+                        ("/why",     "explain the last query's routing + retrieval"),
+                        ("exit",     "quit"),
+                    ]:
+                        tbl.add_row(cmd, desc)
+                    _con.print()
+                    _con.print(tbl)
+                    _con.print()
+                except Exception:
+                    print(
+                        f"\n  {_ANSI_BOLD}Commands{_ANSI_RESET}\n"
+                        f"  {_ANSI_DIM}──────────────────────────────────────{_ANSI_RESET}\n"
+                        f"  /compact          clear conversation history\n"
+                        f"  /cost             show session token usage and cost\n"
+                        f"  /run <cmd>        run a shell command, feed output to Claude\n"
+                        f"  /undo             revert last AI file change (git reset)\n"
+                        f"  /why              explain the last query's routing + retrieval\n"
+                        f"  exit              quit\n"
+                    )
                 continue
             if query == "/why":
                 from claude_light.retrieval import explain_last_retrieval
