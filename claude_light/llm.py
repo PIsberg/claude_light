@@ -969,14 +969,20 @@ def warm_cache(quiet=False):
     except Exception as e:
         print(f"{_T_ERR} Cache warm failed: {e}")
 
-def full_refresh():
-    with _Spinner("Building skeleton") as spinner:
+def full_refresh(quiet=False):
+    if quiet:
         _update_skeleton()
-        spinner.update("Indexing source files")
         index_files(quiet=True)
         if AUTH_MODE == "API_KEY":
-            spinner.update("Warming cache")
             warm_cache(quiet=True)
+    else:
+        with _Spinner("Building skeleton") as spinner:
+            _update_skeleton()
+            spinner.update("Indexing source files")
+            index_files(quiet=True)
+            if AUTH_MODE == "API_KEY":
+                spinner.update("Warming cache")
+                warm_cache(quiet=True)
 
 def refresh_skeleton_only():
     _apply_skeleton(_refresh_tree_only())
