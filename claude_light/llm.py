@@ -83,6 +83,22 @@ _PROTO_CACHE = {"model": None, "mat": None}
 _last_route_info: dict = {}
 
 
+def _encode_if_free(texts):
+    """Encode with the shared embedder unless it is busy; None if it is.
+
+    The index build holds embedder_lock for its whole embedding pass, which
+    is minutes on a cold start. Routing must not wait for that: it falls back
+    to lexical scores instead.
+    """
+    import numpy as np
+    if not state.embedder_lock.acquire(timeout=0.5):
+        return None
+    try:
+        return np.asarray(state.embedder.encode(texts, normalize_embeddings=True))
+    finally:
+        state.embedder_lock.release()
+
+
 def _get_prototype_embeddings():
     """Return {dim: ndarray (P,D)} for the current embedder, or None.
 
@@ -99,10 +115,9 @@ def _get_prototype_embeddings():
         prefix = _QUERY_PREFIX.get(state.EMBED_MODEL, "")
         dims = list(ROUTER_PROTOTYPES.keys())
         all_phrases = [prefix + p for d in dims for p in ROUTER_PROTOTYPES[d]]
-        with state.embedder_lock:
-            all_vecs = np.asarray(
-                state.embedder.encode(all_phrases, normalize_embeddings=True)
-            )
+        all_vecs = _encode_if_free(all_phrases)
+        if all_vecs is None:
+            return None
         mat = {}
         idx = 0
         for d in dims:
@@ -139,13 +154,9 @@ def _semantic_dimension_scores(query: str):
         from claude_light.config import _QUERY_PREFIX
         import numpy as np
         prefix = _QUERY_PREFIX.get(state.EMBED_MODEL, "")
-        with state.embedder_lock:
-            q_emb = np.asarray(
-                state.embedder.encode(
-                    prefix + query,
-                    normalize_embeddings=True,
-                )
-            )
+        q_emb = _encode_if_free(prefix + query)
+        if q_emb is None:
+            return zeros, False
         scores = {}
         for dim, proto_mat in protos.items():
             sim = float(np.max(proto_mat @ q_emb))
@@ -1349,13 +1360,57 @@ def chat(query, auto_apply=False, use_index=True):
     except Exception as e:
         print(f"\n[Error] API call failed: {e}")
 
+# How long a one-shot OAuth run waits for the index before asking without it.
+# A warm cache loads in a few seconds; a cold build takes minutes.
+_ONE_SHOT_INDEX_WAIT_SECS = 20
+
+
 def one_shot(prompt, auto_apply=False):
     print(f"{_T_SYS} Building context...", file=sys.stderr)
     _update_skeleton()
-    index_files()
 
+    if AUTH_MODE != "OAUTH":
+        # API-key turns have no tools: without retrieval the model is blind.
+        index_files()
+        _one_shot_turn(prompt, auto_apply, use_index=True)
+        return
+
+    # The CLI agent can Read/Grep the repo itself, so a cold build (minutes
+    # of CPU embedding) must not hold up the answer. It keeps running and is
+    # joined before exit, so the next run starts from a full cache.
+    import threading as _threading
+    index_error = []
+
+    def _build_index():
+        try:
+            index_files(quiet=True)
+        except Exception as e:  # reported below; the turn goes on without it
+            index_error.append(e)
+
+    index_thread = _threading.Thread(target=_build_index, daemon=True, name="claude-light-index")
+    index_thread.start()
+    index_thread.join(_ONE_SHOT_INDEX_WAIT_SECS)
+    use_index = not index_thread.is_alive() and not index_error
+    if index_thread.is_alive():
+        print(f"  {_T_RAG}  {_ANSI_DIM}index still building — Claude will search the code itself{_ANSI_RESET}",
+              file=sys.stderr)
+    elif index_error:
+        print(f"  {_T_ERR}  Indexing failed ({index_error[0]}); continuing without retrieval", file=sys.stderr)
+    try:
+        _one_shot_turn(prompt, auto_apply, use_index=use_index)
+    finally:
+        if index_thread.is_alive():
+            print(f"  {_T_RAG}  {_ANSI_DIM}finishing the index so the next run can use it…{_ANSI_RESET}",
+                  file=sys.stderr, flush=True)
+            index_thread.join()
+
+
+def _one_shot_turn(prompt, auto_apply, use_index):
     routed_model, effort, max_tok = route_query(prompt)
-    retrieved_ctx, hits = retrieve(prompt, token_budget=_RETRIEVAL_BUDGET[effort], effort=effort)
+    if use_index:
+        retrieved_ctx, hits = retrieve(prompt, token_budget=_RETRIEVAL_BUDGET[effort], effort=effort)
+    else:
+        retrieved_ctx, hits = "", []
 
     if retrieved_ctx and config.LLMLINGUA_ENABLED:
         retrieved_ctx, info = compress_context(retrieved_ctx)

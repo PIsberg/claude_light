@@ -929,6 +929,116 @@ class TestChatWithoutIndex(unittest.TestCase):
         self.assertIn("index", out.getvalue().lower())
 
 
+class TestRouterDoesNotWaitForIndexing(unittest.TestCase):
+    """The index build holds embedder_lock while it embeds every chunk (5 min
+    on a cold 64-file repo). Live, route_query() blocked on that lock, so a
+    query sent "without waiting for the index" still waited for it."""
+
+    def setUp(self):
+        self._embedder, self._model = _state.embedder, _state.EMBED_MODEL
+        self._ready = _state.embedder_ready.is_set()
+        self._proto = dict(_llm._PROTO_CACHE)
+
+    def tearDown(self):
+        _state.embedder, _state.EMBED_MODEL = self._embedder, self._model
+        (_state.embedder_ready.set if self._ready else _state.embedder_ready.clear)()
+        _llm._PROTO_CACHE.update(self._proto)
+
+    def _route_while_lock_held(self, query):
+        import threading as _threading
+        import time as _time
+        mock = MagicMock()
+        mock.encode.side_effect = lambda texts, **kw: (
+            np.ones((len(texts), 4), dtype=np.float32) if isinstance(texts, list)
+            else np.ones(4, dtype=np.float32))
+        _state.embedder, _state.EMBED_MODEL = mock, "busy-model"
+        _state.embedder_ready.set()
+        _llm._PROTO_CACHE.update(model=None, mat=None)
+        held, release = _threading.Event(), _threading.Event()
+
+        def index_build():
+            with _state.embedder_lock:
+                held.set()
+                release.wait(10)
+
+        t = _threading.Thread(target=index_build, daemon=True)
+        t.start()
+        held.wait(2)
+        try:
+            start = _time.monotonic()
+            result = route_query(query)
+            return result, _time.monotonic() - start
+        finally:
+            release.set()
+            t.join(5)
+
+    def test_route_query_returns_promptly_while_index_embeds(self):
+        print("\n  ▶ TestRouterDoesNotWaitForIndexing.test_route_query_returns_promptly_while_index_embeds")
+        (_, effort, _), elapsed = self._route_while_lock_held("why does the retry decorator fail?")
+        self.assertLess(elapsed, 3.0, "route_query waited for the index build's embedder lock")
+        self.assertIn(effort, ("low", "medium", "high", "max"))
+
+
+class TestOneShotColdIndex(unittest.TestCase):
+    """One-shot runs used to block on index_files() before asking anything:
+    314 s on a cold 64-file repo. In OAuth mode the CLI agent can search the
+    code itself, so the answer must not wait for the build; the build still
+    finishes before exit so the next run has a cache."""
+
+    def _run(self, auth_mode, index_secs, wait_secs=0.3):
+        import threading as _threading
+        import time as _time
+        from claude_light import llm
+        events = []
+        lock = _threading.Lock()
+
+        def note(e):
+            with lock:
+                events.append(e)
+
+        def fake_index(quiet=False):
+            note("index_start")
+            _time.sleep(index_secs)
+            note("index_done")
+
+        def fake_call(**kwargs):
+            note("answer")
+            usage = MagicMock(input_tokens=1, output_tokens=1, cost_usd=None,
+                              cache_creation_input_tokens=0, cache_read_input_tokens=0)
+            return "ok", usage, True
+
+        with patch.object(llm, "AUTH_MODE", auth_mode), \
+             patch.object(llm, "_ONE_SHOT_INDEX_WAIT_SECS", wait_secs), \
+             patch.object(llm, "index_files", side_effect=fake_index), \
+             patch.object(llm, "_update_skeleton"), \
+             patch.object(llm, "retrieve", return_value=("", [])) as retrieve_mock, \
+             patch.object(llm, "_make_streaming_api_call", side_effect=fake_call), \
+             patch.object(llm, "route_query", return_value=("m", "low", 2048)), \
+             patch.object(llm, "_git_modified_snapshot", return_value=set()), \
+             patch.object(llm, "print_stats"), \
+             patch("sys.stdout", io.StringIO()), patch("sys.stderr", io.StringIO()):
+            llm.one_shot("where is the retry loop?")
+        return events, retrieve_mock
+
+    def test_oauth_answers_before_a_slow_index_and_still_finishes_it(self):
+        print("\n  ▶ TestOneShotColdIndex.test_oauth_answers_before_a_slow_index_and_still_finishes_it")
+        events, retrieve_mock = self._run("OAUTH", index_secs=1.5)
+        self.assertEqual(events, ["index_start", "answer", "index_done"])
+        retrieve_mock.assert_not_called()
+
+    def test_oauth_uses_an_index_that_is_ready_in_time(self):
+        print("\n  ▶ TestOneShotColdIndex.test_oauth_uses_an_index_that_is_ready_in_time")
+        events, retrieve_mock = self._run("OAUTH", index_secs=0.0, wait_secs=5.0)
+        self.assertEqual(events, ["index_start", "index_done", "answer"])
+        retrieve_mock.assert_called_once()
+
+    def test_api_key_mode_waits_for_the_index(self):
+        print("\n  ▶ TestOneShotColdIndex.test_api_key_mode_waits_for_the_index")
+        events, retrieve_mock = self._run("API_KEY", index_secs=0.5)
+        self.assertEqual(events, ["index_start", "index_done", "answer"])
+        retrieve_mock.assert_called_once()
+
+
 class _PacedProc:
     """Popen stand-in whose stdout emits lines on a schedule.
 
