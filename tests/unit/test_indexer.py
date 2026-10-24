@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 os.environ.setdefault("ANTHROPIC_API_KEY", "sk-ant-dummy-test-key")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from claude_light.indexer import _chunks_for_file, _debounce
+from claude_light.indexer import _chunks_for_file, _debounce, _encode_index
 
 
 class TestChunksForFile(unittest.TestCase):
@@ -158,7 +158,7 @@ class TestLoadCache(unittest.TestCase):
                     json.dumps({"embed_model": "old-model", "files": {}}),
                     encoding="utf-8"
                 )
-                cl.CACHE_INDEX.write_bytes(pickle.dumps({}))
+                cl.CACHE_INDEX.write_bytes(_encode_index({}))
                 cached, stale = _load_cache([], "new-model", {}, quiet=True)
                 self.assertEqual(cached, {})
             finally:
@@ -436,3 +436,73 @@ class TestBackgroundNotices(unittest.TestCase):
             llm.refresh_skeleton_only()
             llm.refresh_md_file("README.md")
         self.assertEqual([c.kwargs.get("quiet") for c in warm.call_args_list], [True, True])
+
+
+class TestCacheFormat(unittest.TestCase):
+    """The index cache lives in the project (.claude_light_cache/) and used to
+    be a pickle: a cloned repo shipping its own index.pkl ran code the moment
+    claude_light opened it. It is now numpy arrays plus JSON, loaded with
+    allow_pickle=False."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.orig = os.getcwd()
+        os.chdir(self.tmpdir)
+
+    def tearDown(self):
+        os.chdir(self.orig)
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_round_trip_keeps_texts_and_both_vectors(self):
+        print("\n  ▶ TestCacheFormat.test_round_trip_keeps_texts_and_both_vectors")
+        import numpy as np
+        from claude_light.indexer import _encode_index, _decode_index
+        store = {
+            "a.py::f": {"text": "def f(): ü", "emb": np.ones(3, dtype=np.float32),
+                        "emb_fast": np.full(5, 0.5, dtype=np.float32)},
+            "a.py::g": {"text": "def g(): pass", "emb_fast": np.zeros(5, dtype=np.float32)},
+            "b.md": {"text": "no vectors yet"},
+        }
+        back = _decode_index(_encode_index(store))
+        self.assertEqual(set(back), set(store))
+        self.assertEqual(back["a.py::f"]["text"], "def f(): ü")
+        np.testing.assert_array_equal(back["a.py::f"]["emb"], store["a.py::f"]["emb"])
+        np.testing.assert_array_equal(back["a.py::g"]["emb_fast"], store["a.py::g"]["emb_fast"])
+        self.assertNotIn("emb", back["a.py::g"])
+        self.assertEqual(back["b.md"], {"text": "no vectors yet"})
+
+    def test_a_pickled_cache_is_never_executed(self):
+        print("\n  ▶ TestCacheFormat.test_a_pickled_cache_is_never_executed")
+        import json
+        import pickle
+        import claude_light.indexer as ix
+        from claude_light.config import CACHE_DIR, CACHE_MANIFEST
+        marker = Path(self.tmpdir) / "pwned"
+
+        class Payload:
+            def __reduce__(self):
+                return (Path.write_text, (marker, "ran"))
+
+        CACHE_DIR.mkdir(exist_ok=True)
+        Path(CACHE_DIR, "index.pkl").write_bytes(pickle.dumps(Payload()))
+        ix.CACHE_INDEX.write_bytes(pickle.dumps(Payload()))
+        CACHE_MANIFEST.write_text(json.dumps({"embed_model": "m", "files": {}}), encoding="utf-8")
+        Path("x.py").write_text("def x(): pass\n", encoding="utf-8")
+        with patch("builtins.print"):
+            store, stale = ix._load_cache([Path("x.py")], "m", {}, quiet=True)
+            ix._load_hybrid_cache([Path("x.py")], quiet=True)
+        self.assertFalse(marker.exists())
+        self.assertEqual(store, {})
+        self.assertEqual(stale, [Path("x.py")])
+
+    def test_saving_removes_the_old_pickle(self):
+        print("\n  ▶ TestCacheFormat.test_saving_removes_the_old_pickle")
+        import claude_light.indexer as ix
+        from claude_light.config import CACHE_DIR
+        CACHE_DIR.mkdir(exist_ok=True)
+        legacy = Path(CACHE_DIR, "index.pkl")
+        legacy.write_bytes(b"old")
+        ix._save_cache("m")
+        self.assertFalse(legacy.exists())
+        self.assertTrue(ix.CACHE_INDEX.exists())

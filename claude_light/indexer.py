@@ -1,6 +1,6 @@
 import os
+import io
 import json
-import pickle
 import threading
 import concurrent.futures
 from pathlib import Path
@@ -47,7 +47,7 @@ def _load_cache(source_files: list, embed_model: str, file_hashes: dict, quiet=F
         manifest      = json.loads(CACHE_MANIFEST.read_text(encoding="utf-8"))
         cached_model  = manifest.get("embed_model")
         old_hashes    = manifest["files"]
-        cached_index  = pickle.loads(CACHE_INDEX.read_bytes())
+        cached_index  = _decode_index(CACHE_INDEX.read_bytes())
         
         # Check if model changed - if so, all files are stale
         # If embed_model is None/empty, use cached model (first startup with existing cache)
@@ -81,6 +81,45 @@ def _load_cache(source_files: list, embed_model: str, file_hashes: dict, quiet=F
     return cached_store, stale
 
 
+_LEGACY_INDEX = CACHE_DIR / "index.pkl"
+_VECTOR_FIELDS = ("emb", "emb_fast")
+
+
+def _encode_index(store: dict) -> bytes:
+    """The chunk store as .npz bytes: ids and texts as JSON, each vector kind
+    as one float32 matrix plus the rows that have it.
+
+    Not a pickle: the cache lives in the project directory, and a cloned repo
+    could ship its own. Unpickling it ran whatever code it contained.
+    """
+    import numpy as np
+    ids = list(store)
+    meta = json.dumps({"ids": ids, "texts": [store[cid]["text"] for cid in ids]}).encode("utf-8")
+    arrays = {"meta": np.frombuffer(meta, dtype=np.uint8)}
+    for field in _VECTOR_FIELDS:
+        rows = [n for n, cid in enumerate(ids) if store[cid].get(field) is not None]
+        if rows:
+            arrays[field] = np.stack([np.asarray(store[ids[n]][field], dtype=np.float32) for n in rows])
+            arrays[f"{field}_rows"] = np.array(rows, dtype=np.int64)
+    buf = io.BytesIO()
+    np.savez(buf, **arrays)
+    return buf.getvalue()
+
+
+def _decode_index(data: bytes) -> dict:
+    """Inverse of _encode_index. allow_pickle=False: object arrays raise."""
+    import numpy as np
+    with np.load(io.BytesIO(data), allow_pickle=False) as z:
+        meta = json.loads(z["meta"].tobytes().decode("utf-8"))
+        ids = meta["ids"]
+        store = {cid: {"text": text} for cid, text in zip(ids, meta["texts"])}
+        for field in _VECTOR_FIELDS:
+            if field in z.files:
+                for row, vec in zip(z[f"{field}_rows"], z[field]):
+                    store[ids[int(row)]][field] = vec
+    return store
+
+
 def _atomic_write(path: Path, data) -> None:
     """Write bytes/str to a sibling temp file then os.replace() into place.
 
@@ -110,7 +149,8 @@ def _save_cache(embed_model: str) -> None:
             }
             with state.lock:
                 store_snapshot = dict(state.chunk_store)
-            _atomic_write(CACHE_INDEX, pickle.dumps(store_snapshot, protocol=pickle.HIGHEST_PROTOCOL))
+            _atomic_write(CACHE_INDEX, _encode_index(store_snapshot))
+            _LEGACY_INDEX.unlink(missing_ok=True)  # never read: see _decode_index
             _atomic_write(CACHE_MANIFEST, json.dumps(manifest))
         except Exception as e:
             print(f"[Cache] Failed to save: {e}")
@@ -261,9 +301,7 @@ def _load_hybrid_cache(source_files, quiet):
     dense model re-embeds in the background without re-chunking anything."""
     try:
         manifest = json.loads(CACHE_MANIFEST.read_text(encoding="utf-8"))
-        # TODO(this branch): pickle from a project directory runs code a
-        # cloned repo could ship; the cache format moves to npz + JSON.
-        cached_index = pickle.loads(CACHE_INDEX.read_bytes())
+        cached_index = _decode_index(CACHE_INDEX.read_bytes())
         old_hashes = manifest["files"]
     except Exception:
         return {}, list(source_files)

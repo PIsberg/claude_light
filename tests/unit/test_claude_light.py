@@ -16,6 +16,7 @@ os.environ["ANTHROPIC_API_KEY"] = "sk-ant-dummy-test-key"
 project_root = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(project_root))
 
+from claude_light.indexer import _encode_index
 from claude_light import (
     route_query,
     parse_edit_blocks,
@@ -3497,7 +3498,7 @@ class TestLoadCache(unittest.TestCase):
                     json.dumps({"embed_model": "old-model", "files": {}}),
                     encoding="utf-8"
                 )
-                cl.CACHE_INDEX.write_bytes(pickle.dumps({}))
+                cl.CACHE_INDEX.write_bytes(_encode_index({}))
                 mock_files = []
                 cached, stale = _load_cache(mock_files, "new-model", {}, quiet=True)
                 self.assertEqual(cached, {})
@@ -3705,7 +3706,7 @@ class TestLoadCacheHit(unittest.TestCase):
                 )
                 import numpy as np
                 cached_index = {"cached.py::foo": {"text": "def foo(): pass", "emb": np.zeros(3)}}
-                cl.CACHE_INDEX.write_bytes(pickle.dumps(cached_index))
+                cl.CACHE_INDEX.write_bytes(_encode_index(cached_index))
 
                 cached, stale = _load_cache([f], "all-MiniLM-L6-v2", {"cached.py": h}, quiet=True)
                 self.assertIn("cached.py::foo", cached)
@@ -4126,7 +4127,7 @@ class TestIndexFilesCache(unittest.TestCase):
                     encoding="utf-8"
                 )
                 emb = np.zeros(3)
-                cl.CACHE_INDEX.write_bytes(pickle.dumps({"cached_module.py::bar": {"text": "def bar(): pass", "emb": emb}}))
+                cl.CACHE_INDEX.write_bytes(_encode_index({"cached_module.py::bar": {"text": "def bar(): pass", "emb": emb}}))
 
                 orig_store = dict(cl.chunk_store)
                 orig_model = cl.EMBED_MODEL
@@ -4312,7 +4313,7 @@ class TestLoadCacheStale(unittest.TestCase):
                     json.dumps({"embed_model": "all-MiniLM-L6-v2", "files": {"a.py": h1, "b.py": "wrong_hash"}}),
                     encoding="utf-8"
                 )
-                cl.CACHE_INDEX.write_bytes(pickle.dumps({
+                cl.CACHE_INDEX.write_bytes(_encode_index({
                     "a.py::a": {"text": "def a(): pass", "emb": np.zeros(3)},
                 }))
 
@@ -4343,7 +4344,7 @@ class TestLoadCacheStale(unittest.TestCase):
                     json.dumps({"embed_model": "old-model", "files": {}}),
                     encoding="utf-8"
                 )
-                cl.CACHE_INDEX.write_bytes(pickle.dumps({}))
+                cl.CACHE_INDEX.write_bytes(_encode_index({}))
                 printed = []
                 with patch("builtins.print", side_effect=lambda *a, **k: printed.append(a)):
                     cached, stale = _load_cache([], "new-model", {}, quiet=False)

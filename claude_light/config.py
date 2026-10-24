@@ -166,7 +166,7 @@ GLOBAL_STATS_FILE = Path(os.environ.get("CLAUDE_LIGHT_STATS_FILE")
 
 # Disk cache — stored in a hidden dir so _is_skipped() ignores it automatically
 CACHE_DIR      = Path(".claude_light_cache")
-CACHE_INDEX    = CACHE_DIR / "index.pkl"
+CACHE_INDEX    = CACHE_DIR / "index.npz"   # numpy + JSON; never a pickle (see indexer._decode_index)
 CACHE_MANIFEST = CACHE_DIR / "manifest.json"
 
 _DOC_PREFIX   = {"nomic-ai/nomic-embed-text-v1.5": "search_document: "}

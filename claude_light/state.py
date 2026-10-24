@@ -95,6 +95,6 @@ embedder_load_error: Exception | None = None
 # inference is not guaranteed safe under concurrent forward passes.
 embedder_lock = threading.Lock()
 
-# Serializes on-disk cache writes (index.pkl + manifest.json). Without it two
+# Serializes on-disk cache writes (index.npz + manifest.json). Without it two
 # concurrent reindex_file() timers can interleave writes and corrupt the cache.
 cache_io_lock = threading.Lock()
