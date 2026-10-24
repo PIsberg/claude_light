@@ -1,0 +1,210 @@
+{
+ "_comment": "Questions about this repository with the file that answers them, for tests/benchmarks/benchmark_models.py. 'unrelated' questions should retrieve nothing.",
+ "questions": [
+  {
+   "question": "Where is exponential backoff for transient API errors implemented?",
+   "file": "claude_light/retry.py",
+   "kind": "identifier"
+  },
+  {
+   "question": "How are SEARCH/REPLACE blocks parsed out of the model's reply?",
+   "file": "claude_light/editor.py",
+   "kind": "identifier"
+  },
+  {
+   "question": "Which function decides the model and effort level a question gets?",
+   "file": "claude_light/llm.py",
+   "kind": "identifier"
+  },
+  {
+   "question": "How is the directory tree compressed before it goes in the system prompt?",
+   "file": "claude_light/skeleton.py",
+   "kind": "identifier"
+  },
+  {
+   "question": "How are source files split into one chunk per method with tree-sitter?",
+   "file": "claude_light/parsing.py",
+   "kind": "identifier"
+  },
+  {
+   "question": "Where is the similarity between the question and every chunk computed?",
+   "file": "claude_light/retrieval.py",
+   "kind": "identifier"
+  },
+  {
+   "question": "How does undo revert the last commit the assistant made?",
+   "file": "claude_light/git_manager.py",
+   "kind": "identifier"
+  },
+  {
+   "question": "Where is the embedding model picked based on how many files the project has?",
+   "file": "claude_light/executor.py",
+   "kind": "identifier"
+  },
+  {
+   "question": "How does a saved file get re-chunked and re-embedded while the app runs?",
+   "file": "claude_light/indexer.py",
+   "kind": "identifier"
+  },
+  {
+   "question": "Where is Python syntax checked before an edit is applied?",
+   "file": "claude_light/linter.py",
+   "kind": "identifier"
+  },
+  {
+   "question": "How is the retrieved context shrunk with a BERT token classifier?",
+   "file": "claude_light/compressor.py",
+   "kind": "identifier"
+  },
+  {
+   "question": "Which read-only tools can the model call and how are paths kept inside the project?",
+   "file": "claude_light/tools.py",
+   "kind": "identifier"
+  },
+  {
+   "question": "How is the API key or subscription token found?",
+   "file": "claude_light/config.py",
+   "kind": "identifier"
+  },
+  {
+   "question": "How is a streamed reply rendered as markdown in the terminal?",
+   "file": "claude_light/ui.py",
+   "kind": "identifier"
+  },
+  {
+   "question": "Where is the interactive input loop that handles slash commands?",
+   "file": "claude_light/main.py",
+   "kind": "identifier"
+  },
+  {
+   "question": "How are thinking blocks in the token stream handled?",
+   "file": "claude_light/streaming.py",
+   "kind": "identifier"
+  },
+  {
+   "question": "How is the agent subprocess and its children killed when the user cancels on Windows?",
+   "file": "claude_light/llm.py",
+   "kind": "identifier"
+  },
+  {
+   "question": "Where is the dollar cost of a turn computed from token usage?",
+   "file": "claude_light/ui.py",
+   "kind": "identifier"
+  },
+  {
+   "question": "How is the on-disk embedding cache loaded and invalidated when files change?",
+   "file": "claude_light/indexer.py",
+   "kind": "identifier"
+  },
+  {
+   "question": "Where is the shared mutable state kept and protected by a lock?",
+   "file": "claude_light/state.py",
+   "kind": "identifier"
+  },
+  {
+   "question": "How does running a shell command enforce a timeout and trim its output?",
+   "file": "claude_light/executor.py",
+   "kind": "identifier"
+  },
+  {
+   "question": "How are old conversation turns summarised when the history gets too long?",
+   "file": "claude_light/llm.py",
+   "kind": "identifier"
+  },
+  {
+   "question": "How is the per-file preamble emitted only once when several chunks of a file are retrieved?",
+   "file": "claude_light/retrieval.py",
+   "kind": "identifier"
+  },
+  {
+   "question": "Where do we wait longer and longer between attempts after the server says it is overloaded?",
+   "file": "claude_light/retry.py",
+   "kind": "paraphrase"
+  },
+  {
+   "question": "What turns the assistant's proposed code changes into actual file modifications?",
+   "file": "claude_light/editor.py",
+   "kind": "paraphrase"
+  },
+  {
+   "question": "How does the tool decide whether a question needs the cheap model or the expensive one?",
+   "file": "claude_light/llm.py",
+   "kind": "paraphrase"
+  },
+  {
+   "question": "Which part makes the folder listing shorter by merging single-child folders?",
+   "file": "claude_light/skeleton.py",
+   "kind": "paraphrase"
+  },
+  {
+   "question": "Where is source code cut into one piece per function using a syntax tree?",
+   "file": "claude_light/parsing.py",
+   "kind": "paraphrase"
+  },
+  {
+   "question": "How are the most relevant pieces of code picked for a question?",
+   "file": "claude_light/retrieval.py",
+   "kind": "paraphrase"
+  },
+  {
+   "question": "How can I take back the last change the assistant committed to version control?",
+   "file": "claude_light/git_manager.py",
+   "kind": "paraphrase"
+  },
+  {
+   "question": "What happens when a command the user runs never finishes?",
+   "file": "claude_light/executor.py",
+   "kind": "paraphrase"
+  },
+  {
+   "question": "How does the program notice that I saved a file and update its search data?",
+   "file": "claude_light/indexer.py",
+   "kind": "paraphrase"
+  },
+  {
+   "question": "Where is a broken edit caught before it is written to disk?",
+   "file": "claude_light/linter.py",
+   "kind": "paraphrase"
+  },
+  {
+   "question": "How do we keep the model from reading files outside the project folder?",
+   "file": "claude_light/tools.py",
+   "kind": "paraphrase"
+  },
+  {
+   "question": "How is the spinner shown while waiting for the first words of an answer?",
+   "file": "claude_light/ui.py",
+   "kind": "paraphrase"
+  },
+  {
+   "question": "hi",
+   "file": null,
+   "kind": "unrelated"
+  },
+  {
+   "question": "hello there",
+   "file": null,
+   "kind": "unrelated"
+  },
+  {
+   "question": "what's the weather like in Paris today",
+   "file": null,
+   "kind": "unrelated"
+  },
+  {
+   "question": "tell me a joke",
+   "file": null,
+   "kind": "unrelated"
+  },
+  {
+   "question": "who won the world cup in 1998",
+   "file": null,
+   "kind": "unrelated"
+  },
+  {
+   "question": "how do I bake sourdough bread",
+   "file": null,
+   "kind": "unrelated"
+  }
+ ]
+}

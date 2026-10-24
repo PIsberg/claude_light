@@ -231,12 +231,13 @@ The script runs three concurrent threads to keep your workflow seamless:
 * **Watchdog:** Monitors your directory for file saves. If a source file changes, it automatically re-chunks and re-embeds it; if a `.md` file changes, it rebuilds the skeleton cache. Files under `.git`, `.venv`, `node_modules` and other skipped directories are ignored. It reports in the toolbar (`re-indexed calc.py (2 chunks)`), never in the middle of a reply.
 * **Heartbeat Daemon (API-key mode only):** Keeps the Anthropic prompt cache warm while you step away. Disabled in OAuth/Pro-subscription mode, where each turn spawns a fresh `claude` CLI subprocess and there is no persistent process to keep warm.
 
-### Auto-Tuned Embedding Models
-The script automatically selects the most efficient embedding model based on the size of your repository:
+### Embedding Models (hybrid retrieval)
+Code is indexed twice, by two models that are good at different questions:
 
-* **< 50 files:** `all-MiniLM-L6-v2` (22 MB) for fast startup.
-* **50–199 files:** `all-mpnet-base-v2` (420 MB) for better semantic depth.
-* **200+ files:** `nomic-ai/nomic-embed-text-v1.5` for optimal recall on large codebases.
+* **`static-retrieval-mrl-en-v1`** (static embeddings, no transformer): indexes this repo's 1,400 chunks in about 2 s on a CPU, so retrieval works from the first question. Best of six models measured at questions that name code ("where is `retry_with_backoff` used?").
+* **`all-mpnet-base-v2`**: about 380 s for the same chunks, so it runs in the background while you work, and its vectors are cached. Best at questions that describe behaviour without naming it ("where do we wait longer between attempts?").
+
+Once both are ready, each chunk's similarity to the question is z-scored per model and averaged. On 35 questions about this repo, the file that answers the question reached the model's context for 23, against 15 with mpnet alone (the setup before this change), and the 6 off-topic questions still got no context. Measure on your own changes with `python tests/benchmarks/benchmark_models.py`. `CLAUDE_LIGHT_HYBRID=0` switches back to a single model picked by repository size (`all-MiniLM-L6-v2` under 50 files, `all-mpnet-base-v2` under 200, `nomic-ai/nomic-embed-text-v1.5` above).
 
 ### 🛡️ Security & SBOM
 

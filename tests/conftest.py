@@ -18,6 +18,10 @@ sys.path.insert(0, str(project_root))
 # Set dummy API key to prevent import errors in test mode
 os.environ.setdefault("ANTHROPIC_API_KEY", "sk-ant-test-mock-key")
 
+# Most tests were written for the single dense model; tests of the hybrid
+# index (#61) switch it on themselves with patch.object(config, ...).
+os.environ.setdefault("CLAUDE_LIGHT_HYBRID", "0")
+
 # Keep the suite's fake token usage out of the real ~/.claude_light_stats.json.
 # Set before any claude_light import: config reads it at import time.
 import tempfile as _tempfile

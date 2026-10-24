@@ -1495,8 +1495,10 @@ def one_shot(prompt, auto_apply=False):
     _update_skeleton()
 
     if AUTH_MODE != "OAUTH":
-        # API-key turns have no tools: without retrieval the model is blind.
-        index_files()
+        # Retrieval is the model's starting point here, so wait for the index.
+        # dense="skip": one-shot exits before a background pass could finish;
+        # dense vectors already cached are still used.
+        index_files(dense="skip")
         _one_shot_turn(prompt, auto_apply, use_index=True)
         return
 
@@ -1508,7 +1510,7 @@ def one_shot(prompt, auto_apply=False):
 
     def _build_index():
         try:
-            index_files(quiet=True)
+            index_files(quiet=True, dense="skip")
         except Exception as e:  # reported below; the turn goes on without it
             index_error.append(e)
 

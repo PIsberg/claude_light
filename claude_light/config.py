@@ -98,6 +98,24 @@ TARGET_RETRIEVED_TOKENS = 6_000   # desired context size per query in tokens
 # right file in the top 6 for 11 of them. Lower floors mostly admitted noise.
 MIN_SCORE               = 0.35
 RELATIVE_SCORE_FLOOR    = 0.60    # drop chunks below this fraction of the top chunk's score
+
+# Hybrid retrieval (#61). A static embedding model indexes in seconds (2 s for
+# this repo vs 383 s for all-mpnet-base-v2 on CPU) and is the best of six
+# models at questions that name code; a dense model is best at paraphrases.
+# The static index is built first, so retrieval works from the first query;
+# the dense vectors follow in the background and the two z-scored
+# similarities are averaged. Measured with tests/benchmarks/benchmark_models.py.
+# CLAUDE_LIGHT_HYBRID=0 restores the single dense model chosen by auto_tune().
+HYBRID_RETRIEVAL   = os.environ.get("CLAUDE_LIGHT_HYBRID", "1") != "0"
+FAST_EMBED_MODEL   = "sentence-transformers/static-retrieval-mrl-en-v1"
+DENSE_EMBED_MODEL  = "all-mpnet-base-v2"
+HYBRID_FAST_WEIGHT = 0.5
+# Below these, the best chunk is no closer to the query than it is to "hi" or
+# "what's the weather in Paris": retrieve nothing. Per model, since cosine
+# scales differ (unrelated best: static 0.21, MiniLM 0.24, mpnet 0.19).
+HYBRID_MIN_SCORE = {FAST_EMBED_MODEL: 0.22, DENSE_EMBED_MODEL: 0.21, "all-MiniLM-L6-v2": 0.25}
+# Keep chunks whose fused z-score is within this of the top chunk's.
+HYBRID_SCORE_GAP = 1.5
 # Per-effort retrieval token budgets (scaled from TARGET_RETRIEVED_TOKENS)
 _RETRIEVAL_BUDGET = {"low": 1_500, "medium": 3_000, "high": 6_000, "max": 9_000}
 MAX_HISTORY_TURNS       = 6       # compress+cap when stored turns exceed this
@@ -148,7 +166,7 @@ GLOBAL_STATS_FILE = Path(os.environ.get("CLAUDE_LIGHT_STATS_FILE")
 
 # Disk cache — stored in a hidden dir so _is_skipped() ignores it automatically
 CACHE_DIR      = Path(".claude_light_cache")
-CACHE_INDEX    = CACHE_DIR / "index.pkl"
+CACHE_INDEX    = CACHE_DIR / "index.npz"   # numpy + JSON; never a pickle (see indexer._decode_index)
 CACHE_MANIFEST = CACHE_DIR / "manifest.json"
 
 _DOC_PREFIX   = {"nomic-ai/nomic-embed-text-v1.5": "search_document: "}

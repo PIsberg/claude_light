@@ -665,7 +665,7 @@ partition "Cache Lookup" {
   if (model matches?) then (yes)
     :Compare file hashes;
     if (hash matches) then (hit)
-      :Load from index.pkl;
+      :Load from index.npz;
     else (miss)
       :Mark for re-indexing;
     endif
@@ -692,7 +692,7 @@ partition "Embedding" {
 }
 
 partition "Save Cache" {
-  :Save index.pkl;
+  :Save index.npz;
   :Save manifest.json;
 }
 

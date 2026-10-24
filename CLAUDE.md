@@ -171,17 +171,19 @@ The `claude_light/` package is organized by responsibility:
 
 **Method-level chunking** (`parsing.py`): Each chunk includes a file path comment and the class preamble (package + imports + class header) so it is self-contained. Overloaded method names get numeric suffixes. Chunk IDs use `filepath::methodName` (`::` is not valid in source identifiers). Falls back to whole-file if no methods are found.
 
-**Disk cache** (`.claude_light_cache/`): Embeddings are persisted to `index.pkl` between runs; a `manifest.json` tracks per-file MD5 hashes and the embedding model used. Only changed or new files are re-embedded on restart. Command history (prompt_toolkit) is also stored here. The conversation itself is not saved between runs (#65).
+**Disk cache** (`.claude_light_cache/`): Embeddings are persisted to `index.npz` between runs (ids and texts as JSON, vectors as float32 arrays, loaded with `allow_pickle=False`: the directory may come from a cloned repo, and the old `index.pkl` ran whatever a repo shipped in it; an old `index.pkl` is deleted, never read); a `manifest.json` tracks per-file MD5 hashes and the embedding model used. Only changed or new files are re-embedded on restart. Command history (prompt_toolkit) is also stored here. The conversation itself is not saved between runs (#65).
 
-**Auto-tuning** (`auto_tune` in `executor.py`): called twice in `index_files()` — first to select and load the embedding model (based on file count), then again after chunking to set `TOP_K` based on actual chunk sizes, targeting `TARGET_RETRIEVED_TOKENS` of context per query.
+**Hybrid index** (`config.HYBRID_RETRIEVAL`, on by default; #61): `index_files()` embeds every chunk with the static model `FAST_EMBED_MODEL` (`emb_fast`, ~2 s for this repo) and returns, so retrieval works from the first query. Unless `dense="skip"` (one-shot runs), `indexer._complete_dense_index()` then adds `DENSE_EMBED_MODEL` vectors (`emb`, all-mpnet-base-v2) in a background thread, `_DENSE_BATCH` chunks per `embedder_lock` hold, and sets `state.dense_ready`. `retrieve()` uses `retrieval.hybrid_scores()`: z-scored cosine per model, averaged by `HYBRID_FAST_WEIGHT`; nothing is retrieved unless one model's best chunk clears its floor in `HYBRID_MIN_SCORE`; chunks within `HYBRID_SCORE_GAP` of the top go to the usual budget selection. Static alone until every chunk has a dense vector. On a warm start (every vector cached) both models load in background threads (`state.fast_ready`, `state.embedder_ready`) and `index_files()` returns in ~0.3 s; the first query waits for the static model, and up to 30 s for the dense one. Measure changes with `tests/benchmarks/benchmark_models.py` (questions in `tests/fixtures/repo_questions.json`). The suite runs with `CLAUDE_LIGHT_HYBRID=0` (`tests/conftest.py`); `tests/unit/test_hybrid.py` switches it on.
 
-| File count | Embedding model |
+**Auto-tuning** (`auto_tune` in `executor.py`): with `CLAUDE_LIGHT_HYBRID=0`, called twice in `index_files()` — first to select and load the embedding model (based on file count), then again after chunking to set `TOP_K` (`set_top_k()`, shared with the hybrid path) based on actual chunk sizes, targeting `TARGET_RETRIEVED_TOKENS` of context per query.
+
+| File count (`CLAUDE_LIGHT_HYBRID=0`) | Embedding model |
 |---|---|
 | < 50 | `all-MiniLM-L6-v2` (22 MB) |
 | 50–199 | `all-mpnet-base-v2` (420 MB) |
 | 200+ | `nomic-ai/nomic-embed-text-v1.5` (requires `einops`) |
 
-**Scoring**: `retrieve()` uses a single matrix multiply (`embs @ q_emb`) over all chunk embeddings — no per-chunk loop. Two filters: `MIN_SCORE` (0.35, absolute floor) and `RELATIVE_SCORE_FLOOR` (0.60, fraction of the top chunk's score). Per-effort token budgets in `_RETRIEVAL_BUDGET` scale the context window from 1 500 (low) to 9 000 (max) tokens.
+**Scoring**: `retrieve()` uses a single matrix multiply (`embs @ q_emb`) over all chunk embeddings — no per-chunk loop. With `CLAUDE_LIGHT_HYBRID=0`, two filters: `MIN_SCORE` (0.35, absolute floor) and `RELATIVE_SCORE_FLOOR` (0.60, fraction of the top chunk's score); on this repo's questions that floor dropped the answering file more often than not (mpnet's best chunk for it: median 0.31). Per-effort token budgets in `_RETRIEVAL_BUDGET` scale the context window from 1 500 (low) to 9 000 (max) tokens.
 
 **Token optimisations:**
 - Skeleton cached; retrieved chunks also cached (second `cache_control` block) — repeated queries over the same code pay the cache-read rate ($0.10/M on Sonnet 5.5) instead of full input ($2.00/M)
@@ -220,6 +222,10 @@ For a deeper dive, see [docs/architecture.md](docs/architecture.md).
 | `TARGET_RETRIEVED_TOKENS` | Token budget for retrieved context per query (default 6 000) |
 | `MIN_SCORE` | Absolute cosine similarity floor to include a chunk (default 0.35; 0.45 dropped most natural-language questions) |
 | `RELATIVE_SCORE_FLOOR` | Drop chunks below this fraction of the top chunk's score (default 0.60) |
+| `HYBRID_RETRIEVAL` | Static + dense index (default on); `CLAUDE_LIGHT_HYBRID=0` restores one auto-tuned model and the two floors above |
+| `FAST_EMBED_MODEL` / `DENSE_EMBED_MODEL` | `static-retrieval-mrl-en-v1` / `all-mpnet-base-v2` |
+| `HYBRID_MIN_SCORE` | Per-model cosine floor for "anything related at all" (static 0.22, mpnet 0.21: just above the best chunk for off-topic questions) |
+| `HYBRID_SCORE_GAP` / `HYBRID_FAST_WEIGHT` | Keep chunks within this fused z-score of the top (1.5) / static model's share of the fused score (0.5) |
 | `_RETRIEVAL_BUDGET` | Per-effort token budgets: low=1500, medium=3000, high=6000, max=9000 |
 | `MAX_HISTORY_TURNS` | Compress+cap when stored turns exceed this (default 6) |
 | `SUMMARIZE_BATCH` | Old turns collapsed per summary call (default 3) |
@@ -256,4 +262,5 @@ See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for full methodology.
 |---|---|---|
 | `tests/benchmarks/benchmark.py` | Analytical token savings (synthetic) | No |
 | `tests/benchmarks/benchmark_retrieval.py` | RAG quality — Hit@K, MRR on SWE-bench Lite | No |
+| `tests/benchmarks/benchmark_models.py` | Embedding models and hybrid fusion on this repo: does the answering file reach the context (`tests/fixtures/repo_questions.json`) | No |
 | `tests/benchmarks/benchmark_cost.py` | Real-world cost vs naive baseline | Yes (~$0.10–0.20) |

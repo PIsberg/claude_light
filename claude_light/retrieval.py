@@ -2,7 +2,8 @@ import numpy as np
 from pathlib import Path
 
 from claude_light.config import (
-    TARGET_RETRIEVED_TOKENS, MIN_SCORE, RELATIVE_SCORE_FLOOR, _QUERY_PREFIX
+    TARGET_RETRIEVED_TOKENS, MIN_SCORE, RELATIVE_SCORE_FLOOR, _QUERY_PREFIX,
+    FAST_EMBED_MODEL, HYBRID_MIN_SCORE, HYBRID_SCORE_GAP,
 )
 import claude_light.state as state
 from claude_light.parsing import _strip_comments
@@ -127,8 +128,54 @@ def _adaptive_select_pairs(ids, scores, budget, k):
 
     threshold = ranked[0][1] * RELATIVE_SCORE_FLOOR
     candidates = [(cid, score) for cid, score in ranked if score >= threshold]
+    return _select_within_budget(candidates, budget, k)
+
+
+def _zscore(scores):
+    sd = float(scores.std())
+    return (scores - scores.mean()) / sd if sd > 0 else np.zeros_like(scores)
+
+
+def hybrid_scores(fast_scores, dense_scores=None, fast_min=None, dense_min=None):
+    """Fused per-chunk scores for the hybrid index, or None when no chunk
+    relates to the query.
+
+    Each model's cosine similarities are z-scored over all chunks and
+    averaged (HYBRID_FAST_WEIGHT), so neither model's scale dominates. The
+    query counts as unrelated when neither model's best chunk clears its
+    floor in HYBRID_MIN_SCORE. Without dense scores (the dense pass is still
+    running) the static model's z-scores are used alone.
+    """
+    from claude_light.config import HYBRID_FAST_WEIGHT
+    fast_min = HYBRID_MIN_SCORE[FAST_EMBED_MODEL] if fast_min is None else fast_min
+    related = fast_scores.max() >= fast_min
+    if dense_scores is not None:
+        dense_min = HYBRID_MIN_SCORE.get(state.EMBED_MODEL, MIN_SCORE) if dense_min is None else dense_min
+        related = related or dense_scores.max() >= dense_min
+    if not related:
+        return None
+    fused = _zscore(fast_scores)
+    if dense_scores is not None:
+        fused = HYBRID_FAST_WEIGHT * fused + (1 - HYBRID_FAST_WEIGHT) * _zscore(dense_scores)
+    return fused
+
+
+def _hybrid_select_pairs(ids, fused, budget, k, gap=None):
+    """Chunks within HYBRID_SCORE_GAP of the top fused score, then the usual
+    budget and file-diversity selection."""
+    gap = HYBRID_SCORE_GAP if gap is None else gap
+    order = np.argsort(-fused)
+    top = float(fused[order[0]])
+    candidates = [(ids[i], float(fused[i])) for i in order if fused[i] >= top - gap]
+    return _select_within_budget(candidates, budget, k, strong=lambda s, t: s >= t - gap / 4)
+
+
+def _select_within_budget(candidates, budget, k, strong=None):
+    """Pick chunks from `candidates` (best first): one per file first, then
+    extra strong chunks while the token budget allows."""
     if not candidates:
         return []
+    strong = strong or (lambda score, top: score >= top * 0.92)
 
     selected = []
     selected_ids = set()
@@ -157,7 +204,7 @@ def _adaptive_select_pairs(ids, scores, budget, k):
         for cid, score in candidates:
             if cid in selected_ids or len(selected) >= k:
                 continue
-            if score < top_score * 0.92 or spent_tokens >= budget * 0.9:
+            if not strong(score, top_score) or spent_tokens >= budget * 0.9:
                 break
             text = state.chunk_store[cid]["text"]
             chunk_tokens = _estimate_tokens(text)
@@ -205,8 +252,13 @@ def explain_last_retrieval() -> str:
             lines.append("  Retrieved: (no chunks cleared the score floor)")
         else:
             top = hits[0][1]
-            lines.append(f"  Retrieved {len(hits)} chunk(s) "
-                         f"(MIN_SCORE={MIN_SCORE}, floor={RELATIVE_SCORE_FLOOR:.0%} of top):")
+            mode = getattr(state, "last_retrieval_mode", "")
+            if mode:
+                lines.append(f"  Retrieved {len(hits)} chunk(s) with the {mode} index "
+                             f"(fused z-scores, within {HYBRID_SCORE_GAP} of the top):")
+            else:
+                lines.append(f"  Retrieved {len(hits)} chunk(s) "
+                             f"(MIN_SCORE={MIN_SCORE}, floor={RELATIVE_SCORE_FLOOR:.0%} of top):")
             for cid, score in hits:
                 rel = (score / top) if top else 0.0
                 file = _chunk_id_to_file(cid)
@@ -246,10 +298,51 @@ def record_retrieval(query, model, effort, token_budget, hits,
     }
 
 
+def _retrieve_hybrid(query, budget, k, effort):
+    with state.lock:
+        if not state.chunk_store:
+            return "", []
+        ids = list(state.chunk_store.keys())
+        entries = [state.chunk_store[cid] for cid in ids]
+        fast_embs = np.stack([e["emb_fast"] for e in entries])
+        dense_embs = np.stack([e["emb"] for e in entries]) if all("emb" in e for e in entries) else None
+
+    fast_scores = fast_embs @ state.fast_embedder.encode(query, normalize_embeddings=True)
+    dense_scores = None
+    if dense_embs is not None and not state.embedder_ready.is_set():
+        # Every dense vector is cached and only the model is still loading
+        # (warm start): worth a short wait for the better answer.
+        state.embedder_ready.wait(30)
+    # Fuse only when every chunk has its dense vector and the model is free
+    # within 2 s (a saved file being re-embedded); otherwise static alone.
+    if dense_embs is not None and state.embedder_ready.is_set() and state.embedder is not None \
+            and state.embedder_lock.acquire(timeout=2):
+        try:
+            prefix = _QUERY_PREFIX.get(state.EMBED_MODEL, "")
+            dense_scores = dense_embs @ state.embedder.encode(prefix + query, normalize_embeddings=True)
+        finally:
+            state.embedder_lock.release()
+    state.last_retrieval_mode = (f"hybrid: static + {state.EMBED_MODEL}" if dense_scores is not None
+                                 else "static model only (dense vectors not ready)")
+
+    fused = hybrid_scores(fast_scores, dense_scores)
+    if fused is None:
+        return "", []
+    top_pairs = _hybrid_select_pairs(ids, fused, budget, k)
+    return _render_retrieved_context(top_pairs, effort), top_pairs
+
+
 def retrieve(query, token_budget=None, effort="medium"):
     budget = token_budget or TARGET_RETRIEVED_TOKENS
     base_k = state.TOP_K or 4
     k = max(2, round(base_k * budget / TARGET_RETRIEVED_TOKENS))
+
+    from claude_light import config
+    if config.HYBRID_RETRIEVAL and state.hybrid_index:
+        state.fast_ready.wait()  # loading in the background after a warm start
+        if state.fast_embedder is None:
+            raise RuntimeError("the static embedding model failed to load")
+        return _retrieve_hybrid(query, budget, k, effort)
 
     with state.lock:
         if not state.chunk_store:

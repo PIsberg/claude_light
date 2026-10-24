@@ -33,6 +33,7 @@ comparison, and this document now reflects that.
 |---|---|---|---|
 | `benchmark.py` | Analytical token savings formula | No | Free |
 | `benchmark_retrieval.py` | RAG retrieval quality (Hit@K, MRR) | No | Free* |
+| `benchmark_models.py` | Embedding models and hybrid fusion on this repo | No | Free (models download on first run) |
 | `benchmark_cost.py` | Real-world cost savings vs naive baseline | Yes | ~$0.05–$0.50 |
 | `benchmark_claude_code.py` | Claude Code vs `claude_light` vs naive baseline | Yes | Varies with live API/tool runs |
 
@@ -260,6 +261,54 @@ Results: dev split  23 instances  K=[5,10,15]
   are dropped, which improves precision at the cost of recall.
 - Some SWE-bench instances touch only configuration files or test files that are
   outside the indexed extensions — these count as misses.
+
+---
+
+## 2b · `benchmark_models.py` — Embedding Models and Hybrid Fusion
+
+### Purpose
+
+Chooses the embedding models and the hybrid thresholds (#61). It answers one
+question per configuration: for questions about this repository, does the file
+that answers the question reach the context the model is given?
+
+### Methodology
+
+* `tests/fixtures/repo_questions.json` holds 41 questions: 23 that name code
+  ("Where is exponential backoff for transient API errors implemented?"), 12
+  paraphrases with no identifiers ("Where do we wait longer and longer between
+  attempts after the server says it is overloaded?") and 6 off-topic ones
+  ("what's the weather like in Paris today"), each with its answering file.
+* The repository is chunked with claude_light's own chunker (tests included,
+  since they compete in real use) and embedded with each model. Vectors are
+  cached in `.claude_light_cache/bench/`, keyed on the chunk texts.
+* For every question the production selection code runs at the medium
+  budget: `_adaptive_select_pairs` for single dense models,
+  `hybrid_scores` + `_hybrid_select_pairs` for the hybrid index.
+
+### Running
+
+```bash
+python tests/benchmarks/benchmark_models.py          # all configurations
+python tests/benchmarks/benchmark_models.py --sweep  # also sweep the gap and floors
+```
+
+### Results (2026-10-24, CPU)
+
+| Configuration | Answering file sent (identifier / paraphrase) | Off-topic got nothing |
+|---|---|---|
+| all-mpnet-base-v2 alone, `MIN_SCORE` 0.35 (before #61) | 8/23, 7/12 | 6/6 |
+| all-MiniLM-L6-v2 alone | 7/23, 4/12 | 6/6 |
+| static-retrieval-mrl-en-v1 alone (while the dense pass runs) | 16/23, 3/12 | 6/6 |
+| static + all-MiniLM-L6-v2 | 13/23, 7/12 | 6/6 |
+| static + all-mpnet-base-v2 (default) | 14/23, 9/12 | 6/6 |
+
+1,453 chunks from 68 files. Embedding about 1,400 chunks took 2 s with the
+static model, 109 s with MiniLM and 383 s with mpnet. The sweep (`--sweep`) kept
+the defaults: floors of 0.22 (static) and 0.21 (mpnet) are the lowest that keep
+all six off-topic questions empty, and a gap of 1.5 sends a median of 3 files
+(3.0 finds two more answers but sends 6). 35 questions on one repository:
+differences of one or two questions are noise.
 
 ---
 
