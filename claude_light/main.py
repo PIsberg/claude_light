@@ -72,13 +72,24 @@ except ImportError:
     _PROMPTTK_AVAILABLE = False
 
 
-def _status_text() -> str:
+_SEP = "  ·  "
+
+
+def _status_text(columns: int | None = None) -> str:
     """The toolbar under the prompt, as prompt_toolkit HTML: index status or
-    session totals, then the latest background notice, then key hints."""
+    session totals, then the latest background notice, then key hints.
+
+    Fitted to `columns` (the terminal width): the hints go first, then the
+    notice is shortened, so the status itself is never cut mid-word.
+    """
     from html import escape
-    project = escape(os.path.basename(os.getcwd()))
+    import shutil
+    if columns is None:
+        columns = shutil.get_terminal_size().columns - 1  # never wrap on the last cell
+    project = os.path.basename(os.getcwd())
+    # (plain text, style) pieces; the style wraps the escaped text.
     if not state.indexing_done.is_set():
-        text = f' <ansicyan>◆</ansicyan> {project}  ·  <ansiyellow>indexing…</ansiyellow>'
+        status = [(project, ""), ("indexing…", "ansiyellow")]
     else:
         with state.lock:
             total_in = state.session_tokens["input"] + state.session_tokens["cache_write"] + state.session_tokens["cache_read"]
@@ -86,15 +97,33 @@ def _status_text() -> str:
             cost = state.session_cost
         ratio = (saved / total_in * 100) if total_in > 0 else 0.0
         cost_label = "cost" if ECONOMY_MODE == "USD" else "API equiv."
-        text = (
-            f' <ansicyan>◆</ansicyan> {project}'
-            f'  ·  {total_in:,} tok  ·  {ratio:.0f}% cached'
-            f'  ·  {cost_label} ${cost:.4f}'
-        )
+        status = [(project, ""), (f"{total_in:,} tok", ""), (f"{ratio:.0f}% cached", ""),
+                  (f"{cost_label} ${cost:.4f}", "")]
+    hints = [("/ for commands", ""), ("alt+enter new line", "")]
     notice = current_notice()
-    if notice:
-        text += f'  ·  <ansicyan>{escape(notice)}</ansicyan>'
-    return text + '  ·  / for commands  ·  alt+enter new line'
+
+    def width(parts):
+        return 3 + sum(len(t) for t, _ in parts) + len(_SEP) * (len(parts) - 1)
+
+    parts = status + ([(notice, "ansicyan")] if notice else [])
+    while hints and width(parts + hints) > columns:
+        hints.pop()
+    parts += hints
+    if notice and width(parts) > columns:
+        room = len(notice) - (width(parts) - columns) - 1
+        i = parts.index((notice, "ansicyan"))
+        parts[i] = ((notice[:room] + "…") if room > 8 else "", "ansicyan")
+        parts = [p for p in parts if p[0]]
+    # Still too wide: drop status detail (cache %, then tokens), keeping the
+    # project and the last item (cost, or "indexing…").
+    while width(parts) > columns and len(status) > 2:
+        drop = status.pop(-2)
+        parts.remove(drop)
+
+    def html(text, style):
+        return f"<{style}>{escape(text)}</{style}>" if style else escape(text)
+
+    return " <ansicyan>◆</ansicyan> " + _SEP.join(html(t, s) for t, s in parts)
 
 
 def _print_help():

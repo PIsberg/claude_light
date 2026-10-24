@@ -398,7 +398,33 @@ class TestBackgroundNotices(unittest.TestCase):
         import claude_light.main as m
         from claude_light import ui
         ui.notify("re-indexed calc.py (2 chunks)")
-        self.assertIn("re-indexed calc.py", m._status_text())
+        self.assertIn("re-indexed calc.py", m._status_text(columns=200))
+
+    def test_toolbar_fits_a_narrow_terminal(self):
+        print("\n  ▶ TestBackgroundNotices.test_toolbar_fits_a_narrow_terminal")
+        # Live at 1300 px the hints were cut mid-word ("alt+enter").
+        import re
+        import claude_light.main as m
+        from claude_light import ui
+        import claude_light.state as st
+        # A long session: the status alone is wider than 50 columns.
+        saved_tokens, saved_cost = dict(st.session_tokens), st.session_cost
+        self.addCleanup(lambda: (st.session_tokens.update(saved_tokens), setattr(st, "session_cost", saved_cost)))
+        st.session_tokens.update(input=1_234_567, cache_write=2_345_678, cache_read=3_456_789)
+        st.session_cost = 12.3456
+        if not st.indexing_done.is_set():
+            self.addCleanup(st.indexing_done.clear)
+        st.indexing_done.set()
+        ui.notify("re-indexed claude_light/indexer.py (31 chunks)")
+        plain = lambda html: re.sub(r"<[^>]+>", "", html).replace("&lt;", "<").replace("&amp;", "&")
+        wide = plain(m._status_text(columns=200))
+        self.assertIn("alt+enter new line", wide)
+        self.assertIn("re-indexed", wide)
+        for columns in (100, 70, 50):
+            narrow = plain(m._status_text(columns=columns))
+            self.assertLessEqual(len(narrow), columns, narrow)
+            self.assertIn(os.path.basename(os.getcwd())[:10], narrow)
+            self.assertNotIn("alt+ent", narrow.replace("alt+enter new line", ""))  # never cut mid-hint
 
     def test_background_cache_warms_are_quiet(self):
         print("\n  ▶ TestBackgroundNotices.test_background_cache_warms_are_quiet")
