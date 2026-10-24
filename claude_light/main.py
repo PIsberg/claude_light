@@ -21,19 +21,78 @@ from watchdog.observers import Observer
 
 import claude_light.state as state
 from claude_light.config import MODEL, CACHE_DIR, HEARTBEAT_SECS, CACHE_TTL_SECS, AUTH_MODE, ECONOMY_MODE, API_KEY_SOURCE
-from claude_light.ui import _ANSI_BOLD, _ANSI_RESET, _ANSI_CYAN, _ANSI_DIM, _ANSI_GREEN, _ANSI_RED, _T_SYS, _T_ERR, print_session_summary, print_banner, print_startup_header
-from claude_light.llm import full_refresh, chat, one_shot, warm_cache, ClaudeNotLoggedIn
+from claude_light.ui import (
+    _ANSI_BOLD, _ANSI_RESET, _ANSI_CYAN, _ANSI_DIM, _ANSI_GREEN, _ANSI_RED, _T_SYS, _T_ERR,
+    _UNICODE, print_session_summary, print_session_footer, print_startup_header, ToolExecutionManager,
+)
+from claude_light.llm import full_refresh, chat, one_shot, warm_cache, compact_history, ClaudeNotLoggedIn
 from claude_light.indexer import SourceHandler
 from claude_light.compressor import start_background_load as _start_llmlingua_load
+
+# The interactive commands, in the order /help and the "/" menu show them.
+_COMMANDS = [
+    ("/help",       "show commands and keys"),
+    ("/clear",      "start a new conversation"),
+    ("/compact",    "summarise the conversation so far, to send fewer tokens"),
+    ("/cost",       "token usage and cost for this session"),
+    ("/run <cmd>",  "run a shell command and ask Claude about its output"),
+    ("/undo",       "revert the last commit Claude made"),
+    ("/why",        "explain the last query's routing and retrieval"),
+    ("exit",        "quit"),
+]
+_KEYS = [
+    ("enter",       "send"),
+    ("alt+enter",   "new line"),
+    ("ctrl+c",      "cancel the running turn; at the prompt, quit"),
+    ("↑ / ↓" if _UNICODE else "up / down", "previous prompts"),
+]
 
 try:
     from prompt_toolkit import PromptSession as _PromptSession
     from prompt_toolkit.history import FileHistory as _FileHistory
     from prompt_toolkit.auto_suggest import AutoSuggestFromHistory as _AutoSuggest
-    from prompt_toolkit.completion import WordCompleter as _WordCompleter
+    from prompt_toolkit.completion import Completer as _Completer, Completion as _Completion
+    from prompt_toolkit.key_binding import KeyBindings as _KeyBindings
+    from prompt_toolkit.styles import Style as _PTStyle
     _PROMPTTK_AVAILABLE = True
+
+    class _SlashCompleter(_Completer):
+        """The "/" menu: command names with what they do, while typing one."""
+
+        def get_completions(self, document, complete_event):
+            text = document.text_before_cursor
+            if not text.startswith("/") or " " in text:
+                return
+            for cmd, desc in _COMMANDS:
+                name = cmd.split()[0]
+                if name.startswith(text):
+                    yield _Completion(name, start_position=-len(text), display_meta=desc)
 except ImportError:
     _PROMPTTK_AVAILABLE = False
+
+
+def _print_help():
+    try:
+        from rich.table import Table
+        from rich.console import Console
+    except ImportError:
+        Table = None
+    if Table is not None:
+        tbl = Table(box=None, padding=(0, 2), show_header=False)
+        tbl.add_column(style="cyan", no_wrap=True)
+        tbl.add_column(style="dim")
+        for cmd, desc in _COMMANDS:
+            tbl.add_row(cmd, desc)
+        tbl.add_row("", "")
+        for key, desc in _KEYS:
+            tbl.add_row(key, desc)
+        con = Console(file=sys.stdout)
+        con.print()
+        con.print(tbl)
+        return
+    print()
+    for cmd, desc in _COMMANDS + [("", "")] + _KEYS:
+        print(f"  {cmd:<14}{_ANSI_DIM}{desc}{_ANSI_RESET}")
 
 
 def heartbeat():
@@ -85,7 +144,7 @@ def _index_ready_for_query() -> bool:
 
 
 def start_chat(auto_apply=False):
-    print_startup_header()
+    print_startup_header(MODEL, API_KEY_SOURCE)
     _setup_signal_handlers()
 
     # Kick off indexing in background so the prompt appears immediately.
@@ -118,48 +177,60 @@ def start_chat(auto_apply=False):
     if AUTH_MODE == "API_KEY":
         threading.Thread(target=heartbeat, daemon=True).start()
 
-    _banner_shown = False
-
     if _PROMPTTK_AVAILABLE:
         from prompt_toolkit import HTML
+        from prompt_toolkit.formatted_text import to_formatted_text
 
         def _get_status_html():
+            project = os.path.basename(os.getcwd())
             if not state.indexing_done.is_set():
-                return (
-                    f' <b><ansicyan>◆</ansicyan></b>  {os.path.basename(os.getcwd())}'
-                    f'  ·  <ansigreen>indexing…</ansigreen>'
+                left = f' <ansicyan>◆</ansicyan> {project}  ·  <ansiyellow>indexing…</ansiyellow>'
+            else:
+                with state.lock:
+                    total_in = state.session_tokens["input"] + state.session_tokens["cache_write"] + state.session_tokens["cache_read"]
+                    saved = state.session_tokens["cache_read"]
+                    cost = state.session_cost
+                ratio = (saved / total_in * 100) if total_in > 0 else 0.0
+                cost_label = "cost" if ECONOMY_MODE == "USD" else "API equiv."
+                left = (
+                    f' <ansicyan>◆</ansicyan> {project}'
+                    f'  ·  {total_in:,} tok  ·  {ratio:.0f}% cached'
+                    f'  ·  {cost_label} ${cost:.4f}'
                 )
-            with state.lock:
-                total_in = state.session_tokens["input"] + state.session_tokens["cache_write"] + state.session_tokens["cache_read"]
-                saved = state.session_tokens["cache_read"]
-                cost = state.session_cost
-            ratio = (saved / total_in * 100) if total_in > 0 else 0.0
-            cost_label = "Cost" if ECONOMY_MODE == "USD" else "API equiv."
-            return (
-                f' <b><ansicyan>◆</ansicyan></b>  {os.path.basename(os.getcwd())}'
-                f'  ·  {total_in:,} tok'
-                f'  (<ansigreen>{ratio:.1f}%</ansigreen> cached)'
-                f'  ·  {cost_label} <ansiyellow>${cost:.4f}</ansiyellow>'
-            )
+            return left + '  ·  / for commands  ·  alt+enter new line'
 
         def get_status_bar():
             return HTML(_get_status_html())
 
+        bindings = _KeyBindings()
+
+        @bindings.add("escape", "enter")  # alt+enter on most terminals
+        def _newline(event):
+            event.current_buffer.insert_text("\n")
+
         CACHE_DIR.mkdir(exist_ok=True)
-        _slash_completer = _WordCompleter(
-            ["/compact", "/clear", "/cost", "/help", "/run", "/undo", "/why", "exit", "quit"],
-            sentence=True,
-        )
         _session = _PromptSession(
             history=_FileHistory(str(CACHE_DIR / "history.txt")),
             auto_suggest=_AutoSuggest(),
-            completer=_slash_completer,
-            complete_while_typing=False,
-            bottom_toolbar=None if os.name == 'nt' else get_status_bar,
+            completer=_SlashCompleter(),
+            complete_while_typing=True,
+            key_bindings=bindings,
+            bottom_toolbar=get_status_bar,
+            refresh_interval=1.0,  # the toolbar shows when indexing ends
+            prompt_continuation="  ",
+            style=_PTStyle.from_dict({
+                "bottom-toolbar": "noreverse #888888",
+                "prompt": "ansicyan bold",
+                "completion-menu.completion": "bg:#303030 #dddddd",
+                "completion-menu.completion.current": "bg:#005f87 #ffffff",
+                "completion-menu.meta.completion": "bg:#303030 #888888",
+                "completion-menu.meta.completion.current": "bg:#005f87 #dddddd",
+            }),
         )
+        _prompt = [("", "\n"), ("class:prompt", "❯ " if _UNICODE else "> ")]
 
         def _get_input():
-            return _session.prompt("\n> ").strip()
+            return _session.prompt(_prompt).strip()
     else:
         def _get_input():
             with state.lock:
@@ -182,53 +253,33 @@ def start_chat(auto_apply=False):
             if not query:
                 continue
 
-            use_index = _index_ready_for_query()
-
-            if not _banner_shown:
-                _banner_shown = True
-                print_banner(MODEL, state.TOP_K, API_KEY_SOURCE, device=state.device)
-
             if query.lower() in ("exit", "quit"):
                 break
-            if query in ("/clear", "/compact"):
+            if query == "/clear":
                 state.conversation_history.clear()
                 state.cli_session_id = None
-                print(f"  {_T_SYS}  Conversation cleared.\n")
+                print(f"  {_T_SYS}  Conversation cleared.")
+                continue
+            if query == "/compact":
+                try:
+                    with ToolExecutionManager("Summarising the conversation"):
+                        turns = compact_history()
+                except KeyboardInterrupt:
+                    print(f"  {_T_SYS}  Cancelled; the conversation is unchanged.")
+                    continue
+                except Exception as e:
+                    print(f"  {_T_ERR}  Could not summarise ({e}); the conversation is unchanged.")
+                    continue
+                if turns:
+                    print(f"  {_T_SYS}  {turns} turn{'' if turns == 1 else 's'} replaced by a summary.")
+                else:
+                    print(f"  {_T_SYS}  Nothing to compact yet.")
                 continue
             if query == "/cost":
                 print_session_summary()
                 continue
             if query == "/help":
-                try:
-                    from rich.table import Table
-                    from rich.console import Console as _Con
-                    _con = _Con(file=__import__("sys").stdout)
-                    tbl = Table(box=None, padding=(0, 2), show_header=False)
-                    tbl.add_column(style="cyan")
-                    tbl.add_column(style="dim")
-                    for cmd, desc in [
-                        ("/compact", "clear conversation history"),
-                        ("/cost",    "show session token usage and cost"),
-                        ("/run <cmd>", "run a shell command, feed output to Claude"),
-                        ("/undo",    "revert last AI file change (git reset)"),
-                        ("/why",     "explain the last query's routing + retrieval"),
-                        ("exit",     "quit"),
-                    ]:
-                        tbl.add_row(cmd, desc)
-                    _con.print()
-                    _con.print(tbl)
-                    _con.print()
-                except Exception:
-                    print(
-                        f"\n  {_ANSI_BOLD}Commands{_ANSI_RESET}\n"
-                        f"  {_ANSI_DIM}──────────────────────────────────────{_ANSI_RESET}\n"
-                        f"  /compact          clear conversation history\n"
-                        f"  /cost             show session token usage and cost\n"
-                        f"  /run <cmd>        run a shell command, feed output to Claude\n"
-                        f"  /undo             revert last AI file change (git reset)\n"
-                        f"  /why              explain the last query's routing + retrieval\n"
-                        f"  exit              quit\n"
-                    )
+                _print_help()
                 continue
             if query == "/why":
                 from claude_light.retrieval import explain_last_retrieval
@@ -241,7 +292,8 @@ def start_chat(auto_apply=False):
                     continue
                 from claude_light.executor import _run_command
                 transcript = _run_command(cmd)
-                chat(f"I ran the following command and got this output. Please help me understand or fix any issues:\n\n```\n{transcript}\n```", auto_apply=auto_apply, use_index=use_index)
+                chat(f"I ran the following command and got this output. Please help me understand or fix any issues:\n\n```\n{transcript}\n```",
+                     auto_apply=auto_apply, use_index=_index_ready_for_query())
                 continue
             if query == "/undo":
                 from claude_light import git_manager
@@ -271,7 +323,13 @@ def start_chat(auto_apply=False):
                     print(f"  {_T_SYS}  Cancelled.\n")
                 continue
 
+            if query.startswith("/") and " " not in query:
+                # A mistyped command would otherwise go to Claude as a prompt.
+                print(f"  {_T_ERR}  Unknown command {query}. /help lists them.")
+                continue
+
             # Standard Chat Query
+            use_index = _index_ready_for_query()
             try:
                 chat(query, auto_apply=auto_apply, use_index=use_index)
             except ClaudeNotLoggedIn:
@@ -320,7 +378,7 @@ def start_chat(auto_apply=False):
                 observer.join(timeout=5)  # Wait max 5 seconds for observer to stop
             except Exception as e:
                 print(f"{_T_ERR} Error stopping file watcher: {e}", file=sys.stderr)
-        print_session_summary()
+        print_session_footer()
 
 
 def main():

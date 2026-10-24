@@ -6122,12 +6122,24 @@ class TestStartChatLoop(unittest.TestCase):
         self._run_start_chat(["/clear", "exit"])
         self.assertEqual(cl.conversation_history, [])
 
-    def test_compact_command_alias(self):
-        """/compact is an alias for /clear."""
+    def test_compact_command_summarises(self):
+        """/compact keeps a summary of the conversation; /clear drops it."""
         import claude_light as cl
-        cl.conversation_history.append({"role": "user", "content": "hi"})
-        self._run_start_chat(["/compact", "exit"])
-        self.assertEqual(cl.conversation_history, [])
+        with patch.object(cl.main, "compact_history", return_value=3) as compact:
+            self._run_start_chat(["/compact", "exit"])
+        compact.assert_called_once()
+
+    def test_slash_menu_lists_commands_with_descriptions(self):
+        """Typing "/" offers every command with what it does."""
+        import claude_light.main as m
+        from prompt_toolkit.document import Document
+        found = list(m._SlashCompleter().get_completions(Document("/c"), None))
+        names = [c.text for c in found]
+        self.assertEqual(names, ["/clear", "/compact", "/cost"])
+        self.assertTrue(all(c.display_meta_text for c in found))
+        # Plain prose and command arguments are not completed.
+        self.assertEqual(list(m._SlashCompleter().get_completions(Document("fix /c"), None)), [])
+        self.assertEqual(list(m._SlashCompleter().get_completions(Document("/run py"), None)), [])
 
     def test_cost_command(self):
         """/cost calls print_session_summary."""
@@ -6231,7 +6243,6 @@ class TestStartChatLoop(unittest.TestCase):
              patch.object(cl, '_PromptSession', mock_ps_class), \
              patch.object(cl, '_FileHistory', return_value=MagicMock()), \
              patch.object(cl, '_AutoSuggest', return_value=MagicMock()), \
-             patch.object(cl, '_WordCompleter', return_value=MagicMock()), \
              patch.object(cl, 'CACHE_DIR', MagicMock()), \
              patch.object(cl, 'print_session_summary'), \
              patch('builtins.print'):
@@ -6239,16 +6250,11 @@ class TestStartChatLoop(unittest.TestCase):
 
         mock_obs.stop.assert_called_once()
 
-        # bottom_toolbar is disabled on Windows (set to None) to avoid console issues.
+        # The toolbar shows indexing progress and cost on every OS.
         call_kwargs = mock_ps_class.call_args.kwargs if mock_ps_class.called else {}
         status_bar_fn = call_kwargs.get('bottom_toolbar')
-        import os as _os
-        if _os.name != 'nt':
-            self.assertIsNotNone(status_bar_fn, "bottom_toolbar callback was not passed")
-            result = status_bar_fn()
-            self.assertIsNotNone(result)
-        else:
-            self.assertIsNone(status_bar_fn)
+        self.assertIsNotNone(status_bar_fn, "bottom_toolbar callback was not passed")
+        self.assertIsNotNone(status_bar_fn())
 
 
 # ---------------------------------------------------------------------------

@@ -172,7 +172,7 @@ This sequence diagram illustrates the complete flow from user query to response,
 2. **Query Routing** - Weighted scoring of intent, complexity, and context to select the most efficient model.
 3. **Chunk Retrieval** - Find relevant code via embedding similarity
 4. **Context Assembly** - Build message with cache breakpoints
-5. **API Call** - Stream response from Claude
+5. **API Call** - Stream response from Claude. `ui.ResponseView` renders the turn: a spinner with elapsed time until text arrives, then the reply as markdown. A block is printed once it is finished (a blank line outside a code fence, or a closed fence); only the block still arriving is redrawn, cropped to the screen height, so a reply taller than the terminal leaves no duplicated frames. Tool calls print on their own line. With stdout redirected, the reply is written as plain text and all progress goes to stderr.
 6. **Response Processing** - Parse edits, lint, apply changes
 
 ### Background Processes
@@ -184,8 +184,10 @@ This sequence diagram illustrates the complete flow from user query to response,
 
 | Command | Description |
 |---------|-------------|
-| `/compact` or `/clear` | Reset conversation history |
+| `/clear` | Reset conversation history |
+| `/compact` | Replace the conversation with a summary of it (`llm.compact_history()`; Haiku, through the CLI in OAuth mode) |
 | `/cost` | Show session spend and global lifetime savings |
+| `/why` | Explain the last query's routing and retrieval |
 | `/run <cmd>` | Run shell command and feed output to Claude |
 | `/undo` | Undo the last `Claude:` commit. Keeps uncommitted work; refuses if the last commit is yours or its files have local edits |
 | `/help` | Display help menu |

@@ -5,6 +5,8 @@ from claude_light.config import GLOBAL_STATS_FILE
 
 chunk_store = {}
 conversation_history = []
+# Completed turns this session. Not len(history) // 2: compression shrinks that.
+turn_count = 0
 session_cost = 0.0
 session_tokens = {"input": 0, "cache_write": 0, "cache_read": 0, "output": 0, "compress_pre": 0, "compress_post": 0}
 # USD per token category, each call priced at the model that ran it
