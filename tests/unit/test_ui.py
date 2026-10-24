@@ -611,6 +611,40 @@ class TestResponseViewTerminal(unittest.TestCase):
         self.assertLess(i_tool, i_found)
         self.assertNotIn("Let me look.", lines[i_tool])
 
+    def test_edit_blocks_become_one_line(self):
+        print("\n  ▶ TestResponseViewTerminal.test_edit_blocks_become_one_line")
+        # Live, the raw SEARCH/REPLACE block filled the screen and the diff
+        # below it showed the same change again.
+        out = self._render([
+            "I'll add it.\n\n",
+            "```python:calc.py\n<<<<<<< SEARCH\nold = 1\n=======\nnew = 2\n>>>>>>> REPLACE\n```\n",
+            "```python:pkg/new_mod.py\nx = 1\n```\n",
+            "\nDone.",
+        ])
+        self.assertNotIn("<<<<<<<", out)
+        self.assertNotIn("old = 1", out)
+        self.assertNotIn("x = 1", out)
+        self.assertIn("calc.py", out)
+        self.assertIn("pkg/new_mod.py", out)
+        self.assertIn("Done.", out)
+
+    def test_unfinished_edit_block_shows_as_writing(self):
+        print("\n  ▶ TestResponseViewTerminal.test_unfinished_edit_block_shows_as_writing")
+        from claude_light.ui import ResponseView
+        con, buf = _live_console()
+        view = ResponseView(console=con, animate=False)
+        view.text("```python:calc.py\n<<<<<<< SEARCH\nold = 1\n")
+        con.print(view)  # what the live region draws for the tail
+        out = buf.getvalue()
+        self.assertIn("writing", out)
+        self.assertIn("calc.py", out)
+        self.assertNotIn("<<<<<<<", out)
+
+    def test_plain_code_blocks_still_render(self):
+        print("\n  ▶ TestResponseViewTerminal.test_plain_code_blocks_still_render")
+        out = self._render(["Example:\n\n```python\nvalue = 42\n```\n"])
+        self.assertIn("value = 42", out)
+
     def test_tail_taller_than_the_screen_is_cropped_to_its_last_lines(self):
         print("\n  ▶ TestResponseViewTerminal.test_tail_taller_than_the_screen_is_cropped_to_its_last_lines")
         from claude_light.ui import _Gutter, _reply_markdown

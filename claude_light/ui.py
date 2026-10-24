@@ -623,6 +623,32 @@ def _isatty(stream) -> bool:
 
 _FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 
+# A file edit is a fenced block whose info string names a path
+# (```python:src/foo.py), the form editor.parse_edit_blocks applies.
+_EDIT_BLOCK_RE = re.compile(
+    r"^ {0,3}(`{3,}|~{3,})[a-zA-Z0-9_+-]*:([^\n`]+?)[ \t]*\n(.*?)^ {0,3}\1[ \t]*$",
+    re.MULTILINE | re.DOTALL,
+)
+_OPEN_EDIT_RE = re.compile(r"^ {0,3}(?:`{3,}|~{3,})[a-zA-Z0-9_+-]*:([^\n`]+?)[ \t]*\n", re.MULTILINE)
+
+
+def _summarize_edit_blocks(text: str, streaming: bool = False) -> str:
+    """Show each file-edit block as one line; the diff after the turn shows
+    the change itself. While streaming, an unfinished edit block becomes
+    "writing <path>…" instead of a growing wall of SEARCH/REPLACE text."""
+    def _line(m):
+        path, body = m.group(2).strip(), m.group(3)
+        kind = "edit to" if "<<<<<<< SEARCH" in body else "new file"
+        return f"✎ {kind} `{path}`" if _UNICODE else f"* {kind} `{path}`"
+    text = _EDIT_BLOCK_RE.sub(_line, text)
+    if streaming:
+        m = _OPEN_EDIT_RE.search(text)
+        if m:
+            ellipsis = "…" if _UNICODE else "..."
+            pencil = "✎" if _UNICODE else "*"
+            text = text[:m.start()] + f"{pencil} writing `{m.group(1).strip()}`{ellipsis}"
+    return text
+
 
 def _split_committable(text: str) -> tuple[str, str]:
     """Split streamed markdown into (finished blocks, unfinished tail).
@@ -818,7 +844,7 @@ class ResponseView:
         if self._blocks or not self._in_segment:
             self._console.print()
         marker = None if self._in_segment else _SYM_RESP
-        self._console.print(_Gutter(_reply_markdown(block.strip("\n")), marker=marker))
+        self._console.print(_Gutter(_reply_markdown(_summarize_edit_blocks(block.strip("\n"))), marker=marker))
         self._in_segment = True
         self._blocks += 1
 
@@ -830,7 +856,8 @@ class ResponseView:
             marker = None if self._in_segment else _SYM_RESP
             if self._blocks or not self._in_segment:
                 yield _Text("")
-            yield _Gutter(_reply_markdown(pending), marker=marker, max_lines=room)
+            yield _Gutter(_reply_markdown(_summarize_edit_blocks(pending, streaming=True)),
+                          marker=marker, max_lines=room)
         elapsed = int(time.monotonic() - self._start)
         frame = _SPINNER_DOTS[int(time.monotonic() * 10) % len(_SPINNER_DOTS)]
         ellipsis = "…" if _UNICODE else "..."

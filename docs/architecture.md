@@ -172,7 +172,7 @@ This sequence diagram illustrates the complete flow from user query to response,
 2. **Query Routing** - Weighted scoring of intent, complexity, and context to select the most efficient model.
 3. **Chunk Retrieval** - Find relevant code via embedding similarity
 4. **Context Assembly** - Build message with cache breakpoints
-5. **API Call** - Stream response from Claude. `ui.ResponseView` renders the turn: a spinner with elapsed time until text arrives, then the reply as markdown. A block is printed once it is finished (a blank line outside a code fence, or a closed fence); only the block still arriving is redrawn, cropped to the screen height, so a reply taller than the terminal leaves no duplicated frames. Tool calls print on their own line. With stdout redirected, the reply is written as plain text and all progress goes to stderr.
+5. **API Call** - Stream response from Claude. `ui.ResponseView` renders the turn: a spinner with elapsed time until text arrives, then the reply as markdown. A block is printed once it is finished (a blank line outside a code fence, or a closed fence); only the block still arriving is redrawn, cropped to the screen height, so a reply taller than the terminal leaves no duplicated frames. Tool calls print on their own line. File-edit blocks (```` ```lang:path ````) are shown as one line (`✎ edit to path`), since the diff after the turn shows the change. With stdout redirected, the reply is written as plain text and all progress goes to stderr.
 6. **Response Processing** - Parse edits, lint, apply changes
 
 ### Background Processes
