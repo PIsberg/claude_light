@@ -437,6 +437,38 @@ class TestApplyEditsWrite(unittest.TestCase):
             apply_edits([], check_only=False)
         self.assertIn("No file blocks found", captured.getvalue())
 
+    def test_dont_ask_again_holds_for_the_session(self):
+        print("\n  ▶ TestApplyEditsWrite.test_dont_ask_again_holds_for_the_session")
+        import claude_light.state as st
+        st.auto_approve_edits = False
+        try:
+            Path("a.py").write_text("x = 1\n", encoding="utf-8")
+            Path("b.py").write_text("y = 1\n", encoding="utf-8")
+            with patch("sys.stdin") as mock_stdin, \
+                 patch("claude_light.editor.choose", return_value="always") as ask, \
+                 patch("sys.stdout", io.StringIO()):
+                mock_stdin.isatty.return_value = True
+                apply_edits([{"type": "edit", "path": "a.py", "search": "x = 1", "replace": "x = 2"}],
+                            check_only=False)
+                apply_edits([{"type": "edit", "path": "b.py", "search": "y = 1", "replace": "y = 2"}],
+                            check_only=False)
+            self.assertEqual(ask.call_count, 1)
+            self.assertIn("x = 2", Path("a.py").read_text(encoding="utf-8"))
+            self.assertIn("y = 2", Path("b.py").read_text(encoding="utf-8"))
+        finally:
+            st.auto_approve_edits = False
+
+    def test_cancelled_menu_applies_nothing(self):
+        print("\n  ▶ TestApplyEditsWrite.test_cancelled_menu_applies_nothing")
+        Path("c.py").write_text("x = 1\n", encoding="utf-8")
+        with patch("sys.stdin") as mock_stdin, \
+             patch("claude_light.editor.choose", return_value=None), \
+             patch("sys.stdout", io.StringIO()):
+            mock_stdin.isatty.return_value = True
+            apply_edits([{"type": "edit", "path": "c.py", "search": "x = 1", "replace": "x = 2"}],
+                        check_only=False)
+        self.assertIn("x = 1", Path("c.py").read_text(encoding="utf-8"))
+
     def test_keyboard_interrupt_cancels(self):
         print("\n  ▶ TestApplyEditsWrite.test_keyboard_interrupt_cancels")
         Path("foo.py").write_text("x = 1\n", encoding="utf-8")

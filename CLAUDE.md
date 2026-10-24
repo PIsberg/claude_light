@@ -144,7 +144,6 @@ The `claude_light/` package is organized by responsibility:
 | `retry.py` | Exponential backoff (2s→4s→8s, max 3 attempts) for transient API errors |
 | `tools.py` | Read-only workspace tools for API-key mode (`read_file`, `grep`, `list_files`), confined to the project root with output caps. `llm._api_tool_loop()` runs them in a manual tool loop (max `_API_TOOL_STEPS` = 8 rounds); edits still use SEARCH/REPLACE |
 | `compressor.py` | Optional LLMLingua-2 prompt compression of the retrieved RAG context. Lazy singleton, never raises into the hot path |
-| `session_manager.py` | Persists conversation history to `.claude_light_cache/session.json` |
 | `ui.py` | ANSI colour, `ResponseView` (spinner + streamed markdown + tool lines, plain text when piped), diff display, welcome box, cost formatting |
 | `testing.py` | Test-mode helpers (synthetic file/chunk generation, mock API key) |
 | `__init__.py` | Re-exports all public symbols; wraps callables to sync shared state across modules |
@@ -163,14 +162,16 @@ The `claude_light/` package is organized by responsibility:
 **Three concurrent threads:**
 
 1. **Main thread** — input loop; retrieves relevant chunks per query via `retrieve()`, injects them as a second cached system block, stores only the clean query in `conversation_history`. The first index build runs in a background thread; until it finishes, OAuth-mode queries skip retrieval (the CLI agent searches the code itself) and API-key queries wait (`_index_ready_for_query()` in `main.py`). One-shot OAuth runs build the index in a thread, wait up to `_ONE_SHOT_INDEX_WAIT_SECS` (20 s), answer without it if needed, and join the build before exit. The router never waits for the embedder while the index build holds `embedder_lock` (`_encode_if_free()`); it falls back to lexical scores
-2. **Watchdog** (`SourceHandler`) — source file change → `reindex_file()` (re-chunks + re-embeds that file, cancels any pending timer first via 1.5 s debounce); `.md` change → `refresh_md_file()`
-3. **Heartbeat daemon** — checks every 30 s; if idle > 4 min (`CACHE_TTL_SECS`), calls `warm_cache()` to keep the ephemeral cache alive
+2. **Watchdog** (`SourceHandler`) — source file change → `reindex_file()` (re-chunks + re-embeds that file, cancels any pending timer first via 1.5 s debounce); `.md` change → `refresh_md_file()`. Event paths go through `indexer._project_path()` (watchdog reports `./a.py`, the index keys `a.py`; without it a re-index duplicated the file's chunks), and files under skipped directories (`.git`, `.venv`, `node_modules`, ...) are ignored
+3. **Heartbeat daemon** — checks every 30 s; if idle > 4 min (`CACHE_TTL_SECS`), calls `warm_cache(quiet=True)` to keep the ephemeral cache alive
+
+**Background threads never print.** A print from the watcher or the heartbeat lands inside a streaming reply or over the prompt being typed. They call `ui.notify()`, and the toolbar shows the notice for `ui.NOTICE_SECS` (8 s).
 
 **Multi-language support** (`_WANTED_LANGS` in `config.py`): tree-sitter grammars extract method/function nodes from `.java`, `.py`, `.js`, `.go`, `.rs`, `.ts`, `.tsx`. Falls back to whole-file chunking if tree-sitter is unavailable or a grammar is missing. Python decorators are included in their function chunk.
 
 **Method-level chunking** (`parsing.py`): Each chunk includes a file path comment and the class preamble (package + imports + class header) so it is self-contained. Overloaded method names get numeric suffixes. Chunk IDs use `filepath::methodName` (`::` is not valid in source identifiers). Falls back to whole-file if no methods are found.
 
-**Disk cache** (`.claude_light_cache/`): Embeddings are persisted to `index.pkl` between runs; a `manifest.json` tracks per-file MD5 hashes and the embedding model used. Only changed or new files are re-embedded on restart. Command history (prompt_toolkit) and session state are also stored here.
+**Disk cache** (`.claude_light_cache/`): Embeddings are persisted to `index.pkl` between runs; a `manifest.json` tracks per-file MD5 hashes and the embedding model used. Only changed or new files are re-embedded on restart. Command history (prompt_toolkit) is also stored here. The conversation itself is not saved between runs (#65).
 
 **Auto-tuning** (`auto_tune` in `executor.py`): called twice in `index_files()` — first to select and load the embedding model (based on file count), then again after chunking to set `TOP_K` based on actual chunk sizes, targeting `TARGET_RETRIEVED_TOKENS` of context per query.
 
@@ -194,7 +195,7 @@ The `claude_light/` package is organized by responsibility:
 - `retrieval.py`: `_dedup_retrieved_context()` — emits per-file preamble once when multiple chunks from the same file are retrieved
 - `indexer.py`: `_chunks_for_file()` — all chunk IDs for a file path
 
-**Interactive commands** (`_COMMANDS` in `main.py`, which also feeds `/help` and the `/` completion menu): `/clear`, `/compact` (summarise, via `llm.compact_history()`), `/cost`, `/help`, `/run <cmd>`, `/undo`, `/why`, `exit`/`quit`. Keys: `alt+enter` new line, `Ctrl+C` cancels a turn. Unknown `/word` input is rejected, not sent to Claude. Exit prints one line (`ui.print_session_footer()`); `/cost` prints the tables.
+**Interactive commands** (`_COMMANDS` in `main.py`, which also feeds `/help` and the `/` completion menu): `/clear`, `/compact` (summarise, via `llm.compact_history()`), `/cost`, `/help`, `/run <cmd>`, `/undo`, `/why`, `exit`/`quit`. Keys: `alt+enter` new line, `Ctrl+C` cancels a turn. Unknown `/word` input is rejected, not sent to Claude. Exit prints one line (`ui.print_session_footer()`); `/cost` prints the tables. Every yes/no question (applying edits, committing the CLI agent's edits, `/undo`, token setup) goes through `ui.choose()`: an inline prompt_toolkit menu drawn under the diff, falling back to typed input without a console. "Don't ask again" sets `state.auto_approve_edits` (SEARCH/REPLACE writes) or `state.auto_commit_agent_edits` (agent commits), never both. `choose()` discards type-ahead before drawing and only numbers pick at once, so keys typed during a turn cannot answer it. Paths in diff titles are markup-escaped: they come from the model.
 
 **Auto-commit safety net**: When Claude makes file changes, the tool automatically commits them to git (`Claude: [summary]`, edited files listed in the body). `/undo` reverts that commit with `git reset --keep`, so uncommitted work elsewhere survives; it refuses if the last commit is not a `Claude:` commit or if a file in it has been edited since. Gracefully skipped if not in a git repo.
 

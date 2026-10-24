@@ -207,7 +207,7 @@ Run the script from the root of your project — it will immediately build the s
 ### 1. Interactive Loop (Default)
 `python3 claude_light.py`
 
-The prompt appears in about half a second: the index builds in the background, and the toolbar under the prompt says `indexing…` until it is ready, then shows the session's tokens, cache hit rate and cost. Replies stream in as rendered markdown (tables, lists, syntax-highlighted code), with a spinner and elapsed time while Claude thinks or runs a tool, and one line per file it reads, searches or edits. Edits are shown as diffs before they are committed.
+The prompt appears in about half a second: the index builds in the background, and the toolbar under the prompt says `indexing…` until it is ready, then shows the session's tokens, cache hit rate and cost. Replies stream in as rendered markdown (tables, lists, syntax-highlighted code), with a spinner and elapsed time while Claude thinks or runs a tool, and one line per file it reads, searches or edits. In the reply each proposed edit is a single `✎ edit to path` line; the change itself is shown as a diff, with a menu underneath to approve them (arrow keys and Enter, or press `1`/`2`/`3`; Esc says no). Keys typed before the menu appears are ignored, so a stray Enter cannot answer it. "Yes, and don't ask again" stops that one question for the rest of the session (applying edits and committing the agent's edits are remembered separately); `-y` approves both from the start.
 
 | Command / key | What it does |
 |---|---|
@@ -228,7 +228,7 @@ One-shot runs write only the answer to stdout, as plain text; progress and tool 
 The script runs three concurrent threads to keep your workflow seamless:
 
 * **Main Thread:** Handles the input loop, retrieves relevant chunks per query, and manages the conversation history.
-* **Watchdog:** Monitors your directory for file saves. If a source file changes, it automatically re-chunks and re-embeds it; if a `.md` file changes, it rebuilds the skeleton cache.
+* **Watchdog:** Monitors your directory for file saves. If a source file changes, it automatically re-chunks and re-embeds it; if a `.md` file changes, it rebuilds the skeleton cache. Files under `.git`, `.venv`, `node_modules` and other skipped directories are ignored. It reports in the toolbar (`re-indexed calc.py (2 chunks)`), never in the middle of a reply.
 * **Heartbeat Daemon (API-key mode only):** Keeps the Anthropic prompt cache warm while you step away. Disabled in OAuth/Pro-subscription mode, where each turn spawns a fresh `claude` CLI subprocess and there is no persistent process to keep warm.
 
 ### Auto-Tuned Embedding Models

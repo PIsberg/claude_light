@@ -4,6 +4,7 @@ Git repository management for claude_light.
 Handles automatic committing of AI-generated changes with user-friendly undo.
 """
 
+import re
 import subprocess
 import os
 from pathlib import Path
@@ -175,9 +176,23 @@ COMMIT_PREFIX = "Claude: "
 _SUBJECT_MAX = 72
 
 
+_MD_LINK = re.compile(r"\[([^\]]+)\]\([^)]*\)")
+_MD_EMPHASIS = re.compile(r"(\*\*|__)(.+?)\1|(?<![\w*])\*(?!\s)(.+?)(?<!\s)\*(?![\w*])|(?<!\w)_(?!\s)(.+?)(?<!\s)_(?!\w)")
+_MD_LINE_MARK = re.compile(r"^(?:#{1,6}\s+|[-*+]\s+|\d+[.)]\s+|>\s*)")
+
+
+def _plain_text(line: str) -> str:
+    """A markdown line as plain text: the explanation is the model's reply,
+    and a commit subject should not carry backticks or ** markers."""
+    line = _MD_LINE_MARK.sub("", line.strip())
+    line = _MD_LINK.sub(r"\1", line)
+    line = _MD_EMPHASIS.sub(lambda m: m.group(2) or m.group(3) or m.group(4), line)
+    return line.replace("`", "")
+
+
 def _commit_subject(explanation: str) -> str:
     """First line of the explanation, cut at a word boundary to fit 72 chars."""
-    first = " ".join((explanation or "").strip().split("\n")[0].split())
+    first = " ".join(_plain_text((explanation or "").strip().split("\n")[0]).split())
     first = first or "Applied AI-generated changes"
     room = _SUBJECT_MAX - len(COMMIT_PREFIX)
     if len(first) > room:
@@ -218,7 +233,9 @@ def undo_last_commit() -> bool:
         print(f"{_T_ERR} Failed to undo: files in that commit have uncommitted edits")
         return False
     
-    msg_display = f" ({last_msg})" if last_msg else ""
+    # The subject only: the body lists the files, one per line.
+    subject = last_msg.strip().splitlines()[0]
+    msg_display = f" ({subject})"
     print(f"{_T_EDIT} {_ANSI_GREEN}Undone{_ANSI_RESET}: {commit_hash}{msg_display}")
     return True
 

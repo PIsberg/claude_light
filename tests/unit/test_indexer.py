@@ -227,6 +227,73 @@ class TestReindexFile(unittest.TestCase):
             reindex_file("nonexistent.py")
 
 
+class TestWatcherPaths(unittest.TestCase):
+    """Watchdog reports './a.py' (Windows: '.\\\\a.py'); the index keys files as
+    'a.py'. Live, a re-index after an edit left the old chunks in place under
+    'a.py::f' and added new ones under '.\\\\a.py::f', so retrieval could return
+    the stale code, and an edited .md file was added to the skeleton twice."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.orig = os.getcwd()
+        os.chdir(self.tmpdir)
+        import claude_light.state as st
+        self._store = dict(st.chunk_store)
+        self._embedder = st.embedder
+        self._hashes = dict(st._file_hashes)
+        st.chunk_store.clear()
+
+    def tearDown(self):
+        os.chdir(self.orig)
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+        import claude_light.state as st
+        st.chunk_store.clear()
+        st.chunk_store.update(self._store)
+        st.embedder = self._embedder
+        st._file_hashes.clear()
+        st._file_hashes.update(self._hashes)
+
+    def test_reindex_through_a_dot_path_replaces_the_old_chunks(self):
+        print("\n  ▶ TestWatcherPaths.test_reindex_through_a_dot_path_replaces_the_old_chunks")
+        import numpy as np
+        import claude_light.state as st
+        from claude_light.indexer import reindex_file
+        Path("calc.py").write_text("def divide(a, b):\n    return a / b\n", encoding="utf-8")
+        st.chunk_store["calc.py::divide"] = {"text": "old", "emb": np.zeros(3)}
+        st.embedder = MagicMock()
+        st.embedder.encode.return_value = np.array([[0.1, 0.2, 0.3]])
+        with patch("claude_light.indexer._save_cache"):
+            reindex_file(os.path.join(".", "calc.py"))
+        self.assertEqual(sorted(st.chunk_store), ["calc.py::divide"])
+        self.assertNotEqual(st.chunk_store["calc.py::divide"]["text"], "old")
+
+    def test_handler_passes_project_relative_paths(self):
+        print("\n  ▶ TestWatcherPaths.test_handler_passes_project_relative_paths")
+        from claude_light import indexer
+        seen = []
+        event = MagicMock(is_directory=False, src_path=os.path.join(".", "pkg", "mod.py"))
+        with patch.object(indexer, "_debounce", side_effect=lambda src, fn: seen.append(src)):
+            indexer.SourceHandler().on_modified(event)
+        self.assertEqual(seen, [os.path.join("pkg", "mod.py")])
+
+    def test_handler_ignores_skipped_directories(self):
+        print("\n  ▶ TestWatcherPaths.test_handler_ignores_skipped_directories")
+        # A pip install into .venv or a build under node_modules re-embedded
+        # those files into the project index.
+        from claude_light import indexer
+        seen = []
+        with patch.object(indexer, "_debounce", side_effect=lambda src, fn: seen.append(src)), \
+             patch.object(indexer, "_remove_file_from_index") as removed:
+            for parts in ((".venv", "lib", "x.py"), ("node_modules", "a", "b.js"),
+                          (".claude_light_cache", "y.py"), (".git", "z.py")):
+                ev = MagicMock(is_directory=False, src_path=os.path.join(".", *parts))
+                indexer.SourceHandler().on_modified(ev)
+                indexer.SourceHandler().on_deleted(ev)
+        self.assertEqual(seen, [])
+        removed.assert_not_called()
+
+
 class TestIndexFilesLight(unittest.TestCase):
 
     def test_no_source_files_no_crash(self):
@@ -276,3 +343,96 @@ class TestIndexFilesLight(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBackgroundNotices(unittest.TestCase):
+    """Background threads (the file watcher, the cache heartbeat) used to
+    print: live, 'Re-indexed calc.py' landed between the tool lines and the
+    reply, and a print while the prompt is up draws over what is being typed.
+    They post a notice for the toolbar instead."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.orig = os.getcwd()
+        os.chdir(self.tmpdir)
+        import claude_light.state as st
+        self._store = dict(st.chunk_store)
+        self._embedder = st.embedder
+        st.notice = None
+
+    def tearDown(self):
+        os.chdir(self.orig)
+        import claude_light.state as st
+        st.chunk_store.clear()
+        st.chunk_store.update(self._store)
+        st.embedder = self._embedder
+        st.notice = None
+
+    def test_reindex_posts_a_notice_and_prints_nothing(self):
+        print("\n  ▶ TestBackgroundNotices.test_reindex_posts_a_notice_and_prints_nothing")
+        import io
+        import numpy as np
+        import claude_light.state as st
+        from claude_light.indexer import reindex_file
+        from claude_light.ui import current_notice
+        Path("calc.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+        st.embedder = MagicMock()
+        st.embedder.encode.return_value = np.array([[0.1, 0.2, 0.3]])
+        out = io.StringIO()
+        with patch("claude_light.indexer._save_cache"), patch("sys.stdout", out):
+            reindex_file(os.path.join(".", "calc.py"))
+        self.assertEqual(out.getvalue(), "")
+        self.assertIn("calc.py", current_notice())
+
+    def test_notice_expires(self):
+        print("\n  ▶ TestBackgroundNotices.test_notice_expires")
+        from claude_light import ui
+        with patch("claude_light.ui.time.monotonic", return_value=100.0):
+            ui.notify("re-indexed a.py")
+            self.assertEqual(ui.current_notice(), "re-indexed a.py")
+        with patch("claude_light.ui.time.monotonic", return_value=100.0 + ui.NOTICE_SECS + 1):
+            self.assertEqual(ui.current_notice(), "")
+
+    def test_toolbar_shows_the_notice(self):
+        print("\n  ▶ TestBackgroundNotices.test_toolbar_shows_the_notice")
+        import claude_light.main as m
+        from claude_light import ui
+        ui.notify("re-indexed calc.py (2 chunks)")
+        self.assertIn("re-indexed calc.py", m._status_text(columns=200))
+
+    def test_toolbar_fits_a_narrow_terminal(self):
+        print("\n  ▶ TestBackgroundNotices.test_toolbar_fits_a_narrow_terminal")
+        # Live at 1300 px the hints were cut mid-word ("alt+enter").
+        import re
+        import claude_light.main as m
+        from claude_light import ui
+        import claude_light.state as st
+        # A long session: the status alone is wider than 50 columns.
+        saved_tokens, saved_cost = dict(st.session_tokens), st.session_cost
+        self.addCleanup(lambda: (st.session_tokens.update(saved_tokens), setattr(st, "session_cost", saved_cost)))
+        st.session_tokens.update(input=1_234_567, cache_write=2_345_678, cache_read=3_456_789)
+        st.session_cost = 12.3456
+        if not st.indexing_done.is_set():
+            self.addCleanup(st.indexing_done.clear)
+        st.indexing_done.set()
+        ui.notify("re-indexed claude_light/indexer.py (31 chunks)")
+        plain = lambda html: re.sub(r"<[^>]+>", "", html).replace("&lt;", "<").replace("&amp;", "&")
+        wide = plain(m._status_text(columns=200))
+        self.assertIn("alt+enter new line", wide)
+        self.assertIn("re-indexed", wide)
+        for columns in (100, 70, 50):
+            narrow = plain(m._status_text(columns=columns))
+            self.assertLessEqual(len(narrow), columns, narrow)
+            self.assertIn(os.path.basename(os.getcwd())[:10], narrow)
+            self.assertNotIn("alt+ent", narrow.replace("alt+enter new line", ""))  # never cut mid-hint
+
+    def test_background_cache_warms_are_quiet(self):
+        print("\n  ▶ TestBackgroundNotices.test_background_cache_warms_are_quiet")
+        from claude_light import llm
+        with patch.object(llm, "warm_cache") as warm, \
+             patch.object(llm, "_refresh_tree_only", return_value="tree"), \
+             patch.object(llm, "_refresh_single_md", return_value=True), \
+             patch.object(llm, "_assemble_skeleton", return_value="sk"):
+            llm.refresh_skeleton_only()
+            llm.refresh_md_file("README.md")
+        self.assertEqual([c.kwargs.get("quiet") for c in warm.call_args_list], [True, True])

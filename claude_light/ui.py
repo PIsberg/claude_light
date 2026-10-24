@@ -1,3 +1,4 @@
+import os
 import sys
 import time
 import threading
@@ -15,6 +16,7 @@ try:
     from rich.status import Status as _RichStatus
     from rich.syntax import Syntax as _RichSyntax
     from rich.panel import Panel as _RichPanel
+    from rich.markup import escape as _escape_markup
     _RICH_AVAILABLE = True
 except ImportError:
     _RICH_AVAILABLE = False
@@ -379,7 +381,7 @@ def show_diff(path, new_content, old_content=None):
                 _RichPanel(
                     _RichSyntax(preview, Path(path).suffix.lstrip(".") or "text",
                                 theme="monokai", line_numbers=True),
-                    title=f"[green][NEW FILE][/green]  {path}",
+                    title=f"[green][NEW FILE][/green]  {_escape_markup(str(path))}",
                     border_style="dim green",
                 )
             )
@@ -421,7 +423,7 @@ def show_unified_diff(path, diff_text, max_lines=80):
         _con.print(
             _RichPanel(
                 _RichSyntax("\n".join(lines), "diff", theme="monokai", line_numbers=False),
-                title=f"[cyan]{path}[/cyan]",
+                title=f"[cyan]{_escape_markup(str(path))}[/cyan]",
                 title_align="left",
                 subtitle=f"[dim]{more}[/dim]" if more else None,
                 border_style="dim blue",
@@ -469,6 +471,149 @@ class ToolExecutionManager:
         return False  # don't suppress exceptions
 
 
+def choose(question, options, default=0, *, _input=None, _output=None, _force_plain=False):
+    """Ask a question with an inline menu; return the chosen value or None.
+
+    options is a list of (value, label). The menu is drawn under whatever is
+    on screen (the diff being approved stays visible): arrow keys move,
+    Enter picks, a number or an option's first letter picks at once, Esc or
+    Ctrl+C cancels. Afterwards one line records the answer. Without a
+    terminal or prompt_toolkit, the user types a number or a value instead.
+    """
+    if _input is None:
+        _discard_typeahead()
+    if not _force_plain:
+        try:
+            value = _choose_menu(question, options, default, _input, _output)
+        except Exception:  # no console (pytest, a dumb terminal): ask in plain text
+            value = _plain_choice(question, options)
+        else:
+            label = dict(options).get(value, "cancelled")
+            print(f"  {_ANSI_DIM}{question}{_ANSI_RESET} {label}", flush=True)
+        return value
+    return _plain_choice(question, options)
+
+
+def _choose_menu(question, options, default, _input, _output):
+    from prompt_toolkit.application import Application
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.layout import Layout, Window
+    from prompt_toolkit.layout.controls import FormattedTextControl
+    from prompt_toolkit.styles import Style
+
+    selected = [default]
+    kb = KeyBindings()
+
+    @kb.add("up")
+    @kb.add("k")
+    def _up(event):
+        selected[0] = (selected[0] - 1) % len(options)
+
+    @kb.add("down")
+    @kb.add("j")
+    def _down(event):
+        selected[0] = (selected[0] + 1) % len(options)
+
+    @kb.add("enter")
+    def _enter(event):
+        event.app.exit(result=options[selected[0]][0])
+
+    @kb.add("escape", eager=True)
+    @kb.add("c-c")
+    def _cancel(event):
+        event.app.exit(result=None)
+
+    # Numbers pick at once; letters do nothing, since they are what a user
+    # types into the next prompt while a turn is still running.
+    for i, (value, _label) in enumerate(options[:9]):
+        kb.add(str(i + 1))(lambda event, v=value: event.app.exit(result=v))
+
+    pointer = "❯" if _UNICODE else ">"
+
+    def _render():
+        lines = [("class:question", f"  {question}\n")]
+        for i, (_value, label) in enumerate(options):
+            mark = pointer if i == selected[0] else " "
+            style = "class:selected" if i == selected[0] else ""
+            lines.append((style, f"  {mark} {i + 1}. {label}\n"))
+        lines.append(("class:hint", "  ↑/↓ then enter, or press a number · esc cancels"
+                      if _UNICODE else "  up/down then enter, or press a number; esc cancels"))
+        return lines
+
+    app = Application(
+        layout=Layout(Window(FormattedTextControl(_render), always_hide_cursor=True)),
+        key_bindings=kb,
+        full_screen=False,
+        erase_when_done=True,
+        style=Style.from_dict({"question": "bold", "selected": "ansicyan bold", "hint": "#888888"}),
+        input=_input,
+        output=_output,
+    )
+    return app.run()
+
+
+def _discard_typeahead():
+    """Drop keys typed before the menu appeared.
+
+    Keystrokes typed while a turn runs wait in the terminal's input buffer;
+    without this, an Enter meant for the next prompt answered the approval
+    the moment it was drawn.
+    """
+    try:
+        # The real descriptor, not sys.stdin.isatty(): only a console has a
+        # buffer to drain, and msvcrt reads the console whatever sys.stdin is.
+        if not os.isatty(sys.stdin.fileno()):
+            return
+        if os.name == "nt":
+            import msvcrt
+            for _ in range(4096):  # bounded: never spin on a stuck console
+                if not msvcrt.kbhit():
+                    break
+                msvcrt.getwch()
+        else:
+            import termios
+            termios.tcflush(sys.stdin, termios.TCIFLUSH)
+    except Exception:
+        pass
+
+
+def _plain_choice(question, options):
+    numbered = "  ".join(f"{i + 1}. {label}" for i, (_v, label) in enumerate(options))
+    print(f"  {question}  {_ANSI_DIM}{numbered}{_ANSI_RESET}")
+    print("  > ", end="", flush=True)
+    try:
+        answer = input().strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        return None
+    if not answer:
+        return None
+    for i, (value, _label) in enumerate(options):
+        if answer in (str(i + 1), value) or (len(answer) == 1 and value.startswith(answer)) \
+                or (answer in ("y", "yes") and value == "yes"):
+            return value
+    return None
+
+
+NOTICE_SECS = 8
+
+
+def notify(text: str, error: bool = False) -> None:
+    """Post a notice from a background thread; the toolbar shows it for
+    NOTICE_SECS. It never prints: a print from another thread lands inside
+    a streaming reply, or over the prompt the user is typing."""
+    with state.lock:
+        state.notice = (text, time.monotonic() + NOTICE_SECS, error)
+
+
+def current_notice() -> str:
+    """The notice to show now, or "" when there is none or it has expired."""
+    with state.lock:
+        notice = state.notice
+    if not notice or time.monotonic() > notice[1]:
+        return ""
+    return f"{_SYM_ERR} {notice[0]}" if notice[2] else notice[0]
+
+
 def _isatty(stream) -> bool:
     try:
         return bool(stream.isatty())
@@ -477,6 +622,32 @@ def _isatty(stream) -> bool:
 
 
 _FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+
+# A file edit is a fenced block whose info string names a path
+# (```python:src/foo.py), the form editor.parse_edit_blocks applies.
+_EDIT_BLOCK_RE = re.compile(
+    r"^ {0,3}(`{3,}|~{3,})[a-zA-Z0-9_+-]*:([^\n`]+?)[ \t]*\n(.*?)^ {0,3}\1[ \t]*$",
+    re.MULTILINE | re.DOTALL,
+)
+_OPEN_EDIT_RE = re.compile(r"^ {0,3}(?:`{3,}|~{3,})[a-zA-Z0-9_+-]*:([^\n`]+?)[ \t]*\n", re.MULTILINE)
+
+
+def _summarize_edit_blocks(text: str, streaming: bool = False) -> str:
+    """Show each file-edit block as one line; the diff after the turn shows
+    the change itself. While streaming, an unfinished edit block becomes
+    "writing <path>…" instead of a growing wall of SEARCH/REPLACE text."""
+    def _line(m):
+        path, body = m.group(2).strip(), m.group(3)
+        kind = "edit to" if "<<<<<<< SEARCH" in body else "new file"
+        return f"✎ {kind} `{path}`" if _UNICODE else f"* {kind} `{path}`"
+    text = _EDIT_BLOCK_RE.sub(_line, text)
+    if streaming:
+        m = _OPEN_EDIT_RE.search(text)
+        if m:
+            ellipsis = "…" if _UNICODE else "..."
+            pencil = "✎" if _UNICODE else "*"
+            text = text[:m.start()] + f"{pencil} writing `{m.group(1).strip()}`{ellipsis}"
+    return text
 
 
 def _split_committable(text: str) -> tuple[str, str]:
@@ -673,7 +844,7 @@ class ResponseView:
         if self._blocks or not self._in_segment:
             self._console.print()
         marker = None if self._in_segment else _SYM_RESP
-        self._console.print(_Gutter(_reply_markdown(block.strip("\n")), marker=marker))
+        self._console.print(_Gutter(_reply_markdown(_summarize_edit_blocks(block.strip("\n"))), marker=marker))
         self._in_segment = True
         self._blocks += 1
 
@@ -685,7 +856,8 @@ class ResponseView:
             marker = None if self._in_segment else _SYM_RESP
             if self._blocks or not self._in_segment:
                 yield _Text("")
-            yield _Gutter(_reply_markdown(pending), marker=marker, max_lines=room)
+            yield _Gutter(_reply_markdown(_summarize_edit_blocks(pending, streaming=True)),
+                          marker=marker, max_lines=room)
         elapsed = int(time.monotonic() - self._start)
         frame = _SPINNER_DOTS[int(time.monotonic() * 10) % len(_SPINNER_DOTS)]
         ellipsis = "…" if _UNICODE else "..."

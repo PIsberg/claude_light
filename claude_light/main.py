@@ -23,7 +23,7 @@ import claude_light.state as state
 from claude_light.config import MODEL, CACHE_DIR, HEARTBEAT_SECS, CACHE_TTL_SECS, AUTH_MODE, ECONOMY_MODE, API_KEY_SOURCE
 from claude_light.ui import (
     _ANSI_BOLD, _ANSI_RESET, _ANSI_CYAN, _ANSI_DIM, _ANSI_GREEN, _ANSI_RED, _T_SYS, _T_ERR,
-    _UNICODE, access_label, print_session_summary, print_session_footer, print_startup_header,
+    _UNICODE, access_label, choose, current_notice, print_session_summary, print_session_footer, print_startup_header,
     ToolExecutionManager,
 )
 from claude_light.llm import full_refresh, chat, one_shot, warm_cache, compact_history, ClaudeNotLoggedIn
@@ -72,6 +72,60 @@ except ImportError:
     _PROMPTTK_AVAILABLE = False
 
 
+_SEP = "  ·  "
+
+
+def _status_text(columns: int | None = None) -> str:
+    """The toolbar under the prompt, as prompt_toolkit HTML: index status or
+    session totals, then the latest background notice, then key hints.
+
+    Fitted to `columns` (the terminal width): the hints go first, then the
+    notice is shortened, so the status itself is never cut mid-word.
+    """
+    from html import escape
+    import shutil
+    if columns is None:
+        columns = shutil.get_terminal_size().columns - 1  # never wrap on the last cell
+    project = os.path.basename(os.getcwd())
+    # (plain text, style) pieces; the style wraps the escaped text.
+    if not state.indexing_done.is_set():
+        status = [(project, ""), ("indexing…", "ansiyellow")]
+    else:
+        with state.lock:
+            total_in = state.session_tokens["input"] + state.session_tokens["cache_write"] + state.session_tokens["cache_read"]
+            saved = state.session_tokens["cache_read"]
+            cost = state.session_cost
+        ratio = (saved / total_in * 100) if total_in > 0 else 0.0
+        cost_label = "cost" if ECONOMY_MODE == "USD" else "API equiv."
+        status = [(project, ""), (f"{total_in:,} tok", ""), (f"{ratio:.0f}% cached", ""),
+                  (f"{cost_label} ${cost:.4f}", "")]
+    hints = [("/ for commands", ""), ("alt+enter new line", "")]
+    notice = current_notice()
+
+    def width(parts):
+        return 3 + sum(len(t) for t, _ in parts) + len(_SEP) * (len(parts) - 1)
+
+    parts = status + ([(notice, "ansicyan")] if notice else [])
+    while hints and width(parts + hints) > columns:
+        hints.pop()
+    parts += hints
+    if notice and width(parts) > columns:
+        room = len(notice) - (width(parts) - columns) - 1
+        i = parts.index((notice, "ansicyan"))
+        parts[i] = ((notice[:room] + "…") if room > 8 else "", "ansicyan")
+        parts = [p for p in parts if p[0]]
+    # Still too wide: drop status detail (cache %, then tokens), keeping the
+    # project and the last item (cost, or "indexing…").
+    while width(parts) > columns and len(status) > 2:
+        drop = status.pop(-2)
+        parts.remove(drop)
+
+    def html(text, style):
+        return f"<{style}>{escape(text)}</{style}>" if style else escape(text)
+
+    return " <ansicyan>◆</ansicyan> " + _SEP.join(html(t, s) for t, s in parts)
+
+
 def _print_help():
     try:
         from rich.table import Table
@@ -105,7 +159,7 @@ def heartbeat():
             import time
             idle = time.time() - state.last_interaction
         if idle > CACHE_TTL_SECS and not state.stop_event.is_set():
-            warm_cache()
+            warm_cache(quiet=True)  # a background thread: no print over the prompt
 
 
 def _setup_signal_handlers():
@@ -180,28 +234,9 @@ def start_chat(auto_apply=False):
 
     if _PROMPTTK_AVAILABLE:
         from prompt_toolkit import HTML
-        from prompt_toolkit.formatted_text import to_formatted_text
-
-        def _get_status_html():
-            project = os.path.basename(os.getcwd())
-            if not state.indexing_done.is_set():
-                left = f' <ansicyan>◆</ansicyan> {project}  ·  <ansiyellow>indexing…</ansiyellow>'
-            else:
-                with state.lock:
-                    total_in = state.session_tokens["input"] + state.session_tokens["cache_write"] + state.session_tokens["cache_read"]
-                    saved = state.session_tokens["cache_read"]
-                    cost = state.session_cost
-                ratio = (saved / total_in * 100) if total_in > 0 else 0.0
-                cost_label = "cost" if ECONOMY_MODE == "USD" else "API equiv."
-                left = (
-                    f' <ansicyan>◆</ansicyan> {project}'
-                    f'  ·  {total_in:,} tok  ·  {ratio:.0f}% cached'
-                    f'  ·  {cost_label} ${cost:.4f}'
-                )
-            return left + '  ·  / for commands  ·  alt+enter new line'
 
         def get_status_bar():
-            return HTML(_get_status_html())
+            return HTML(_status_text())
 
         bindings = _KeyBindings()
 
@@ -308,18 +343,10 @@ def start_chat(auto_apply=False):
                     continue
                 
                 msg_preview = last_commit.strip().split('\n')[0][:60]
-                print(f"  {_T_SYS}  Last commit: {_ANSI_DIM}{msg_preview}{_ANSI_RESET}")
-                print(f"  Undo? [{_ANSI_GREEN}y{_ANSI_RESET}/{_ANSI_RED}n{_ANSI_RESET}] ", end="", flush=True)
-                try:
-                    confirm = input().strip().lower() in ("y", "yes")
-                except (KeyboardInterrupt, EOFError):
-                    confirm = False
-                
+                confirm = choose(f"Undo \"{msg_preview}\"?",
+                                 [("yes", "Yes, revert it"), ("no", "No")]) == "yes"
                 if confirm:
-                    if git_manager.undo_last_commit():
-                        print(f"  {_T_SYS}  Reverted.\n")
-                    else:
-                        print(f"  {_T_ERR}  Undo failed.\n")
+                    git_manager.undo_last_commit()  # prints what it undid, or why not
                 else:
                     print(f"  {_T_SYS}  Cancelled.\n")
                 continue
@@ -335,13 +362,9 @@ def start_chat(auto_apply=False):
                 chat(query, auto_apply=auto_apply, use_index=use_index)
             except ClaudeNotLoggedIn:
                 print(f"\n  {_T_ERR}  Claude CLI is not logged in.")
-                print(f"  {_T_SYS}  Set up a long-lived Automation Token? [{_ANSI_GREEN}y{_ANSI_RESET}/{_ANSI_RED}n{_ANSI_RESET}] ", end="", flush=True)
-                try:
-                    choice = input().strip().lower()
-                except (KeyboardInterrupt, EOFError):
-                    choice = "n"
-                
-                if choice in ("y", "yes"):
+                choice = choose("Set up a long-lived automation token?",
+                                [("yes", "Yes, run claude setup-token"), ("no", "No")])
+                if choice == "yes":
                     import subprocess
                     import shutil
                     from pathlib import Path

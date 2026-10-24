@@ -1,3 +1,4 @@
+import os
 import json
 import pickle
 import threading
@@ -8,7 +9,7 @@ from watchdog.events import FileSystemEventHandler
 from claude_light.config import (
     CACHE_DIR, CACHE_INDEX, CACHE_MANIFEST, INDEXABLE_EXTENSIONS, _DOC_PREFIX
 )
-from claude_light.ui import _T_RAG, _T_CACHE, _T_ERR, _ANSI_GREEN, _ANSI_YELLOW, _ANSI_BOLD, _ANSI_RESET, _ANSI_CYAN
+from claude_light.ui import _T_RAG, _T_CACHE, _T_ERR, _ANSI_GREEN, _ANSI_YELLOW, _ANSI_BOLD, _ANSI_RESET, _ANSI_CYAN, notify
 import claude_light.state as state
 
 from claude_light.skeleton import _file_hash, _file_hash_parallel, _get_cached_paths, _invalidate_path_cache, _stat_tuple
@@ -18,6 +19,25 @@ from claude_light.executor import auto_tune, start_embedder_background_load
 def _is_skipped(p):
     from claude_light.skeleton import _is_skipped
     return _is_skipped(p)
+
+
+def _project_path(src) -> str:
+    """The key the index uses for a file: project-relative, no './' prefix.
+
+    Watchdog reports './a.py' (with a backslash on Windows) while the index keys
+    files as 'a.py'; with the raw path a re-index added a second copy of the
+    file's chunks instead of replacing the old ones.
+    """
+    s = str(src)
+    if os.path.isabs(s):
+        try:
+            return str(Path(s).relative_to(Path.cwd()))
+        except ValueError:
+            return s
+    # Only the prefix goes: the separators must stay as the caller wrote them.
+    while s.startswith(("./", ".\\")):
+        s = s[2:]
+    return s
 
 def _load_cache(source_files: list, embed_model: str, file_hashes: dict, quiet=False) -> tuple:
     try:
@@ -207,6 +227,7 @@ def _chunks_for_file(filepath):
 def reindex_file(path):
     if state.embedder is None:
         return
+    path = _project_path(path)
     try:
         p      = Path(path)
         text   = p.read_text(encoding="utf-8", errors="ignore")
@@ -231,9 +252,9 @@ def reindex_file(path):
         if stat is not None:
             state._file_stats[path] = list(stat)
         _save_cache(state.EMBED_MODEL)
-        print(f"{_T_RAG} Re-indexed {_ANSI_CYAN}{path}{_ANSI_RESET} ({len(chunks)} chunks)")
+        notify(f"re-indexed {path} ({len(chunks)} chunks)")
     except Exception as e:
-        print(f"{_T_ERR} Failed to re-index {path}: {e}")
+        notify(f"could not re-index {path}: {e}", error=True)
 
 def _chunk_label(chunk_id):
     if "::" in chunk_id:
@@ -253,6 +274,7 @@ def _debounce(src: str, fn, delay: float = 1.5) -> None:
 
 
 def _remove_file_from_index(path: str) -> None:
+    path = _project_path(path)
     with state.lock:
         for k in _chunks_for_file(path):
             del state.chunk_store[k]
@@ -263,10 +285,19 @@ def _remove_file_from_index(path: str) -> None:
 
 
 class SourceHandler(FileSystemEventHandler):
+    @staticmethod
+    def _watched(src):
+        """The event's project path, or None for files the index skips
+        (.git, .venv, node_modules, the cache directory, ...)."""
+        path = _project_path(src)
+        return None if _is_skipped(Path(path)) else path
+
     def on_modified(self, event):
         if event.is_directory:
             return
-        src = event.src_path
+        src = self._watched(event.src_path)
+        if src is None:
+            return
         ext = Path(src).suffix.lower()
         if ext == ".md":
             from claude_light.llm import refresh_md_file
@@ -277,7 +308,9 @@ class SourceHandler(FileSystemEventHandler):
     def on_created(self, event):
         if event.is_directory:
             return
-        src = event.src_path
+        src = self._watched(event.src_path)
+        if src is None:
+            return
         ext = Path(src).suffix.lower()
         if ext == ".md":
             from claude_light.llm import refresh_md_file
@@ -290,7 +323,9 @@ class SourceHandler(FileSystemEventHandler):
     def on_deleted(self, event):
         if event.is_directory:
             return
-        src = event.src_path
+        src = self._watched(event.src_path)
+        if src is None:
+            return
         ext = Path(src).suffix.lower()
         if src in _file_timers:
             _file_timers.pop(src).cancel()
@@ -306,9 +341,12 @@ class SourceHandler(FileSystemEventHandler):
     def on_moved(self, event):
         if event.is_directory:
             return
-        src, dest   = event.src_path, event.dest_path
-        src_ext     = Path(src).suffix.lower()
-        dest_ext    = Path(dest).suffix.lower()
+        src, dest   = self._watched(event.src_path), self._watched(event.dest_path)
+        if src is None and dest is None:
+            return
+        # One side is None when the file moved into or out of a skipped dir.
+        src_ext     = Path(src).suffix.lower() if src else ""
+        dest_ext    = Path(dest).suffix.lower() if dest else ""
         for p in (src, dest):
             if p in _file_timers:
                 _file_timers.pop(p).cancel()

@@ -3,6 +3,7 @@ import os
 import time
 import json
 import subprocess
+import re
 import shutil
 import threading
 from pathlib import Path
@@ -18,7 +19,7 @@ from claude_light.config import (
 from claude_light.ui import (
     _T_ROUTE, _T_SYS, _T_ERR, _T_RAG, _T_CACHE, _T_EDIT,
     _ANSI_GREEN, _ANSI_CYAN, _ANSI_YELLOW, _ANSI_MAGENTA, _ANSI_BOLD, _ANSI_DIM, _ANSI_RESET, _ANSI_RED,
-    _SYM_RESP, _SYM_TOOL, print_stats, _Spinner, calculate_cost, _print_reply, ResponseView, NullView,
+    _SYM_RESP, _SYM_TOOL, print_stats, _Spinner, calculate_cost, _print_reply, ResponseView, NullView, notify, choose,
 )
 import claude_light.state as state
 from claude_light.skeleton import build_skeleton, _refresh_tree_only, _assemble_skeleton, _refresh_single_md
@@ -84,6 +85,12 @@ _LOGIC_SIGNALS = frozenset({
     "build", "develop", "generate", "update", "change", "modify",
     "migrate", "convert", "extend", "integrate", "logic", "algorithm"
 })
+# Edit verbs matched as whole words: "make" must not fire on "makefile" or
+# "make_report". Without them, "Make divide raise ValueError..." and
+# "Rename x to y" went to Haiku at low effort.
+_EDIT_VERB_RE = re.compile(
+    r"\b(?:make|rename|remove|delete|replace|raise|handle|rewrite|move|split|validate|wrap|drop|inline|extract)\b"
+)
 _INFRA_SIGNALS = frozenset({
     "list", "show", "where", "what is", "what are",
     "how many", "print", "display", "tell me", "which file",
@@ -148,7 +155,8 @@ def _lexical_dimension_scores(q: str) -> dict:
     """Weighted substring match scores for each intent dimension."""
     return {
         "arch":  sum(4.0 for s in _ARCH_SIGNALS  if s in q),
-        "logic": sum(5.0 for s in _LOGIC_SIGNALS if s in q),
+        "logic": sum(5.0 for s in _LOGIC_SIGNALS if s in q)
+                 + (5.0 if _EDIT_VERB_RE.search(q) else 0.0),
         "infra": sum(0.5 for s in _INFRA_SIGNALS if s in q),
     }
 
@@ -523,20 +531,21 @@ def _commit_agent_edits(new_files, explanation, auto_apply=False):
         else:
             print(f"  {_T_EDIT}  {f}  {_ANSI_DIM}(deleted by the agent){_ANSI_RESET}")
 
-    if auto_apply:
+    if auto_apply or state.auto_commit_agent_edits:
         commit = True
     elif not sys.stdin.isatty():
         commit = True
     else:
-        print(
-            f"  Commit {_ANSI_BOLD}{len(files)}{_ANSI_RESET} agent-made change(s)? "
-            f"[{_ANSI_GREEN}y{_ANSI_RESET}/{_ANSI_RED}n{_ANSI_RESET}] ",
-            end="", flush=True,
+        n = len(files)
+        choice = choose(
+            f"Commit the agent's change{'s' if n != 1 else ''} to {n} file{'s' if n != 1 else ''}?",
+            [("yes", "Yes"),
+             ("always", "Yes, and don't ask again this session"),
+             ("no", "No, leave them uncommitted")],
         )
-        try:
-            commit = input().strip().lower() in ("y", "yes")
-        except (KeyboardInterrupt, EOFError):
-            commit = False
+        if choice == "always":
+            state.auto_commit_agent_edits = True
+        commit = choice in ("yes", "always")
 
     if not commit:
         print(f"  {_T_EDIT}  Kept in working tree; not committed.\n")
@@ -1243,7 +1252,10 @@ def warm_cache(quiet=False):
         if not quiet:
             print_stats(response.usage, label="Cache warm", model=MODEL)
     except Exception as e:
-        print(f"{_T_ERR} Cache warm failed: {e}")
+        if quiet:
+            notify(f"cache warm failed: {e}", error=True)
+        else:
+            print(f"{_T_ERR} Cache warm failed: {e}")
 
 def full_refresh(quiet=False):
     if quiet:
@@ -1260,14 +1272,17 @@ def full_refresh(quiet=False):
                 spinner.update("Warming cache")
                 warm_cache(quiet=True)
 
+# Both run on the file watcher's thread: quiet, so nothing prints into a
+# streaming reply or over the prompt.
 def refresh_skeleton_only():
     _apply_skeleton(_refresh_tree_only())
-    warm_cache()
+    warm_cache(quiet=True)
 
 def refresh_md_file(path_str: str):
     if _refresh_single_md(path_str):
         _apply_skeleton(_assemble_skeleton())
-        warm_cache()
+        warm_cache(quiet=True)
+        notify(f"{path_str} changed; system prompt rebuilt")
 
 
 _CLARIFY_PHRASES = frozenset({

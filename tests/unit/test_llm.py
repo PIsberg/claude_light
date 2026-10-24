@@ -71,6 +71,27 @@ class TestRouteQuery(unittest.TestCase):
             _, effort, _ = route_query(q)
             self.assertEqual(effort, "low", msg=f"query: {q!r}")
 
+    def test_edit_requests_without_the_listed_verbs_are_not_sent_to_haiku(self):
+        print("\n  ▶ TestRouteQuery.test_edit_requests_without_the_listed_verbs_are_not_sent_to_haiku")
+        # Live, "Make divide raise ValueError..." went to Haiku at low
+        # effort: none of make/rename/handle/raise was a logic signal.
+        for q in (
+            "Make divide raise ValueError with a clear message when b is 0.",
+            "Rename load_cache to read_cache everywhere",
+            "Handle the empty list case in parse_args",
+            "Remove the unused import in ui.py",
+        ):
+            model, effort, _ = route_query(q)
+            self.assertNotEqual(model, MODEL_HAIKU, msg=q)
+            self.assertNotEqual(effort, "low", msg=q)
+
+    def test_edit_verbs_match_whole_words_only(self):
+        print("\n  ▶ TestRouteQuery.test_edit_verbs_match_whole_words_only")
+        # "make_report" and "makefile" name things; they are not requests.
+        from claude_light.llm import _lexical_dimension_scores
+        self.assertEqual(_lexical_dimension_scores("where is make_report defined")["logic"], 0)
+        self.assertEqual(_lexical_dimension_scores("show the makefile")["logic"], 0)
+
     def test_high_effort_code_modification(self):
         print("\n  ▶ TestRouteQuery.test_high_effort_code_modification")
         model, effort, tokens = route_query("refactor the parse method to handle exceptions")
@@ -1623,6 +1644,28 @@ class TestAgentEditDetection(unittest.TestCase):
             llm._commit_agent_edits({"foo.py"}, "explanation", auto_apply=False)
         mock_commit.assert_not_called()
         self.assertIn("not committed", captured.getvalue().lower())
+
+    def test_agent_commit_dont_ask_again_is_remembered(self):
+        print("\n  ▶ TestAgentEditDetection.test_agent_commit_dont_ask_again_is_remembered")
+        from claude_light import llm
+        import claude_light.state as st
+        st.auto_approve_edits = st.auto_commit_agent_edits = False
+        try:
+            with patch("sys.stdout", io.StringIO()), \
+                 patch("claude_light.llm.subprocess.run", return_value=MagicMock(stdout="")), \
+                 patch("claude_light.git_manager.auto_commit") as commit, \
+                 patch("sys.stdin") as stdin, \
+                 patch("claude_light.llm.choose", return_value="always") as ask:
+                stdin.isatty.return_value = True
+                llm._commit_agent_edits({"a.py"}, "x")
+                llm._commit_agent_edits({"b.py"}, "y")
+            self.assertEqual(ask.call_count, 1)
+            self.assertEqual(commit.call_count, 2)
+            # Committing the agent's edits is a different act from writing
+            # files: "always" here must not pre-approve SEARCH/REPLACE edits.
+            self.assertFalse(st.auto_approve_edits)
+        finally:
+            st.auto_approve_edits = st.auto_commit_agent_edits = False
 
     def test_agent_diff_is_shown_without_git_headers(self):
         print("\n  ▶ TestAgentEditDetection.test_agent_diff_is_shown_without_git_headers")

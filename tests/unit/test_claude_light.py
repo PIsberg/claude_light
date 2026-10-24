@@ -4172,8 +4172,11 @@ class TestHeartbeatWarmsCache(unittest.TestCase):
             cl.last_interaction = time.time() - (cl.CACHE_TTL_SECS + 10)
 
             call_count = [0]
-            # Patch warm_cache to set stop_event after being called
-            def fake_warm():
+            # Patch warm_cache to set stop_event after being called. The
+            # heartbeat is a background thread: it must warm quietly, or its
+            # stats line prints over the prompt.
+            def fake_warm(quiet=False):
+                self.assertTrue(quiet)
                 call_count[0] += 1
                 cl.stop_event.set()
 
@@ -6129,6 +6132,18 @@ class TestStartChatLoop(unittest.TestCase):
             self._run_start_chat(["/compact", "exit"])
         compact.assert_called_once()
 
+    def test_undo_asks_with_the_menu(self):
+        """/undo reverts only when "Yes" is picked; cancel leaves the commit."""
+        import claude_light as cl
+        for picked, reverted in (("yes", True), ("no", False), (None, False)):
+            with patch("claude_light.git_manager.is_git_repo", return_value=True), \
+                 patch("claude_light.git_manager.get_last_commit_message", return_value="Claude: x"), \
+                 patch("claude_light.git_manager.undo_last_commit", return_value=True) as undo, \
+                 patch.object(cl.main, "choose", return_value=picked) as ask:
+                self._run_start_chat(["/undo", "exit"])
+            self.assertIn("Claude: x", ask.call_args.args[0])
+            self.assertEqual(undo.called, reverted, picked)
+
     def test_slash_menu_lists_commands_with_descriptions(self):
         """Typing "/" offers every command with what it does."""
         import claude_light.main as m
@@ -6637,6 +6652,21 @@ class TestGitManager(unittest.TestCase):
         # File should be gone (working directory reverted)
         self.assertFalse(Path("file.py").exists())
 
+    def test_undo_reports_the_subject_on_one_line(self):
+        # Live, the whole message (with its "- calc.py" file list) was
+        # printed inside the parentheses, leaving a stray "- calc.py)" line.
+        from claude_light import git_manager
+        Path("calc.py").write_text("x = 1\n", encoding="utf-8")
+        captured = io.StringIO()
+        with patch("sys.stdout", captured):
+            git_manager.auto_commit(["calc.py"], "Add multiply")
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            self.assertTrue(git_manager.undo_last_commit())
+        lines = [l for l in out.getvalue().splitlines() if l.strip()]
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("Claude: Add multiply", lines[0])
+
     def test_undo_keeps_uncommitted_work_in_other_files(self):
         from claude_light import git_manager
         Path("file.py").write_text("x = 1\n", encoding="utf-8")
@@ -6677,6 +6707,20 @@ class TestGitManager(unittest.TestCase):
         with patch("sys.stdout", captured):
             self.assertFalse(git_manager.undo_last_commit())
         self.assertEqual(Path("file.py").read_text(encoding="utf-8"), "x = 1\nmy tweak\n")
+
+    def test_commit_subject_drops_markdown(self):
+        # Live: "Claude: I added `multiply(a, b)` to `calc.py` directly after
+        # `add`." The explanation is the model's markdown reply.
+        from claude_light.git_manager import _commit_subject
+        cases = {
+            "I added `multiply(a, b)` to **calc.py**.": "Claude: I added multiply(a, b) to calc.py.",
+            "## Summary": "Claude: Summary",
+            "- Fixed [the retry bug](https://x.y/z) in _retry_": "Claude: Fixed the retry bug in retry",
+        }
+        for explanation, subject in cases.items():
+            self.assertEqual(_commit_subject(explanation), subject)
+        # Identifiers keep their underscores.
+        self.assertEqual(_commit_subject("Rename load_cache"), "Claude: Rename load_cache")
 
     def test_commit_subject_is_not_cut_mid_word(self):
         from claude_light import git_manager

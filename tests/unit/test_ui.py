@@ -252,6 +252,17 @@ class TestDiffDisplay(unittest.TestCase):
             i = next(i for i, l in enumerate(lines) if l.strip() == "-b")
             self.assertEqual(lines[i + 1].strip(), "+B", (rich_available, lines))
 
+    def test_path_markup_is_shown_literally(self):
+        print("\n  ▶ TestDiffDisplay.test_path_markup_is_shown_literally")
+        # The path comes from the model's edit block; rich markup in it
+        # could restyle or disguise the title of the diff being approved.
+        evil = "x[/cyan][green]safe.py"
+        with patch("claude_light.ui._RICH_AVAILABLE", True):
+            text = "\n".join(self._lines(lambda ui: ui.show_unified_diff(evil, "@@ -1 +1 @@\n-a\n+b")))
+            new = "\n".join(self._lines(lambda ui: ui.show_diff(evil, "b\n", old_content="")))
+        self.assertIn("[/cyan][green]", text)
+        self.assertIn("[/cyan][green]", new)
+
     def test_long_diff_is_capped_with_a_count(self):
         print("\n  ▶ TestDiffDisplay.test_long_diff_is_capped_with_a_count")
         diff = "@@ -1,200 +1,200 @@\n" + "\n".join(f"+line{i}" for i in range(200))
@@ -278,6 +289,77 @@ class TestAccessLabel(unittest.TestCase):
         print("\n  ▶ TestAccessLabel.test_anything_else_is_not_echoed")
         from claude_light.ui import access_label
         self.assertEqual(access_label("sk-ant-api03-secret"), "")
+
+
+class TestChoose(unittest.TestCase):
+    """The approval menu is drawn inline under the diff it asks about. The
+    old prompt was a full-screen dialog that covered that diff, or a bare
+    y/n input()."""
+
+    _OPTS = [("yes", "Yes"), ("always", "Yes, and don't ask again"), ("no", "No")]
+
+    def _pick(self, keys):
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        from claude_light.ui import choose
+        with create_pipe_input() as inp, patch("sys.stdout", io.StringIO()):
+            inp.send_text(keys)
+            return choose("Apply 1 change?", self._OPTS, _input=inp, _output=DummyOutput())
+
+    def test_enter_takes_the_default(self):
+        print("\n  ▶ TestChoose.test_enter_takes_the_default")
+        self.assertEqual(self._pick("\r"), "yes")
+
+    def test_arrow_keys_move_the_selection(self):
+        print("\n  ▶ TestChoose.test_arrow_keys_move_the_selection")
+        self.assertEqual(self._pick("\x1b[B\x1b[B\r"), "no")
+        self.assertEqual(self._pick("\x1b[B\x1b[B\x1b[A\r"), "always")
+
+    def test_a_number_picks_at_once_but_a_letter_does_not(self):
+        print("\n  ▶ TestChoose.test_a_number_picks_at_once_but_a_letter_does_not")
+        self.assertEqual(self._pick("2"), "always")
+        # Single letters are what a user types into the next prompt while a
+        # turn runs; "a" must not grant "don't ask again".
+        self.assertEqual(self._pick("a\x1b[B\x1b[B\r"), "no")
+
+    def test_keys_typed_before_the_menu_are_discarded(self):
+        print("\n  ▶ TestChoose.test_keys_typed_before_the_menu_are_discarded")
+        from claude_light import ui
+        order = []
+        with patch.object(ui, "_discard_typeahead", side_effect=lambda: order.append("flush")), \
+             patch.object(ui, "_choose_menu", side_effect=lambda *a: order.append("menu") or "no"), \
+             patch("sys.stdout", io.StringIO()):
+            ui.choose("Apply?", self._OPTS)
+        self.assertEqual(order, ["flush", "menu"])
+
+    def test_discard_typeahead_never_raises(self):
+        print("\n  ▶ TestChoose.test_discard_typeahead_never_raises")
+        from claude_light import ui
+        ui._discard_typeahead()  # stdin is not a console under pytest
+
+    def test_ctrl_c_cancels(self):
+        print("\n  ▶ TestChoose.test_ctrl_c_cancels")
+        self.assertIsNone(self._pick("\x03"))
+
+    def test_typed_fallback_without_a_terminal(self):
+        print("\n  ▶ TestChoose.test_typed_fallback_without_a_terminal")
+        from claude_light.ui import choose
+        for typed, expected in (("y", "yes"), ("3", "no"), ("always", "always"), ("", None), ("zzz", None)):
+            with patch("builtins.input", return_value=typed), patch("sys.stdout", io.StringIO()):
+                self.assertEqual(choose("Apply?", self._OPTS, _force_plain=True), expected, typed)
+
+    def test_the_choice_stays_on_screen(self):
+        print("\n  ▶ TestChoose.test_the_choice_stays_on_screen")
+        # The menu erases itself; one line records what was picked.
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        from claude_light.ui import choose
+        out = io.StringIO()
+        with create_pipe_input() as inp, patch("sys.stdout", out):
+            inp.send_text("3")
+            choose("Apply 1 change?", self._OPTS, _input=inp, _output=DummyOutput())
+        self.assertIn("Apply 1 change?", out.getvalue())
+        self.assertIn("No", out.getvalue())
 
 
 class TestStartupHeader(unittest.TestCase):
@@ -528,6 +610,40 @@ class TestResponseViewTerminal(unittest.TestCase):
         self.assertLess(i_look, i_tool)
         self.assertLess(i_tool, i_found)
         self.assertNotIn("Let me look.", lines[i_tool])
+
+    def test_edit_blocks_become_one_line(self):
+        print("\n  ▶ TestResponseViewTerminal.test_edit_blocks_become_one_line")
+        # Live, the raw SEARCH/REPLACE block filled the screen and the diff
+        # below it showed the same change again.
+        out = self._render([
+            "I'll add it.\n\n",
+            "```python:calc.py\n<<<<<<< SEARCH\nold = 1\n=======\nnew = 2\n>>>>>>> REPLACE\n```\n",
+            "```python:pkg/new_mod.py\nx = 1\n```\n",
+            "\nDone.",
+        ])
+        self.assertNotIn("<<<<<<<", out)
+        self.assertNotIn("old = 1", out)
+        self.assertNotIn("x = 1", out)
+        self.assertIn("calc.py", out)
+        self.assertIn("pkg/new_mod.py", out)
+        self.assertIn("Done.", out)
+
+    def test_unfinished_edit_block_shows_as_writing(self):
+        print("\n  ▶ TestResponseViewTerminal.test_unfinished_edit_block_shows_as_writing")
+        from claude_light.ui import ResponseView
+        con, buf = _live_console()
+        view = ResponseView(console=con, animate=False)
+        view.text("```python:calc.py\n<<<<<<< SEARCH\nold = 1\n")
+        con.print(view)  # what the live region draws for the tail
+        out = buf.getvalue()
+        self.assertIn("writing", out)
+        self.assertIn("calc.py", out)
+        self.assertNotIn("<<<<<<<", out)
+
+    def test_plain_code_blocks_still_render(self):
+        print("\n  ▶ TestResponseViewTerminal.test_plain_code_blocks_still_render")
+        out = self._render(["Example:\n\n```python\nvalue = 42\n```\n"])
+        self.assertIn("value = 42", out)
 
     def test_tail_taller_than_the_screen_is_cropped_to_its_last_lines(self):
         print("\n  ▶ TestResponseViewTerminal.test_tail_taller_than_the_screen_is_cropped_to_its_last_lines")
