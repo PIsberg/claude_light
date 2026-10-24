@@ -13,13 +13,13 @@ PYTHON=""
 for cmd in python3 python; do
     if command -v "$cmd" &>/dev/null; then
         ver=$("$cmd" -c 'import sys; print(sys.version_info[:2])')
-        if "$cmd" -c 'import sys; sys.exit(0 if sys.version_info >= (3,11) else 1)' 2>/dev/null; then
+        if "$cmd" -c 'import sys; sys.exit(0 if sys.version_info >= (3,12) else 1)' 2>/dev/null; then
             PYTHON="$cmd"
             break
         fi
     fi
 done
-[[ -z "$PYTHON" ]] && error "Python 3.11+ is required but was not found."
+[[ -z "$PYTHON" ]] && error "Python 3.12+ is required but was not found."
 info "Using $($PYTHON --version)"
 
 PIP="$PYTHON -m pip"

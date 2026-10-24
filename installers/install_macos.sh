@@ -35,7 +35,7 @@ else
 fi
 
 # ── Python ───────────────────────────────────────────────────────────────────
-step "Locating Python 3.11+..."
+step "Locating Python 3.12+..."
 
 PYTHON=""
 
@@ -43,12 +43,12 @@ PYTHON=""
 for candidate in \
     "$BREW_PREFIX/bin/python3.13" \
     "$BREW_PREFIX/bin/python3.12" \
-    "$BREW_PREFIX/bin/python3.11" \
+    "$BREW_PREFIX/bin/python3.12" \
     "$BREW_PREFIX/bin/python3" \
     python3 \
     python; do
     if command -v "$candidate" &>/dev/null 2>&1; then
-        if "$candidate" -c 'import sys; sys.exit(0 if sys.version_info >= (3,11) else 1)' 2>/dev/null; then
+        if "$candidate" -c 'import sys; sys.exit(0 if sys.version_info >= (3,12) else 1)' 2>/dev/null; then
             PYTHON="$candidate"
             break
         fi
@@ -58,10 +58,10 @@ done
 if [[ -z "$PYTHON" ]]; then
     if command -v brew &>/dev/null; then
         info "Installing Python via Homebrew..."
-        brew install python@3.11
-        PYTHON="$BREW_PREFIX/bin/python3.11"
+        brew install python@3.12
+        PYTHON="$BREW_PREFIX/bin/python3.12"
     else
-        error "Python 3.11+ not found and Homebrew is not available. Install from https://python.org"
+        error "Python 3.12+ not found and Homebrew is not available. Install from https://python.org"
     fi
 fi
 

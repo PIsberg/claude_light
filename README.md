@@ -116,7 +116,7 @@ bash installers/install_macos.sh
 
 The macOS installer handles the details specific to macOS:
 - Detects Apple Silicon (`/opt/homebrew`) vs Intel (`/usr/local`) Homebrew paths
-- Installs Python 3.11 via Homebrew if no 3.11+ interpreter is found
+- Installs Python 3.12 via Homebrew if no 3.12+ interpreter is found
 - Creates a `.venv` virtual environment to avoid the PEP 668 "externally managed" error on macOS 13+
 - Generates a `run.sh` wrapper so you don't need to activate the venv manually
 - Reminds you to add the key to `~/.zshrc` (macOS default shell)
@@ -138,7 +138,7 @@ bash installers/install.sh
 export ANTHROPIC_API_KEY=sk-ant-your-key-here
 ```
 
-The script finds a Python 3.11+ interpreter and installs everything in [requirements.txt](requirements.txt) via `pip`.
+The script finds a Python 3.12+ interpreter and installs everything in [requirements.txt](requirements.txt) via `pip`.
 
 ### Windows (PowerShell)
 
@@ -151,7 +151,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass;
 
 ### Manual installation
 
-Python 3.11 or newer. Install everything in [requirements.txt](requirements.txt):
+Python 3.12 or newer. Install everything in [requirements.txt](requirements.txt):
 
 ```bash
 pip install -r requirements.txt
@@ -235,7 +235,7 @@ Once both are ready, each chunk's similarity to the question is z-scored per mod
 
 To ensure supply chain transparency and prevent dependency confusion, `claude_light` uses:
 
-*   **Version floors:** `requirements.txt` and `pyproject.toml` set each dependency's minimum to the newest release that installs on Python 3.11. The installers read `requirements.txt`, so there is one list to keep current.
+*   **Version floors:** `requirements.txt` and `pyproject.toml` set each dependency's minimum to the newest release that installs on Python 3.12. The installers read `requirements.txt`, so there is one list to keep current.
 *   **SBOM (Software Bill of Materials):** The project maintains an industry-standard SBOM in [CycloneDX](https://cyclonedx.org/) format.
 
 #### Continuous Inventory
@@ -277,7 +277,7 @@ python -m claude_light --test-mode extra-large
 
 ### CI Regression Checks
 
-The GitHub Actions workflow (`.github/workflows/test.yml`, Python 3.11) runs three steps:
+The GitHub Actions workflow (`.github/workflows/test.yml`, Python 3.12) runs three steps:
 
 1. Unit tests
 

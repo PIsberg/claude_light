@@ -68,7 +68,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 ## Dependencies
 
-Python 3.11 or newer. The installers and the SBOM job read [`requirements.txt`](requirements.txt), which is the one list of versions; `pyproject.toml` carries the same floors. The CI test job (`.github/workflows/test.yml`) installs its own package list, so it must be kept in step by hand.
+Python 3.12 or newer. The installers and the SBOM job read [`requirements.txt`](requirements.txt), which is the one list of versions; `pyproject.toml` carries the same floors. The CI test job (`.github/workflows/test.yml`) installs its own package list, so it must be kept in step by hand.
 
 ```bash
 pip install -r requirements.txt

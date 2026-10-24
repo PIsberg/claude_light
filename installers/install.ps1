@@ -14,11 +14,11 @@ function Fail  { Write-Host "[error]   $args" -ForegroundColor Red; exit 1 }
 $python = $null
 foreach ($cmd in @("python", "python3", "py")) {
     try {
-        $ok = & $cmd -c "import sys; sys.exit(0 if sys.version_info >= (3,11) else 1)" 2>$null
+        $ok = & $cmd -c "import sys; sys.exit(0 if sys.version_info >= (3,12) else 1)" 2>$null
         if ($LASTEXITCODE -eq 0) { $python = $cmd; break }
     } catch {}
 }
-if (-not $python) { Fail "Python 3.11+ is required but was not found. Install from https://python.org" }
+if (-not $python) { Fail "Python 3.12+ is required but was not found. Install from https://python.org" }
 Info "Using $(&$python --version)"
 
 # --- Packages ----------------------------------------------------------------

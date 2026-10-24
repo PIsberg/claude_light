@@ -49,7 +49,7 @@ Looking for your first contribution? Check out issues labeled with:
 
 ### Prerequisites
 
-- Python 3.11 or higher
+- Python 3.12 or higher
 - pip package manager
 - Git
 

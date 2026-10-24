@@ -1,5 +1,5 @@
 sentence-transformers>=6.2.0
-numpy>=2.4.6
+numpy>=2.5.4
 watchdog>=6.0.0
 anthropic>=2.3.0
 prompt_toolkit>=3.0.53
