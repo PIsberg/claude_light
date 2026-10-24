@@ -205,6 +205,16 @@
    "question": "how do I bake sourdough bread",
    "file": null,
    "kind": "unrelated"
+  },
+  {
+   "question": "Which test checks that Python docstrings survive comment stripping by default?",
+   "file": "tests/unit/test_parsing.py",
+   "kind": "identifier"
+  },
+  {
+   "question": "Which test checks that the cache is dropped when the embedding model changes?",
+   "file": "tests/unit/test_indexer.py",
+   "kind": "identifier"
   }
  ]
 }

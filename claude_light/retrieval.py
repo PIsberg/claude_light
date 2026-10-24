@@ -1,3 +1,5 @@
+import re
+
 import numpy as np
 from pathlib import Path
 
@@ -158,6 +160,30 @@ def hybrid_scores(fast_scores, dense_scores=None, fast_min=None, dense_min=None)
     if dense_scores is not None:
         fused = HYBRID_FAST_WEIGHT * fused + (1 - HYBRID_FAST_WEIGHT) * _zscore(dense_scores)
     return fused
+
+
+# Directories that hold tests. A chunk under one of them is a distractor for a
+# question about the package: its code reuses the question's words (model,
+# effort, budget) and crowds the answer out. Measured on this repository:
+# excluding them raised answering-file recall and lowered tokens sent (see
+# docs/BENCHMARKS.md, "Test-file exclusion").
+_TEST_DIRS = frozenset({"test", "tests", "__tests__", "spec", "specs"})
+_TEST_QUESTION = re.compile(r"\btests?\b|\btesting\b|\bspec\b|\bpytest\b", re.IGNORECASE)
+
+
+def _is_test_chunk(chunk_id: str) -> bool:
+    """True when any directory on the chunk's file path is a test directory."""
+    dirs = _chunk_id_to_file(chunk_id).replace("\\", "/").split("/")[:-1]
+    return any(d in _TEST_DIRS for d in dirs)
+
+
+def _exclude_test_chunks(fused, ids, query):
+    """Fused scores with test chunks set to -inf, so they are never selected.
+    Questions that mention tests keep every chunk. Returns a new array."""
+    if _TEST_QUESTION.search(query):
+        return fused
+    mask = np.array([_is_test_chunk(cid) for cid in ids], dtype=bool)
+    return np.where(mask, -np.inf, fused)
 
 
 def _hybrid_select_pairs(ids, fused, budget, k, gap=None):
@@ -328,6 +354,7 @@ def _retrieve_hybrid(query, budget, k, effort):
     fused = hybrid_scores(fast_scores, dense_scores)
     if fused is None:
         return "", []
+    fused = _exclude_test_chunks(fused, ids, query)
     top_pairs = _hybrid_select_pairs(ids, fused, budget, k)
     return _render_retrieved_context(top_pairs, effort), top_pairs
 

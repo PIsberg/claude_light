@@ -6,12 +6,15 @@ import os
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
+
+import numpy as np
 
 os.environ.setdefault("ANTHROPIC_API_KEY", "sk-ant-dummy-test-key")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from claude_light.retrieval import _dedup_retrieved_context, record_retrieval, explain_last_retrieval
+from claude_light.retrieval import (_dedup_retrieved_context, record_retrieval, explain_last_retrieval,
+    _exclude_test_chunks, _is_test_chunk, _hybrid_select_pairs)
 import claude_light.state as _state
 
 
@@ -325,3 +328,54 @@ class TestRetrieve(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# Test-file exclusion for package questions (hybrid path)
+# ---------------------------------------------------------------------------
+
+class TestTestChunkExclusion(unittest.TestCase):
+    """Chunks under test directories are distractors for questions about the
+    package: they reuse the words of the question (model, effort, budget) and
+    crowd the answer out. Questions that ask about tests keep them."""
+
+    IDS = [
+        "claude_light/llm.py::route_query",
+        "tests/unit/test_llm.py::test_route",
+        "tests/benchmarks/bench.py::main",
+        "src/test/java/A.java::x",
+    ]
+    FUSED = np.array([1.0, 3.0, 2.5, 0.5])
+
+    def test_test_chunks_dropped_for_package_question(self):
+        print("\n  ▶ TestTestChunkExclusion.test_test_chunks_dropped_for_package_question")
+        out = _exclude_test_chunks(self.FUSED, self.IDS, "Which function decides the model?")
+        self.assertEqual(int(np.argmax(out)), 0)
+        self.assertEqual(out[1], -np.inf)
+        self.assertEqual(out[2], -np.inf)
+
+    def test_test_directory_at_any_depth_is_excluded(self):
+        print("\n  ▶ TestTestChunkExclusion.test_test_directory_at_any_depth_is_excluded")
+        self.assertTrue(_is_test_chunk("src/test/java/A.java::x"))
+        self.assertTrue(_is_test_chunk("tests\\unit\\test_llm.py::test_route"))
+        self.assertFalse(_is_test_chunk("claude_light/testing.py::helper"))
+        self.assertFalse(_is_test_chunk("claude_light/llm.py::route_query"))
+
+    def test_question_about_tests_keeps_them(self):
+        print("\n  ▶ TestTestChunkExclusion.test_question_about_tests_keeps_them")
+        out = _exclude_test_chunks(self.FUSED, self.IDS, "Which test checks the router?")
+        np.testing.assert_array_equal(out, self.FUSED)
+
+    def test_input_scores_are_not_modified(self):
+        print("\n  ▶ TestTestChunkExclusion.test_input_scores_are_not_modified")
+        before = self.FUSED.copy()
+        _exclude_test_chunks(self.FUSED, self.IDS, "Which function decides the model?")
+        np.testing.assert_array_equal(self.FUSED, before)
+
+    def test_selection_never_picks_a_test_chunk(self):
+        print("\n  ▶ TestTestChunkExclusion.test_selection_never_picks_a_test_chunk")
+        store = {cid: {"text": "def f():\n    pass\n"} for cid in self.IDS}
+        out = _exclude_test_chunks(self.FUSED, self.IDS, "Which function decides the model?")
+        with patch.object(_state, "chunk_store", store):
+            picked = _hybrid_select_pairs(self.IDS, out, budget=10_000, k=4)
+        self.assertEqual([cid for cid, _ in picked], ["claude_light/llm.py::route_query"])

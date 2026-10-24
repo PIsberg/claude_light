@@ -23,6 +23,7 @@ Run from the repository root. Not collected by pytest.
 """
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -41,6 +42,18 @@ FIXTURE = ROOT / "tests" / "fixtures" / "repo_questions.json"
 FAST = config.FAST_EMBED_MODEL
 DENSE_MODELS = ["all-MiniLM-L6-v2", "all-mpnet-base-v2"]
 BUDGET = config._RETRIEVAL_BUDGET["medium"]
+TEST_POLICY = {"policy": "exclude", "penalty": 0.0}
+_TEST_WORDS = re.compile(r"\btests?\b|\btesting\b|\bspec\b|\bpytest\b", re.IGNORECASE)
+
+
+def apply_test_policy(fused, is_test, question):
+    """Adjust fused scores for chunks under tests/, unless the question is about tests."""
+    policy = TEST_POLICY["policy"]
+    if policy == "keep" or _TEST_WORDS.search(question):
+        return fused
+    if policy == "exclude":
+        return np.where(is_test, -np.inf, fused)
+    return fused - TEST_POLICY["penalty"] * is_test
 
 
 def collect_chunks():
@@ -111,12 +124,18 @@ def main():
     ap.add_argument("--cache-dir", type=Path, default=ROOT / ".claude_light_cache" / "bench")
     ap.add_argument("--sweep", action="store_true", help="also sweep HYBRID_SCORE_GAP and the floors")
     ap.add_argument("--budgets", action="store_true", help="also report recall and tokens per effort budget")
+    ap.add_argument("--test-policy", choices=["keep", "exclude", "penalty"], default="exclude",
+                    help="for chunks under tests/: keep them, drop them, or subtract --test-penalty "
+                         "from their fused score. Not applied when the question mentions tests.")
+    ap.add_argument("--test-penalty", type=float, default=1.0, help="fused z-score units (penalty policy)")
     args = ap.parse_args()
+    TEST_POLICY["policy"], TEST_POLICY["penalty"] = args.test_policy, args.test_penalty
 
     questions = json.loads(FIXTURE.read_text(encoding="utf-8"))["questions"]
     chunks = collect_chunks()
     ids = [c["id"] for c in chunks]
     files = [file_of(c) for c in ids]
+    is_test = np.array([f.startswith("tests/") for f in files])
     state.chunk_store.clear()
     state.chunk_store.update({c["id"]: {"text": c["text"]} for c in chunks})
     avg_tokens = max(1, sum(len(c["text"]) for c in chunks) // len(chunks) // 4)
@@ -141,6 +160,8 @@ def main():
             fused = retrieval.hybrid_scores(s_fast, s_dense, fast_min=fast_min,
                                             dense_min=dense_min if dense_min is not None
                                             else config.HYBRID_MIN_SCORE.get(model, config.MIN_SCORE))
+            if fused is not None:
+                fused = apply_test_policy(fused, is_test, questions[i]["question"])
             return [] if fused is None else retrieval._hybrid_select_pairs(ids, fused, budget, k, gap=gap)
         return select
 
