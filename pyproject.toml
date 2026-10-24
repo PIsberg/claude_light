@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=84.2.1", "wheel"]
+requires = ["setuptools>=84.2.1", "wheel>=0.48.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Interactive CLI chat tool for querying and editing a codebase using Claude — hybrid RAG + prompt caching."
 readme = "README.md"
 license = { file = "LICENSE" }
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 authors = [{ name = "Peter Isberg", email = "isberg.peter+cl@gmail.com" }]
 keywords = ["claude", "anthropic", "rag", "llm", "cli", "code-search", "prompt-caching"]
 classifiers = [
@@ -18,8 +18,6 @@ classifiers = [
     "License :: Other/Proprietary License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -28,10 +26,10 @@ classifiers = [
 ]
 dependencies = [
     "sentence-transformers>=6.2.0",
-    "numpy>=2.4.4",
+    "numpy>=2.4.6",
     "watchdog>=6.0.0",
-    "anthropic>=1.17.0",
-    "prompt_toolkit>=3.0.52",
+    "anthropic>=2.3.0",
+    "prompt_toolkit>=3.0.53",
     "rich>=15.0.0",
     "einops>=0.8.2",
     "tree-sitter>=0.26.0",
@@ -47,7 +45,7 @@ dependencies = [
 llmlingua = ["llmlingua>=0.2.2"]
 dev = [
     "build>=1.6.1",
-    "hypothesis>=6.168.5",
+    "hypothesis>=6.170.9",
     "pytest>=9.1.1",
 ]
 

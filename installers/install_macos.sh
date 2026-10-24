@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Claude Light installer — macOS
 # Run from the claude_light directory:
-#   bash install_macos.sh
+#   bash installers/install_macos.sh
 set -euo pipefail
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BOLD='\033[1m'; NC='\033[0m'
@@ -35,7 +35,7 @@ else
 fi
 
 # ── Python ───────────────────────────────────────────────────────────────────
-step "Locating Python 3.9+..."
+step "Locating Python 3.11+..."
 
 PYTHON=""
 
@@ -44,13 +44,11 @@ for candidate in \
     "$BREW_PREFIX/bin/python3.13" \
     "$BREW_PREFIX/bin/python3.12" \
     "$BREW_PREFIX/bin/python3.11" \
-    "$BREW_PREFIX/bin/python3.10" \
-    "$BREW_PREFIX/bin/python3.9" \
     "$BREW_PREFIX/bin/python3" \
     python3 \
     python; do
     if command -v "$candidate" &>/dev/null 2>&1; then
-        if "$candidate" -c 'import sys; sys.exit(0 if sys.version_info >= (3,9) else 1)' 2>/dev/null; then
+        if "$candidate" -c 'import sys; sys.exit(0 if sys.version_info >= (3,11) else 1)' 2>/dev/null; then
             PYTHON="$candidate"
             break
         fi
@@ -63,7 +61,7 @@ if [[ -z "$PYTHON" ]]; then
         brew install python@3.11
         PYTHON="$BREW_PREFIX/bin/python3.11"
     else
-        error "Python 3.9+ not found and Homebrew is not available. Install from https://python.org"
+        error "Python 3.11+ not found and Homebrew is not available. Install from https://python.org"
     fi
 fi
 
@@ -82,31 +80,14 @@ fi
 
 PYTHON="$VENV_DIR/bin/python"
 PIP="$VENV_DIR/bin/pip"
+REQUIREMENTS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/requirements.txt"
 
 "$PIP" install --upgrade pip --quiet
 
-# ── Required packages ─────────────────────────────────────────────────────────
-step "Installing required packages (sentence-transformers pulls PyTorch ~1.5 GB on first run)..."
-"$PIP" install --upgrade \
-    "sentence-transformers>=5.3.0" \
-    "numpy>=2.4.3" \
-    "watchdog>=6.0.0" \
-    "anthropic>=0.86.0" \
-    "prompt_toolkit>=3.0.52"
-
-# ── Optional packages ─────────────────────────────────────────────────────────
-step "Installing optional packages (tree-sitter, rich, einops)..."
-"$PIP" install --upgrade \
-    "tree-sitter>=0.25.2" \
-    "tree-sitter-java>=0.23.5" \
-    "tree-sitter-python>=0.25.0" \
-    "tree-sitter-go>=0.25.0" \
-    "tree-sitter-rust>=0.24.1" \
-    "tree-sitter-javascript>=0.25.0" \
-    "tree-sitter-typescript>=0.23.2" \
-    "rich>=14.3.3" \
-    "einops>=0.8.2" \
-    || warn "Some optional packages failed — the tool still works, with reduced functionality."
+# ── Packages ──────────────────────────────────────────────────────────────────
+# requirements.txt is the one list of versions (the README and CI read it too).
+step "Installing packages from requirements.txt (sentence-transformers pulls PyTorch ~1.5 GB on first run)..."
+"$PIP" install --upgrade -r "$REQUIREMENTS"
 
 # ── API key ───────────────────────────────────────────────────────────────────
 step "Checking API key..."

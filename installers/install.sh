@@ -13,39 +13,22 @@ PYTHON=""
 for cmd in python3 python; do
     if command -v "$cmd" &>/dev/null; then
         ver=$("$cmd" -c 'import sys; print(sys.version_info[:2])')
-        if "$cmd" -c 'import sys; sys.exit(0 if sys.version_info >= (3,9) else 1)' 2>/dev/null; then
+        if "$cmd" -c 'import sys; sys.exit(0 if sys.version_info >= (3,11) else 1)' 2>/dev/null; then
             PYTHON="$cmd"
             break
         fi
     fi
 done
-[[ -z "$PYTHON" ]] && error "Python 3.9+ is required but was not found."
+[[ -z "$PYTHON" ]] && error "Python 3.11+ is required but was not found."
 info "Using $($PYTHON --version)"
 
 PIP="$PYTHON -m pip"
+REQUIREMENTS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/requirements.txt"
 
-# ── Required packages ────────────────────────────────────────────────────────
-info "Installing required packages (sentence-transformers pulls PyTorch ~1.5 GB on first run)..."
-$PIP install --upgrade \
-    "sentence-transformers>=5.3.0" \
-    "numpy>=2.4.3" \
-    "watchdog>=6.0.0" \
-    "anthropic>=0.86.0" \
-    "prompt_toolkit>=3.0.52"
-
-# ── Optional packages ────────────────────────────────────────────────────────
-info "Installing optional packages (tree-sitter, rich, einops)..."
-$PIP install --upgrade \
-    "tree-sitter>=0.25.2" \
-    "tree-sitter-java>=0.23.5" \
-    "tree-sitter-python>=0.25.0" \
-    "tree-sitter-go>=0.25.0" \
-    "tree-sitter-rust>=0.24.1" \
-    "tree-sitter-javascript>=0.25.0" \
-    "tree-sitter-typescript>=0.23.2" \
-    "rich>=14.3.3" \
-    "einops>=0.8.2" \
-    || warn "Some optional packages failed to install — the tool will still work, with reduced functionality."
+# ── Packages ─────────────────────────────────────────────────────────────────
+# requirements.txt is the one list of versions (the README and CI read it too).
+info "Installing packages from requirements.txt (sentence-transformers pulls PyTorch ~1.5 GB on first run)..."
+$PIP install --upgrade -r "$REQUIREMENTS"
 
 # ── API key check ────────────────────────────────────────────────────────────
 echo ""
