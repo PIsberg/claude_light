@@ -23,7 +23,7 @@ import claude_light.state as state
 from claude_light.config import MODEL, CACHE_DIR, HEARTBEAT_SECS, CACHE_TTL_SECS, AUTH_MODE, ECONOMY_MODE, API_KEY_SOURCE
 from claude_light.ui import (
     _ANSI_BOLD, _ANSI_RESET, _ANSI_CYAN, _ANSI_DIM, _ANSI_GREEN, _ANSI_RED, _T_SYS, _T_ERR,
-    _UNICODE, access_label, print_session_summary, print_session_footer, print_startup_header,
+    _UNICODE, access_label, current_notice, print_session_summary, print_session_footer, print_startup_header,
     ToolExecutionManager,
 )
 from claude_light.llm import full_refresh, chat, one_shot, warm_cache, compact_history, ClaudeNotLoggedIn
@@ -72,6 +72,31 @@ except ImportError:
     _PROMPTTK_AVAILABLE = False
 
 
+def _status_text() -> str:
+    """The toolbar under the prompt, as prompt_toolkit HTML: index status or
+    session totals, then the latest background notice, then key hints."""
+    from html import escape
+    project = escape(os.path.basename(os.getcwd()))
+    if not state.indexing_done.is_set():
+        text = f' <ansicyan>◆</ansicyan> {project}  ·  <ansiyellow>indexing…</ansiyellow>'
+    else:
+        with state.lock:
+            total_in = state.session_tokens["input"] + state.session_tokens["cache_write"] + state.session_tokens["cache_read"]
+            saved = state.session_tokens["cache_read"]
+            cost = state.session_cost
+        ratio = (saved / total_in * 100) if total_in > 0 else 0.0
+        cost_label = "cost" if ECONOMY_MODE == "USD" else "API equiv."
+        text = (
+            f' <ansicyan>◆</ansicyan> {project}'
+            f'  ·  {total_in:,} tok  ·  {ratio:.0f}% cached'
+            f'  ·  {cost_label} ${cost:.4f}'
+        )
+    notice = current_notice()
+    if notice:
+        text += f'  ·  <ansicyan>{escape(notice)}</ansicyan>'
+    return text + '  ·  / for commands  ·  alt+enter new line'
+
+
 def _print_help():
     try:
         from rich.table import Table
@@ -105,7 +130,7 @@ def heartbeat():
             import time
             idle = time.time() - state.last_interaction
         if idle > CACHE_TTL_SECS and not state.stop_event.is_set():
-            warm_cache()
+            warm_cache(quiet=True)  # a background thread: no print over the prompt
 
 
 def _setup_signal_handlers():
@@ -180,28 +205,9 @@ def start_chat(auto_apply=False):
 
     if _PROMPTTK_AVAILABLE:
         from prompt_toolkit import HTML
-        from prompt_toolkit.formatted_text import to_formatted_text
-
-        def _get_status_html():
-            project = os.path.basename(os.getcwd())
-            if not state.indexing_done.is_set():
-                left = f' <ansicyan>◆</ansicyan> {project}  ·  <ansiyellow>indexing…</ansiyellow>'
-            else:
-                with state.lock:
-                    total_in = state.session_tokens["input"] + state.session_tokens["cache_write"] + state.session_tokens["cache_read"]
-                    saved = state.session_tokens["cache_read"]
-                    cost = state.session_cost
-                ratio = (saved / total_in * 100) if total_in > 0 else 0.0
-                cost_label = "cost" if ECONOMY_MODE == "USD" else "API equiv."
-                left = (
-                    f' <ansicyan>◆</ansicyan> {project}'
-                    f'  ·  {total_in:,} tok  ·  {ratio:.0f}% cached'
-                    f'  ·  {cost_label} ${cost:.4f}'
-                )
-            return left + '  ·  / for commands  ·  alt+enter new line'
 
         def get_status_bar():
-            return HTML(_get_status_html())
+            return HTML(_status_text())
 
         bindings = _KeyBindings()
 

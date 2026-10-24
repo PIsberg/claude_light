@@ -228,7 +228,7 @@ One-shot runs write only the answer to stdout, as plain text; progress and tool 
 The script runs three concurrent threads to keep your workflow seamless:
 
 * **Main Thread:** Handles the input loop, retrieves relevant chunks per query, and manages the conversation history.
-* **Watchdog:** Monitors your directory for file saves. If a source file changes, it automatically re-chunks and re-embeds it; if a `.md` file changes, it rebuilds the skeleton cache.
+* **Watchdog:** Monitors your directory for file saves. If a source file changes, it automatically re-chunks and re-embeds it; if a `.md` file changes, it rebuilds the skeleton cache. Files under `.git`, `.venv`, `node_modules` and other skipped directories are ignored. It reports in the toolbar (`re-indexed calc.py (2 chunks)`), never in the middle of a reply.
 * **Heartbeat Daemon (API-key mode only):** Keeps the Anthropic prompt cache warm while you step away. Disabled in OAuth/Pro-subscription mode, where each turn spawns a fresh `claude` CLI subprocess and there is no persistent process to keep warm.
 
 ### Auto-Tuned Embedding Models

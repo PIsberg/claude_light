@@ -469,6 +469,26 @@ class ToolExecutionManager:
         return False  # don't suppress exceptions
 
 
+NOTICE_SECS = 8
+
+
+def notify(text: str, error: bool = False) -> None:
+    """Post a notice from a background thread; the toolbar shows it for
+    NOTICE_SECS. It never prints: a print from another thread lands inside
+    a streaming reply, or over the prompt the user is typing."""
+    with state.lock:
+        state.notice = (text, time.monotonic() + NOTICE_SECS, error)
+
+
+def current_notice() -> str:
+    """The notice to show now, or "" when there is none or it has expired."""
+    with state.lock:
+        notice = state.notice
+    if not notice or time.monotonic() > notice[1]:
+        return ""
+    return f"{_SYM_ERR} {notice[0]}" if notice[2] else notice[0]
+
+
 def _isatty(stream) -> bool:
     try:
         return bool(stream.isatty())

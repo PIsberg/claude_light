@@ -7,6 +7,8 @@ chunk_store = {}
 conversation_history = []
 # Completed turns this session. Not len(history) // 2: compression shrinks that.
 turn_count = 0
+# (text, expires_at, is_error) posted by background threads; the toolbar shows it.
+notice = None
 session_cost = 0.0
 session_tokens = {"input": 0, "cache_write": 0, "cache_read": 0, "output": 0, "compress_pre": 0, "compress_post": 0}
 # USD per token category, each call priced at the model that ran it

@@ -18,7 +18,7 @@ from claude_light.config import (
 from claude_light.ui import (
     _T_ROUTE, _T_SYS, _T_ERR, _T_RAG, _T_CACHE, _T_EDIT,
     _ANSI_GREEN, _ANSI_CYAN, _ANSI_YELLOW, _ANSI_MAGENTA, _ANSI_BOLD, _ANSI_DIM, _ANSI_RESET, _ANSI_RED,
-    _SYM_RESP, _SYM_TOOL, print_stats, _Spinner, calculate_cost, _print_reply, ResponseView, NullView,
+    _SYM_RESP, _SYM_TOOL, print_stats, _Spinner, calculate_cost, _print_reply, ResponseView, NullView, notify,
 )
 import claude_light.state as state
 from claude_light.skeleton import build_skeleton, _refresh_tree_only, _assemble_skeleton, _refresh_single_md
@@ -1243,7 +1243,10 @@ def warm_cache(quiet=False):
         if not quiet:
             print_stats(response.usage, label="Cache warm", model=MODEL)
     except Exception as e:
-        print(f"{_T_ERR} Cache warm failed: {e}")
+        if quiet:
+            notify(f"cache warm failed: {e}", error=True)
+        else:
+            print(f"{_T_ERR} Cache warm failed: {e}")
 
 def full_refresh(quiet=False):
     if quiet:
@@ -1260,14 +1263,17 @@ def full_refresh(quiet=False):
                 spinner.update("Warming cache")
                 warm_cache(quiet=True)
 
+# Both run on the file watcher's thread: quiet, so nothing prints into a
+# streaming reply or over the prompt.
 def refresh_skeleton_only():
     _apply_skeleton(_refresh_tree_only())
-    warm_cache()
+    warm_cache(quiet=True)
 
 def refresh_md_file(path_str: str):
     if _refresh_single_md(path_str):
         _apply_skeleton(_assemble_skeleton())
-        warm_cache()
+        warm_cache(quiet=True)
+        notify(f"{path_str} changed; system prompt rebuilt")
 
 
 _CLARIFY_PHRASES = frozenset({

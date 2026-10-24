@@ -343,3 +343,70 @@ class TestIndexFilesLight(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBackgroundNotices(unittest.TestCase):
+    """Background threads (the file watcher, the cache heartbeat) used to
+    print: live, 'Re-indexed calc.py' landed between the tool lines and the
+    reply, and a print while the prompt is up draws over what is being typed.
+    They post a notice for the toolbar instead."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.orig = os.getcwd()
+        os.chdir(self.tmpdir)
+        import claude_light.state as st
+        self._store = dict(st.chunk_store)
+        self._embedder = st.embedder
+        st.notice = None
+
+    def tearDown(self):
+        os.chdir(self.orig)
+        import claude_light.state as st
+        st.chunk_store.clear()
+        st.chunk_store.update(self._store)
+        st.embedder = self._embedder
+        st.notice = None
+
+    def test_reindex_posts_a_notice_and_prints_nothing(self):
+        print("\n  ▶ TestBackgroundNotices.test_reindex_posts_a_notice_and_prints_nothing")
+        import io
+        import numpy as np
+        import claude_light.state as st
+        from claude_light.indexer import reindex_file
+        from claude_light.ui import current_notice
+        Path("calc.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+        st.embedder = MagicMock()
+        st.embedder.encode.return_value = np.array([[0.1, 0.2, 0.3]])
+        out = io.StringIO()
+        with patch("claude_light.indexer._save_cache"), patch("sys.stdout", out):
+            reindex_file(os.path.join(".", "calc.py"))
+        self.assertEqual(out.getvalue(), "")
+        self.assertIn("calc.py", current_notice())
+
+    def test_notice_expires(self):
+        print("\n  ▶ TestBackgroundNotices.test_notice_expires")
+        from claude_light import ui
+        with patch("claude_light.ui.time.monotonic", return_value=100.0):
+            ui.notify("re-indexed a.py")
+            self.assertEqual(ui.current_notice(), "re-indexed a.py")
+        with patch("claude_light.ui.time.monotonic", return_value=100.0 + ui.NOTICE_SECS + 1):
+            self.assertEqual(ui.current_notice(), "")
+
+    def test_toolbar_shows_the_notice(self):
+        print("\n  ▶ TestBackgroundNotices.test_toolbar_shows_the_notice")
+        import claude_light.main as m
+        from claude_light import ui
+        ui.notify("re-indexed calc.py (2 chunks)")
+        self.assertIn("re-indexed calc.py", m._status_text())
+
+    def test_background_cache_warms_are_quiet(self):
+        print("\n  ▶ TestBackgroundNotices.test_background_cache_warms_are_quiet")
+        from claude_light import llm
+        with patch.object(llm, "warm_cache") as warm, \
+             patch.object(llm, "_refresh_tree_only", return_value="tree"), \
+             patch.object(llm, "_refresh_single_md", return_value=True), \
+             patch.object(llm, "_assemble_skeleton", return_value="sk"):
+            llm.refresh_skeleton_only()
+            llm.refresh_md_file("README.md")
+        self.assertEqual([c.kwargs.get("quiet") for c in warm.call_args_list], [True, True])

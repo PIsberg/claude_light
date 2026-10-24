@@ -4172,8 +4172,11 @@ class TestHeartbeatWarmsCache(unittest.TestCase):
             cl.last_interaction = time.time() - (cl.CACHE_TTL_SECS + 10)
 
             call_count = [0]
-            # Patch warm_cache to set stop_event after being called
-            def fake_warm():
+            # Patch warm_cache to set stop_event after being called. The
+            # heartbeat is a background thread: it must warm quietly, or its
+            # stats line prints over the prompt.
+            def fake_warm(quiet=False):
+                self.assertTrue(quiet)
                 call_count[0] += 1
                 cl.stop_event.set()
 

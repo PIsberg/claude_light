@@ -163,8 +163,10 @@ The `claude_light/` package is organized by responsibility:
 **Three concurrent threads:**
 
 1. **Main thread** — input loop; retrieves relevant chunks per query via `retrieve()`, injects them as a second cached system block, stores only the clean query in `conversation_history`. The first index build runs in a background thread; until it finishes, OAuth-mode queries skip retrieval (the CLI agent searches the code itself) and API-key queries wait (`_index_ready_for_query()` in `main.py`). One-shot OAuth runs build the index in a thread, wait up to `_ONE_SHOT_INDEX_WAIT_SECS` (20 s), answer without it if needed, and join the build before exit. The router never waits for the embedder while the index build holds `embedder_lock` (`_encode_if_free()`); it falls back to lexical scores
-2. **Watchdog** (`SourceHandler`) — source file change → `reindex_file()` (re-chunks + re-embeds that file, cancels any pending timer first via 1.5 s debounce); `.md` change → `refresh_md_file()`
-3. **Heartbeat daemon** — checks every 30 s; if idle > 4 min (`CACHE_TTL_SECS`), calls `warm_cache()` to keep the ephemeral cache alive
+2. **Watchdog** (`SourceHandler`) — source file change → `reindex_file()` (re-chunks + re-embeds that file, cancels any pending timer first via 1.5 s debounce); `.md` change → `refresh_md_file()`. Event paths go through `indexer._project_path()` (watchdog reports `./a.py`, the index keys `a.py`; without it a re-index duplicated the file's chunks), and files under skipped directories (`.git`, `.venv`, `node_modules`, ...) are ignored
+3. **Heartbeat daemon** — checks every 30 s; if idle > 4 min (`CACHE_TTL_SECS`), calls `warm_cache(quiet=True)` to keep the ephemeral cache alive
+
+**Background threads never print.** A print from the watcher or the heartbeat lands inside a streaming reply or over the prompt being typed. They call `ui.notify()`, and the toolbar shows the notice for `ui.NOTICE_SECS` (8 s).
 
 **Multi-language support** (`_WANTED_LANGS` in `config.py`): tree-sitter grammars extract method/function nodes from `.java`, `.py`, `.js`, `.go`, `.rs`, `.ts`, `.tsx`. Falls back to whole-file chunking if tree-sitter is unavailable or a grammar is missing. Python decorators are included in their function chunk.
 

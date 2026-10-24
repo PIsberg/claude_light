@@ -9,7 +9,7 @@ from watchdog.events import FileSystemEventHandler
 from claude_light.config import (
     CACHE_DIR, CACHE_INDEX, CACHE_MANIFEST, INDEXABLE_EXTENSIONS, _DOC_PREFIX
 )
-from claude_light.ui import _T_RAG, _T_CACHE, _T_ERR, _ANSI_GREEN, _ANSI_YELLOW, _ANSI_BOLD, _ANSI_RESET, _ANSI_CYAN
+from claude_light.ui import _T_RAG, _T_CACHE, _T_ERR, _ANSI_GREEN, _ANSI_YELLOW, _ANSI_BOLD, _ANSI_RESET, _ANSI_CYAN, notify
 import claude_light.state as state
 
 from claude_light.skeleton import _file_hash, _file_hash_parallel, _get_cached_paths, _invalidate_path_cache, _stat_tuple
@@ -252,9 +252,9 @@ def reindex_file(path):
         if stat is not None:
             state._file_stats[path] = list(stat)
         _save_cache(state.EMBED_MODEL)
-        print(f"{_T_RAG} Re-indexed {_ANSI_CYAN}{path}{_ANSI_RESET} ({len(chunks)} chunks)")
+        notify(f"re-indexed {path} ({len(chunks)} chunks)")
     except Exception as e:
-        print(f"{_T_ERR} Failed to re-index {path}: {e}")
+        notify(f"could not re-index {path}: {e}", error=True)
 
 def _chunk_label(chunk_id):
     if "::" in chunk_id:
