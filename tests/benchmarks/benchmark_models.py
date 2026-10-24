@@ -80,10 +80,11 @@ def embed(model_name, chunks, questions, cache_dir):
     return E, Q
 
 
-def evaluate(name, ids, files, questions, select):
-    """select(i) -> list of (chunk_id, score) for question i, or [] for none."""
-    k = max(2, round(state.TOP_K * BUDGET / config.TARGET_RETRIEVED_TOKENS))
-    out = {"name": name, "identifier": [0, 0], "paraphrase": [0, 0], "unrelated": [0, 0], "files_sent": []}
+def evaluate(name, ids, files, questions, select, budget=BUDGET):
+    """select(i, k) -> list of (chunk_id, score) for question i, or [] for none."""
+    k = max(2, round(state.TOP_K * budget / config.TARGET_RETRIEVED_TOKENS))
+    out = {"name": name, "identifier": [0, 0], "paraphrase": [0, 0], "unrelated": [0, 0],
+           "files_sent": [], "tokens_sent": []}
     for i, q in enumerate(questions):
         picked = select(i, k)
         sent = {file_of(c) for c, _ in picked}
@@ -94,6 +95,8 @@ def evaluate(name, ids, files, questions, select):
         else:
             bucket[0] += q["file"] in sent
             out["files_sent"].append(len(sent))
+        out["tokens_sent"].append(sum(retrieval._estimate_tokens(state.chunk_store[c]["text"])
+                                      for c, _ in picked))
     return out
 
 
@@ -107,6 +110,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--cache-dir", type=Path, default=ROOT / ".claude_light_cache" / "bench")
     ap.add_argument("--sweep", action="store_true", help="also sweep HYBRID_SCORE_GAP and the floors")
+    ap.add_argument("--budgets", action="store_true", help="also report recall and tokens per effort budget")
     args = ap.parse_args()
 
     questions = json.loads(FIXTURE.read_text(encoding="utf-8"))["questions"]
@@ -127,7 +131,7 @@ def main():
         E, Q = dense[model]
         return lambda i, k: retrieval._adaptive_select_pairs(ids, E @ Q[i], BUDGET, k)
 
-    def hybrid(model, gap=None, fast_min=None, dense_min=None):
+    def hybrid(model, gap=None, fast_min=None, dense_min=None, budget=BUDGET):
         def select(i, k):
             s_fast = Ef @ Qf[i]
             s_dense = None
@@ -137,7 +141,7 @@ def main():
             fused = retrieval.hybrid_scores(s_fast, s_dense, fast_min=fast_min,
                                             dense_min=dense_min if dense_min is not None
                                             else config.HYBRID_MIN_SCORE.get(model, config.MIN_SCORE))
-            return [] if fused is None else retrieval._hybrid_select_pairs(ids, fused, BUDGET, k, gap=gap)
+            return [] if fused is None else retrieval._hybrid_select_pairs(ids, fused, budget, k, gap=gap)
         return select
 
     print("Dense only (before #61: MIN_SCORE / RELATIVE_SCORE_FLOOR):")
@@ -147,6 +151,16 @@ def main():
     report(evaluate("static only (dense pass running)", ids, files, questions, hybrid(None)))
     for m in DENSE_MODELS:
         report(evaluate(f"static + {m}", ids, files, questions, hybrid(m)))
+
+    if args.budgets:
+        m = config.DENSE_EMBED_MODEL
+        print(f"\nPer-effort budget, static + {m} (tokens = selected chunk text, estimated):")
+        for effort, budget in config._RETRIEVAL_BUDGET.items():
+            r = evaluate(f"{effort} budget {budget}", ids, files, questions,
+                         hybrid(m, budget=budget), budget=budget)
+            report(r)
+            print(f"{'':34} tokens sent median {np.median(r['tokens_sent']):.0f}"
+                  f"  mean {np.mean(r['tokens_sent']):.0f}")
 
     if args.sweep:
         m = config.DENSE_EMBED_MODEL
