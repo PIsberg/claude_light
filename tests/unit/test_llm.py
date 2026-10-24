@@ -911,6 +911,32 @@ class TestCliCommandPermissions(unittest.TestCase):
         self.assertIn("npm test -- --watch=false", text)
         self.assertIn("--allow-command", text)
 
+    def test_system_prompt_reaches_the_cli_as_a_file_on_windows(self):
+        print("\n  ▶ TestCliCommandPermissions.test_system_prompt_reaches_the_cli_as_a_file_on_windows")
+        # Windows passed `--system-prompt "@\<path>"`. The CLI takes that
+        # literally: live, a secret in that file was invisible to the model
+        # (NONE) and visible via --system-prompt-file (PERSIMMON). So the
+        # skeleton and instructions never reached the model on Windows.
+        import os as _os
+        from claude_light import llm, config
+        if _os.name != "nt":
+            self.skipTest("the temp-file path is Windows-only")
+        seen = {}
+
+        def fake_popen(cmd, **kwargs):
+            seen["cmd"] = list(cmd)
+            if "--system-prompt-file" in cmd:
+                with open(cmd[cmd.index("--system-prompt-file") + 1], encoding="utf-8") as fh:
+                    seen["text"] = fh.read()
+            return _fake_popen(['{"type":"result","subtype":"success","result":"","usage":{}}'])
+
+        with patch.object(config, "ALLOWED_COMMANDS", []), \
+             patch("claude_light.llm.subprocess.Popen", side_effect=fake_popen), \
+             patch("sys.stdout", io.StringIO()):
+            llm._make_cli_subprocess_call("hi", extra_flags=["--system-prompt", "SECRET SKELETON"])
+        self.assertNotIn("--system-prompt", seen["cmd"])
+        self.assertEqual(seen.get("text"), "SECRET SKELETON")
+
     def test_no_bare_flag_on_posix(self):
         print("\n  ▶ TestCliCommandPermissions.test_no_bare_flag_on_posix")
         # --bare never reads OAuth credentials: live, with the OAuth token and

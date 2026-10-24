@@ -738,7 +738,8 @@ def _make_cli_subprocess_call(
 
         # Windows cmd.exe command line limit is 8,191 characters total (all args combined).
         # On Windows, ALWAYS use temp files for both prompt and system prompt.
-        # The @file syntax is supported by the Claude CLI and bypasses cmd.exe limits.
+        # The prompt is an @-mention of its file (expanded by the CLI); the
+        # system prompt goes through --system-prompt-file.
         cmd_prompt = prompt
         processed_extra_flags = list(extra_flags) if extra_flags else []
 
@@ -764,9 +765,11 @@ def _make_cli_subprocess_call(
                     with os.fdopen(fd, 'w', encoding='utf-8') as f:
                         f.write(system_prompt_text)
                     safe_sys_path = Path(temp_system_prompt_file).as_posix()
-                    # Use @file syntax for system prompt
-                    new_flags.append("--system-prompt")
-                    new_flags.append(f"@\\{safe_sys_path}")
+                    # --system-prompt-file, not `--system-prompt @path`: the
+                    # CLI takes the latter literally, so the skeleton never
+                    # reached the model (verified with claude 2.1.310).
+                    new_flags.append("--system-prompt-file")
+                    new_flags.append(safe_sys_path)
                     i += 2
                 else:
                     new_flags.append(flag)
