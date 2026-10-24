@@ -6708,6 +6708,20 @@ class TestGitManager(unittest.TestCase):
             self.assertFalse(git_manager.undo_last_commit())
         self.assertEqual(Path("file.py").read_text(encoding="utf-8"), "x = 1\nmy tweak\n")
 
+    def test_commit_subject_drops_markdown(self):
+        # Live: "Claude: I added `multiply(a, b)` to `calc.py` directly after
+        # `add`." The explanation is the model's markdown reply.
+        from claude_light.git_manager import _commit_subject
+        cases = {
+            "I added `multiply(a, b)` to **calc.py**.": "Claude: I added multiply(a, b) to calc.py.",
+            "## Summary": "Claude: Summary",
+            "- Fixed [the retry bug](https://x.y/z) in _retry_": "Claude: Fixed the retry bug in retry",
+        }
+        for explanation, subject in cases.items():
+            self.assertEqual(_commit_subject(explanation), subject)
+        # Identifiers keep their underscores.
+        self.assertEqual(_commit_subject("Rename load_cache"), "Claude: Rename load_cache")
+
     def test_commit_subject_is_not_cut_mid_word(self):
         from claude_light import git_manager
         for name in ("a.py", "b.py", "c.py", "d.py"):
