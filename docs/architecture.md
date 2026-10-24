@@ -187,7 +187,7 @@ This sequence diagram illustrates the complete flow from user query to response,
 | `/compact` or `/clear` | Reset conversation history |
 | `/cost` | Show session spend and global lifetime savings |
 | `/run <cmd>` | Run shell command and feed output to Claude |
-| `/undo` | Undo the last git commit (revert AI changes) |
+| `/undo` | Undo the last `Claude:` commit. Keeps uncommitted work; refuses if the last commit is yours or its files have local edits |
 | `/help` | Display help menu |
 | `exit` / `quit` | Quit the application |
 

@@ -192,7 +192,7 @@ The `claude_light/` package is organized by responsibility:
 
 **Interactive commands**: `/clear`, `/compact`, `/cost`, `/help`, `/run <cmd>`, `/undo`, `exit`/`quit`, `Ctrl+C`.
 
-**Auto-commit safety net**: When Claude makes file changes, the tool automatically commits them to git (`Claude: [summary]`). `/undo` reverts the last commit. Gracefully skipped if not in a git repo.
+**Auto-commit safety net**: When Claude makes file changes, the tool automatically commits them to git (`Claude: [summary]`, edited files listed in the body). `/undo` reverts that commit with `git reset --keep`, so uncommitted work elsewhere survives; it refuses if the last commit is not a `Claude:` commit or if a file in it has been edited since. Gracefully skipped if not in a git repo.
 
 For a deeper dive, see [docs/architecture.md](docs/architecture.md).
 

@@ -6609,6 +6609,68 @@ class TestGitManager(unittest.TestCase):
         # File should be gone (working directory reverted)
         self.assertFalse(Path("file.py").exists())
 
+    def test_undo_keeps_uncommitted_work_in_other_files(self):
+        from claude_light import git_manager
+        Path("file.py").write_text("x = 1\n", encoding="utf-8")
+        captured = io.StringIO()
+        with patch("sys.stdout", captured):
+            git_manager.auto_commit(["file.py"], "Add file")
+        # The user keeps working while Claude's change sits on top.
+        Path("README.md").write_text("# Test\nmy notes\n", encoding="utf-8")
+        Path("scratch.txt").write_text("untracked\n", encoding="utf-8")
+
+        with patch("sys.stdout", captured):
+            self.assertTrue(git_manager.undo_last_commit())
+
+        self.assertFalse(Path("file.py").exists())
+        self.assertEqual(Path("README.md").read_text(encoding="utf-8"), "# Test\nmy notes\n")
+        self.assertTrue(Path("scratch.txt").exists())
+
+    def test_undo_refuses_a_commit_claude_did_not_make(self):
+        from claude_light import git_manager
+        Path("mine.py").write_text("y = 2\n", encoding="utf-8")
+        subprocess.run(["git", "add", "mine.py"], capture_output=True)
+        subprocess.run(["git", "commit", "-m", "My own work"], capture_output=True)
+
+        captured = io.StringIO()
+        with patch("sys.stdout", captured):
+            self.assertFalse(git_manager.undo_last_commit())
+        self.assertIn("My own work", git_manager.get_last_commit_message())
+        self.assertTrue(Path("mine.py").exists())
+
+    def test_undo_refuses_when_claude_files_have_local_edits(self):
+        from claude_light import git_manager
+        Path("file.py").write_text("x = 1\n", encoding="utf-8")
+        captured = io.StringIO()
+        with patch("sys.stdout", captured):
+            git_manager.auto_commit(["file.py"], "Add file")
+        Path("file.py").write_text("x = 1\nmy tweak\n", encoding="utf-8")
+
+        with patch("sys.stdout", captured):
+            self.assertFalse(git_manager.undo_last_commit())
+        self.assertEqual(Path("file.py").read_text(encoding="utf-8"), "x = 1\nmy tweak\n")
+
+    def test_commit_subject_is_not_cut_mid_word(self):
+        from claude_light import git_manager
+        for name in ("a.py", "b.py", "c.py", "d.py"):
+            Path(name).write_text("x = 1\n", encoding="utf-8")
+        explanation = ("Add a /version interactive command that prints the installed "
+                       "claude_light version")
+        captured = io.StringIO()
+        with patch("sys.stdout", captured):
+            git_manager.auto_commit(["a.py", "b.py", "c.py", "d.py"], explanation)
+
+        msg = git_manager.get_last_commit_message()
+        subject, _, body = msg.partition("\n")
+        words = explanation.split()
+        shown = subject[len("Claude: "):].rstrip("…").split()
+        self.assertTrue(subject.startswith("Claude: "))
+        self.assertLessEqual(len(subject), 72)
+        self.assertEqual(shown, words[:len(shown)], f"subject cut mid-word: {subject!r}")
+        # The edited files are listed in the body, not glued onto the subject.
+        for name in ("a.py", "b.py", "c.py", "d.py"):
+            self.assertIn(name, body)
+
     def test_undo_last_commit_fails_without_commits(self):
         from claude_light import git_manager
         # Clear git repo and reinit
