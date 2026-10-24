@@ -780,9 +780,9 @@ def _make_cli_subprocess_call(
         # generates it, instead of the old blocking subprocess.run() that
         # showed nothing but "Processing…" for up to 3 minutes.
         #
-        # Permissions: acceptEdits lets the agent edit files without asking,
-        # and the CLI also runs the commands it classifies as read-only. Any
-        # other command needs an allow rule; with -p and stdin=DEVNULL an
+        # Permissions: acceptEdits lets the agent edit files without asking.
+        # With Bash enabled the CLI also runs commands it classifies as
+        # read-only; any other command needs an allow rule. With -p and stdin=DEVNULL an
         # unapproved one is denied (the model gets an error), never left
         # waiting on a prompt. config.ALLOWED_COMMANDS is the user's opt-in
         # list, e.g. the test command, so the agent can check its own edits.
@@ -795,7 +795,16 @@ def _make_cli_subprocess_call(
             "--verbose",
             "--include-partial-messages",
             "--permission-mode", "acceptEdits",
+            # Only claude_light's own settings apply. A repo's
+            # .claude/settings*.json could add allow rules or hooks (which run
+            # commands) and its .mcp.json could add servers. This also stops
+            # the CLI loading the repo's CLAUDE.md, which the skeleton prompt
+            # already carries along with every other .md file.
+            "--setting-sources", "user",
+            "--strict-mcp-config",
             "--settings", settings_path.as_posix(),
+            # The shell stays off unless the user allowlisted commands.
+            "--disallowed-tools", "PowerShell" if config.ALLOWED_COMMANDS else "PowerShell,Bash",
         ]
         if config.ALLOWED_COMMANDS:
             command += ["--allowedTools", ",".join(f"Bash({c}:*)" for c in config.ALLOWED_COMMANDS)]

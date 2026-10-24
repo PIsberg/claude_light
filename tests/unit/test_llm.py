@@ -874,12 +874,25 @@ class TestCliCommandPermissions(unittest.TestCase):
         self.assertNotIn("--dangerously-skip-permissions", cmd)
         self.assertEqual(cmd[cmd.index("--permission-mode") + 1], "acceptEdits")
         self.assertNotIn("--allowedTools", cmd)
+        # Without an allowlist the shell stays off entirely, as before.
+        self.assertEqual(cmd[cmd.index("--disallowed-tools") + 1], "PowerShell,Bash")
+
+    def test_repo_settings_and_mcp_servers_cannot_widen_permissions(self):
+        print("\n  ▶ TestCliCommandPermissions.test_repo_settings_and_mcp_servers_cannot_widen_permissions")
+        # A repo's .claude/settings*.json can add allow rules and hooks (which
+        # run commands), and its .mcp.json can add servers. Only claude_light's
+        # own isolated user scope and --settings file may apply. The repo's
+        # CLAUDE.md is not lost: the skeleton prompt already carries every .md.
+        cmd = self._cmd_for(["python -m pytest"])
+        self.assertEqual(cmd[cmd.index("--setting-sources") + 1], "user")
+        self.assertIn("--strict-mcp-config", cmd)
 
     def test_allowlisted_commands_become_bash_rules(self):
         print("\n  ▶ TestCliCommandPermissions.test_allowlisted_commands_become_bash_rules")
         cmd = self._cmd_for(["python -m pytest", "npm test"])
         allowed = cmd[cmd.index("--allowedTools") + 1]
         self.assertEqual(allowed, "Bash(python -m pytest:*),Bash(npm test:*)")
+        self.assertEqual(cmd[cmd.index("--disallowed-tools") + 1], "PowerShell")
 
     def test_denied_command_is_reported_with_how_to_allow_it(self):
         print("\n  ▶ TestCliCommandPermissions.test_denied_command_is_reported_with_how_to_allow_it")

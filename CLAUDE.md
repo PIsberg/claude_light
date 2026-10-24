@@ -231,7 +231,7 @@ For a deeper dive, see [docs/architecture.md](docs/architecture.md).
 | `LLMLINGUA_MODEL` | Default `microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank` (~280 MB). Override with `CLAUDE_LIGHT_LLMLINGUA_MODEL` |
 | `LLMLINGUA_TARGET_RATE` | Fraction of tokens to **keep** (default 0.5 = halve). Override with `CLAUDE_LIGHT_LLMLINGUA_RATE` |
 | `LLMLINGUA_MIN_TOKENS` | Skip compression below this size — overhead > savings (default 800) |
-| `ALLOWED_COMMANDS` | Shell command prefixes the OAuth CLI agent may run (each becomes `Bash(<prefix>:*)`). From `--allow-command` or `CLAUDE_LIGHT_ALLOW_COMMANDS` (`;`-separated). The CLI runs with `--permission-mode acceptEdits`: edits and read-only commands are allowed, anything else is denied and listed after the turn |
+| `ALLOWED_COMMANDS` | Shell command prefixes the OAuth CLI agent may run (each becomes `Bash(<prefix>:*)`). From `--allow-command` or `CLAUDE_LIGHT_ALLOW_COMMANDS` (`;`-separated). The CLI runs with `--permission-mode acceptEdits`, `--setting-sources user` and `--strict-mcp-config`, so the target repo's `.claude/settings*.json` (allow rules, hooks) and `.mcp.json` never apply. Bash is disallowed unless the list is non-empty; PowerShell always. Refused commands are listed after the turn |
 | `LLMLINGUA_FORCE_TOKENS` | Tokens preserved verbatim (default `["\n", "```", "::", "//"]` so chunk structure survives) |
 
 ## SBOM
