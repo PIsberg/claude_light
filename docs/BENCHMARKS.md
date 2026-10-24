@@ -33,7 +33,8 @@ comparison, and this document now reflects that.
 |---|---|---|---|
 | `benchmark.py` | Analytical token savings formula | No | Free |
 | `benchmark_retrieval.py` | RAG retrieval quality (Hit@K, MRR) | No | Free* |
-| `benchmark_models.py` | Embedding models and hybrid fusion on this repo | No | Free (models download on first run) |
+| `benchmark_models.py` | Embedding models, hybrid fusion, and per-effort budgets on this repo | No | Free (models download on first run) |
+| `benchmark_router.py` | Effort tier and model the router picks for each question | No | Free (static model download on first run) |
 | `benchmark_cost.py` | Real-world cost savings vs naive baseline | Yes | ~$0.05–$0.50 |
 | `benchmark_claude_code.py` | Claude Code vs `claude_light` vs naive baseline | Yes | Varies with live API/tool runs |
 
@@ -291,6 +292,9 @@ that answers the question reach the context the model is given?
 ```bash
 python tests/benchmarks/benchmark_models.py          # all configurations
 python tests/benchmarks/benchmark_models.py --sweep  # also sweep the gap and floors
+python tests/benchmarks/benchmark_models.py --budgets  # recall and tokens sent per effort budget
+python tests/benchmarks/benchmark_router.py            # effort and model per question
+python tests/benchmarks/benchmark_router.py --margin 0.30  # replay with another escalation margin
 ```
 
 ### Results (2026-10-24, CPU)
@@ -309,6 +313,93 @@ the defaults: floors of 0.22 (static) and 0.21 (mpnet) are the lowest that keep
 all six off-topic questions empty, and a gap of 1.5 sends a median of 3 files
 (3.0 finds two more answers but sends 6). 35 questions on one repository:
 differences of one or two questions are noise.
+
+### Per-effort budget (2026-10-24, `--budgets`)
+
+The configured hybrid (static + mpnet), with each effort's `_RETRIEVAL_BUDGET`.
+Tokens are the estimated size of the selected chunk text, not the rendered
+context, which adds file summaries on top.
+
+| Effort (budget) | Identifier | Paraphrase | Off-topic got nothing | Tokens sent, median | Tokens sent, mean |
+|---|---|---|---|---|---|
+| low (1,500) | 13/23 | 8/12 | 6/6 | 1,141 | 971 |
+| medium (3,000) | 14/23 | 9/12 | 6/6 | 1,901 | 1,689 |
+| high (6,000) | 16/23 | 9/12 | 6/6 | 1,997 | 2,732 |
+| max (9,000) | 16/23 | 9/12 | 6/6 | 1,997 | 3,443 |
+
+Lowering a budget costs recall: low gives up one identifier and one paraphrase
+answer against medium. Above high, the budget adds tokens without adding
+answers on these questions, but none of the 41 questions routes to max, so
+this result says nothing about the max tier's own questions.
+
+### Router replay (2026-10-24, `benchmark_router.py`)
+
+| Queries | Low | Medium | High | Max | Scores in the escalation band |
+|---|---|---|---|---|---|
+| 41 (repo questions) | 32 (78%) | 2 | 7 | 0 | 0 at margin 0.15, 0.30 and 0.50 |
+
+The Opus cost gate only changes a query's tier when its score is between 12.0
+and 12.0 × (1 + margin). No query falls there, so the escalation margin has no
+effect on this set. The replay measures routing only; it does not score answers.
+
+### Test-file exclusion (2026-10-24, `--test-policy`, shipped)
+
+The index includes the test suite, and the test and benchmark files reuse a
+question's words (model, effort, budget). For a question about the package,
+chunks under a test directory were crowding out the answer. Shipped rule: for a
+question that does not mention tests, chunks under `tests/` (or any directory
+named `test`, `__tests__`, `spec` or `specs`) get no fused score, so the
+selector never picks them. A question that mentions tests keeps them all.
+
+The fixture has 43 questions now (two were added on this date, both about
+tests, and both answered in `tests/unit/`). The keep and exclude rows come from
+the same run on the same 1,484 chunks:
+
+| Effort (budget) | Policy | Identifier | Paraphrase | Off-topic got nothing | Tokens median / mean |
+|---|---|---|---|---|---|
+| low (1,500) | keep | 13/25 | 8/12 | 6/6 | 1,132 / 968 |
+| low (1,500) | exclude | 15/25 | 10/12 | 6/6 | 984 / 907 |
+| medium (3,000) | keep | 15/25 | 8/12 | 6/6 | 1,901 / 1,693 |
+| medium (3,000) | exclude | 20/25 | 11/12 | 6/6 | 1,570 / 1,642 |
+| high (6,000) | keep | 17/25 | 8/12 | 6/6 | 1,997 / 2,762 |
+| high (6,000) | exclude | 21/25 | 11/12 | 6/6 | 1,570 / 2,429 |
+| max (9,000) | keep | 17/25 | 9/12 | 6/6 | 1,997 / 3,469 |
+| max (9,000) | exclude | 22/25 | 11/12 | 6/6 | 1,570 / 3,054 |
+
+Recall rose at every budget, off-topic stayed at 6/6, and tokens fell or held.
+Questions that mention tests are unchanged by the carve-out.
+
+Two alternatives were measured on the 41-question set and not kept. A penalty
+of 1.0 fused z-score units left median tokens at medium above keep (2,042 against
+1,997). A penalty of 2.0 matched exclude on recall but needed a tuned constant,
+so the rule with no constant was kept. The benchmark flags are `--test-policy`
+(`keep`, `exclude` or `penalty`) and `--test-penalty`.
+
+Limits: the rule was measured on this repository only. The directory names
+come from common conventions, not from a survey of other projects.
+
+### Embedding text experiment (2026-10-24, not shipped)
+
+A miss on `route_query` showed the cause. Each chunk's embedded text starts with
+the whole module preamble (imports, docstring), and all-mpnet-base-v2 reads only
+its first ~384 tokens. For `llm.py::route_query` that window is almost all
+imports, so the dense model never sees the function. Chunks from one file then
+embed alike: four `benchmark_models.py` chunks scored exactly 0.299.
+
+The experiment embedded `// <path>` plus the symbol alone, leaving the text sent
+to Claude unchanged. Against the configured hybrid, using the same question set:
+
+| Configuration | Identifier | Paraphrase | Off-topic got nothing | Median tokens, medium |
+|---|---|---|---|---|
+| Preamble in embedded text (shipped) | 14/23 | 9/12 | 6/6 | 1,901 |
+| Symbol alone | 17/23 | 10/12 | **2/6** | 2,571 |
+
+The dense model alone gained: all-mpnet-base-v2 went from 8/23 to 13/23 on the
+identifier questions, with off-topic at 6/6. The fused result did not hold.
+The `--sweep` of gap and floors could not restore 6/6 off-topic without losing
+the gain, so the change was reverted. Re-tuning on these 41 questions would
+have been fitting the answer key. The patch is kept out of the repo; the
+mechanism is described here so the next attempt starts from the cause.
 
 ---
 

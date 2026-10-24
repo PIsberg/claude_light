@@ -15,8 +15,10 @@ permissions: read-all
 jobs:
   sbom:
     runs-on: ubuntu-latest
+    # Write is needed by the release-upload step below; the top-level
+    # read-all does not apply once a job sets its own permissions.
     permissions:
-      contents: read
+      contents: write
       actions: write
     steps:
     - name: Harden the runner

@@ -45,6 +45,10 @@ jobs:
         # Run remaining unit tests
         python -m pytest tests/unit/ --ignore=tests/unit/test_editor.py --ignore=tests/unit/test_config.py -q --timeout=120 -x
 
+    - name: Run integration and utilities tests
+      run: |
+        python -m pytest tests/integration/ tests/utilities/ -q --timeout=120 -x
+
     - name: Run analytical benchmark
       run: |
         python tests/benchmarks/benchmark.py --json > tests/baseline_token_stats_new.json
