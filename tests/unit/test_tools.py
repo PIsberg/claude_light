@@ -92,6 +92,21 @@ class TestWorkspaceTools(unittest.TestCase):
         out, is_error = self.run_tool("grep", {"pattern": "def ("})
         self.assertTrue(is_error)
 
+    def test_symlinks_pointing_outside_the_project_are_not_followed(self):
+        print("\n  ▶ TestWorkspaceTools.test_symlinks_pointing_outside_the_project_are_not_followed")
+        link = self.root / "pkg" / "innocent.txt"
+        try:
+            os.symlink(self.outside, link)
+        except (OSError, NotImplementedError) as e:
+            self.skipTest(f"cannot create symlinks here: {e}")
+        grep_out, _ = self.run_tool("grep", {"pattern": "secret"})
+        self.assertNotIn("secret", grep_out)
+        list_out, _ = self.run_tool("list_files", {"path": "pkg"})
+        self.assertNotIn("innocent.txt", list_out)
+        read_out, is_error = self.run_tool("read_file", {"path": "pkg/innocent.txt"})
+        self.assertTrue(is_error)
+        self.assertNotIn("secret", read_out)
+
     def test_list_files(self):
         print("\n  ▶ TestWorkspaceTools.test_list_files")
         out, is_error = self.run_tool("list_files", {"path": "pkg"})

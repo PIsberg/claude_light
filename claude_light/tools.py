@@ -141,12 +141,22 @@ def _skipped(rel_parts):
 
 
 def _walk_files(root, base):
+    # os.walk does not descend into symlinked directories, but it does list
+    # symlinked files; one pointing outside the project (say at ~/.ssh) must
+    # not be readable through grep or visible through list_files.
     for dirpath, dirnames, filenames in os.walk(base):
         rel_dir = Path(dirpath).relative_to(root).parts
         dirnames[:] = sorted(d for d in dirnames if not _skipped(rel_dir + (d,)))
         for fn in sorted(filenames):
-            if not _skipped(rel_dir + (fn,)):
-                yield Path(dirpath) / fn
+            if _skipped(rel_dir + (fn,)):
+                continue
+            path = Path(dirpath) / fn
+            try:
+                real = path.resolve()
+            except OSError:
+                continue
+            if root in real.parents:
+                yield path
 
 
 def _cap(text):
