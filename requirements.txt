@@ -13,4 +13,4 @@ tree-sitter-rust>=0.24.2
 tree-sitter-javascript>=0.25.0
 tree-sitter-typescript>=0.23.2
 llmlingua>=0.2.2
-hypothesis>=6.152.1
+hypothesis>=6.168.5
