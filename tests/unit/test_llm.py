@@ -361,6 +361,27 @@ class TestSummarizeTurns(unittest.TestCase):
             summary, _ = _summarize_turns(messages)
         self.assertEqual(summary, "Summary")
 
+    def test_oauth_mode_summarizes_through_the_cli(self):
+        print("\n  ▶ TestSummarizeTurns.test_oauth_mode_summarizes_through_the_cli")
+        # Live, OAuth mode called the API with a placeholder key: 401 on
+        # every turn after the sixth, and old turns dropped unsummarised.
+        from claude_light import llm
+        usage = MagicMock(input_tokens=5, output_tokens=3)
+        create = MagicMock()
+        with patch.object(llm, "AUTH_MODE", "OAUTH"), \
+             patch.object(llm, "_make_cli_subprocess_call",
+                          return_value=("CLI summary", usage, None)) as cli, \
+             patch("claude_light.llm.client.messages.create", create):
+            summary, got_usage = _summarize_turns(
+                [{"role": "user", "content": "Q?"}, {"role": "assistant", "content": "A."}])
+        self.assertEqual(summary, "CLI summary")
+        self.assertIs(got_usage, usage)
+        create.assert_not_called()
+        kwargs = cli.call_args.kwargs
+        self.assertEqual(kwargs["model"], llm.SUMMARY_MODEL)
+        self.assertFalse(kwargs["render"])  # a summary is not shown as a reply
+        self.assertIn("Q?", cli.call_args.args[0])
+
     def test_empty_messages_no_crash(self):
         print("\n  ▶ TestSummarizeTurns.test_empty_messages_no_crash")
         mock_response = MagicMock()
@@ -369,6 +390,40 @@ class TestSummarizeTurns(unittest.TestCase):
         with patch("claude_light.llm.client.messages.create", return_value=mock_response):
             summary, _ = _summarize_turns([])
         self.assertEqual(summary, "Empty summary")
+
+
+class TestCompactHistory(unittest.TestCase):
+    """/compact summarises the conversation instead of discarding it."""
+
+    def setUp(self):
+        self._hist = list(_state.conversation_history)
+
+    def tearDown(self):
+        _state.conversation_history[:] = self._hist
+
+    def test_turns_are_replaced_by_one_summary_pair(self):
+        print("\n  ▶ TestCompactHistory.test_turns_are_replaced_by_one_summary_pair")
+        from claude_light.llm import compact_history
+        _state.conversation_history[:] = [
+            {"role": "user", "content": "q1"}, {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "q2"}, {"role": "assistant", "content": "a2"},
+        ]
+        usage = MagicMock(input_tokens=10, output_tokens=5,
+                          cache_creation_input_tokens=0, cache_read_input_tokens=0)
+        with patch("claude_light.llm._summarize_turns", return_value=("the gist", usage)) as summ:
+            n = compact_history()
+        self.assertEqual(n, 2)
+        self.assertEqual(len(summ.call_args.args[0]), 4)
+        self.assertEqual(len(_state.conversation_history), 2)
+        self.assertIn("the gist", _state.conversation_history[0]["content"])
+
+    def test_empty_history_makes_no_call(self):
+        print("\n  ▶ TestCompactHistory.test_empty_history_makes_no_call")
+        from claude_light.llm import compact_history
+        _state.conversation_history[:] = []
+        with patch("claude_light.llm._summarize_turns") as summ:
+            self.assertEqual(compact_history(), 0)
+        summ.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -486,6 +541,24 @@ class TestChat(unittest.TestCase):
         finally:
             _state.conversation_history[:] = orig_hist
 
+    def test_turn_label_counts_turns_not_stored_messages(self):
+        print("\n  ▶ TestChat.test_turn_label_counts_turns_not_stored_messages")
+        # History compression shrinks the stored history, so the label
+        # derived from it went back to "Turn 4" after the seventh turn.
+        import claude_light as cl
+        orig_hist, orig_turns = list(_state.conversation_history), _state.turn_count
+        try:
+            _state.turn_count = 7
+            with self._mock_api("ok"), self._mock_retrieve(), self._mock_compress(), \
+                 patch("claude_light.llm._print_reply"), \
+                 patch("claude_light.llm.print_stats") as stats:
+                cl.chat("next question")
+            self.assertEqual(_state.turn_count, 8)
+            self.assertEqual(stats.call_args.kwargs["label"], "Turn 8")
+        finally:
+            _state.conversation_history[:] = orig_hist
+            _state.turn_count = orig_turns
+
     def test_chat_keyboard_interrupt(self):
         print("\n  ▶ TestChat.test_chat_keyboard_interrupt")
         import claude_light as cl
@@ -580,12 +653,15 @@ class TestCliSubprocessStreaming(unittest.TestCase):
         # likely not installed and _make_cli_subprocess_call raises before
         # Popen is ever reached. On Windows the function bypasses which()
         # altogether (uses shell=True), so the patch is a no-op there.
-        captured = io.StringIO()
+        # The buffers are not terminals, so the reply goes to stdout and the
+        # tool lines to stderr; the returned output is both, as a user sees.
+        captured, captured_err = io.StringIO(), io.StringIO()
         with patch("claude_light.llm.subprocess.Popen", return_value=mock_proc), \
              patch("shutil.which", return_value="/fake/bin/claude"), \
-             patch("sys.stdout", captured):
+             patch("sys.stdout", captured), patch("sys.stderr", captured_err):
             result = llm._make_cli_subprocess_call("hello")
-        return result, captured.getvalue(), mock_proc
+        self.last_stdout = captured.getvalue()
+        return result, captured.getvalue() + captured_err.getvalue(), mock_proc
 
     def test_streams_content_block_delta_text(self):
         print("\n  ▶ TestCliSubprocessStreaming.test_streams_content_block_delta_text")
@@ -868,6 +944,36 @@ class TestCliCommandPermissions(unittest.TestCase):
             llm._make_cli_subprocess_call("hi")
         return popen_mock.call_args.args[0]
 
+    def test_tool_free_call_cannot_edit_or_run_commands(self):
+        print("\n  ▶ TestCliCommandPermissions.test_tool_free_call_cannot_edit_or_run_commands")
+        # The history summary runs hidden (render=False) over conversation
+        # text that may quote repo content. Even with an allowlist set, it
+        # must get no tools, no auto-accepted edits and no allowed commands,
+        # whether or not the CLI honours --tools "" (2.1.118 did not).
+        from claude_light import llm, config
+        mock_proc = _fake_popen(['{"type":"result","subtype":"success","result":"","usage":{}}'])
+        with patch.object(config, "ALLOWED_COMMANDS", ["python -m pytest"]), \
+             patch("claude_light.llm.subprocess.Popen", return_value=mock_proc) as popen_mock, \
+             patch("shutil.which", return_value="/fake/bin/claude"), \
+             patch("sys.stdout", io.StringIO()):
+            llm._make_cli_subprocess_call("hi", render=False, tools=False)
+        cmd = popen_mock.call_args.args[0]
+        self.assertEqual(cmd[cmd.index("--tools") + 1], "")
+        self.assertNotIn("--allowedTools", cmd)
+        self.assertNotEqual(cmd[cmd.index("--permission-mode") + 1], "acceptEdits")
+        denied = cmd[cmd.index("--disallowed-tools") + 1].split(",")
+        for tool in ("Bash", "PowerShell", "Edit", "Write", "NotebookEdit", "WebFetch"):
+            self.assertIn(tool, denied)
+
+    def test_summary_call_is_tool_free(self):
+        print("\n  ▶ TestCliCommandPermissions.test_summary_call_is_tool_free")
+        from claude_light import llm
+        usage = MagicMock()
+        with patch.object(llm, "AUTH_MODE", "OAUTH"), \
+             patch.object(llm, "_make_cli_subprocess_call", return_value=("s", usage, None)) as cli:
+            llm._summarize_turns([{"role": "user", "content": "q"}])
+        self.assertIs(cli.call_args.kwargs["tools"], False)
+
     def test_permissions_are_not_skipped(self):
         print("\n  ▶ TestCliCommandPermissions.test_permissions_are_not_skipped")
         cmd = self._cmd_for([])
@@ -1044,6 +1150,19 @@ class TestCliAgentActivity(unittest.TestCase):
         ev = _tool_use_event("t1", "Edit", {"file_path": "a.py"})
         (_, _, _), output, _ = self._call_with_events([ev, ev, self._result])
         self.assertEqual(output.count("Edit"), 1)
+
+    def test_piped_stdout_holds_only_the_reply(self):
+        print("\n  ▶ TestCliAgentActivity.test_piped_stdout_holds_only_the_reply")
+        # Live, `claude_light "q" > out.md` wrote spinner frames (\r, ANSI)
+        # and tool lines into the file ahead of the answer.
+        events = (
+            _text_block_events("Let me look.")
+            + [_tool_use_event("t1", "Read", {"file_path": "a.py"})]
+            + _text_block_events("It is 3.")
+            + [self._result]
+        )
+        self._call_with_events(events)
+        self.assertEqual(self.last_stdout, "Let me look.\n\nIt is 3.\n")
 
 
 class TestChatWithoutIndex(unittest.TestCase):
@@ -1505,54 +1624,63 @@ class TestAgentEditDetection(unittest.TestCase):
         mock_commit.assert_not_called()
         self.assertIn("not committed", captured.getvalue().lower())
 
+    def test_agent_diff_is_shown_without_git_headers(self):
+        print("\n  ▶ TestAgentEditDetection.test_agent_diff_is_shown_without_git_headers")
+        # Live, the raw `git diff` output ("diff --git", "index c064e26..")
+        # was printed before the y/n prompt.
+        from claude_light import llm
+        diff = ("diff --git a/calc.py b/calc.py\nindex c064e26..da22ab7 100644\n"
+                "--- a/calc.py\n+++ b/calc.py\n@@ -3,4 +3,6 @@\n def divide(a, b):\n"
+                "+    if b == 0:\n+        raise ValueError('zero')\n     return a / b\n")
+        out = io.StringIO()
+        with patch("sys.stdout", out), \
+             patch("claude_light.llm.subprocess.run", return_value=MagicMock(stdout=diff)), \
+             patch("claude_light.git_manager.auto_commit"):
+            llm._commit_agent_edits({"calc.py"}, "x", auto_apply=True)
+        text = out.getvalue()
+        self.assertIn("raise ValueError", text)
+        self.assertNotIn("diff --git", text)
+        self.assertNotIn("index c064e26", text)
 
-class TestHeartbeat(unittest.TestCase):
-    """Verify the _Heartbeat context manager's lifecycle and rendering."""
-
-    def test_emits_elapsed_seconds_counter(self):
-        print("\n  ▶ TestHeartbeat.test_emits_elapsed_seconds_counter")
-        from claude_light.llm import _Heartbeat
-        captured = io.StringIO()
-        with patch("sys.stdout", captured):
-            with _Heartbeat("Working", interval=0.05):
-                import time as _time
-                # Let ~3 ticks fire. interval=0.05 so this is fast.
-                _time.sleep(0.22)
-        output = captured.getvalue()
-        # The initial frame has "Working…" without a counter; later frames
-        # add "(Ns)". We should see at least one timestamped frame.
-        self.assertIn("Working…", output)
-        self.assertRegex(output, r"Working… \(\d+s\)")
-
-    def test_stop_clears_line_and_is_idempotent(self):
-        print("\n  ▶ TestHeartbeat.test_stop_clears_line_and_is_idempotent")
-        from claude_light.llm import _Heartbeat
-        hb = _Heartbeat("X", interval=0.05)
-        captured = io.StringIO()
-        with patch("sys.stdout", captured):
-            hb.__enter__()
-            hb.stop()
-            hb.stop()  # must not raise or re-print
-            hb.__exit__(None, None, None)  # also idempotent
-        output = captured.getvalue()
-        # Last output chunk should contain the \r\033[K clear sequence.
-        self.assertIn("\r\x1b[K", output)
-
-    def test_no_thread_leak_after_exit(self):
-        print("\n  ▶ TestHeartbeat.test_no_thread_leak_after_exit")
-        import threading as _threading
-        from claude_light.llm import _Heartbeat
-        before = {t.name for t in _threading.enumerate()}
-        captured = io.StringIO()
-        with patch("sys.stdout", captured):
-            with _Heartbeat("Z", interval=0.05):
-                import time as _time
-                _time.sleep(0.1)
-        import time as _time
-        _time.sleep(0.1)  # let join finish
-        after = {t.name for t in _threading.enumerate()}
-        self.assertEqual(before, after, msg=f"Leaked: {after - before}")
+    def test_new_file_from_the_agent_shows_its_content(self):
+        print("\n  ▶ TestAgentEditDetection.test_new_file_from_the_agent_shows_its_content")
+        # git diff prints nothing for an untracked file, so a file the agent
+        # created was committed after an empty preview.
+        import tempfile
+        from claude_light import llm
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "new_mod.py")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("def brand_new():\n    return 1\n")
+        out = io.StringIO()
+        with patch("sys.stdout", out), \
+             patch("claude_light.llm.subprocess.run", return_value=MagicMock(stdout="")), \
+             patch("claude_light.git_manager.auto_commit"):
+            llm._commit_agent_edits({path}, "x", auto_apply=True)
+        self.assertIn("brand_new", out.getvalue())
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestStartupImports(unittest.TestCase):
+    """Importing the anthropic SDK took 1.3 s warm and 4.9 s cold, before the
+    prompt appeared. OAuth turns go through the Claude CLI and never use it."""
+
+    def test_oauth_startup_does_not_import_the_sdk(self):
+        print("\n  ▶ TestStartupImports.test_oauth_startup_does_not_import_the_sdk")
+        import subprocess
+        import tempfile
+        home = Path(tempfile.mkdtemp(prefix="claude_light_home_"))
+        (home / ".claude_light_automation_token").write_text("sk-ant-oat01-fake", encoding="utf-8")
+        env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+        env.update(HOME=str(home), USERPROFILE=str(home),
+                   PYTHONPATH=str(Path(__file__).resolve().parents[2]))
+        out = subprocess.run(
+            [sys.executable, "-c",
+             "import sys, claude_light.main, claude_light.config as c;"
+             "print(c.AUTH_MODE, 'anthropic' in sys.modules)"],
+            env=env, cwd=str(home), capture_output=True, text=True, timeout=120,
+        )
+        self.assertEqual(out.stdout.strip(), "OAUTH False", out.stderr[-2000:])

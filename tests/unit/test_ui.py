@@ -153,6 +153,151 @@ class TestPrintSessionSummary(unittest.TestCase):
         self.assertIn("Turns:", out)
 
 
+class TestSessionFooter(unittest.TestCase):
+    """Exit used to print two boxed tables every time; now one line, with
+    the tables on /cost."""
+
+    def setUp(self):
+        import claude_light.state as st
+        self._tokens = dict(st.session_tokens)
+        self._costs = dict(st.session_costs)
+        self._turns = st.turn_count
+
+    def tearDown(self):
+        import claude_light.state as st
+        st.session_tokens.update(self._tokens)
+        st.session_costs.update(self._costs)
+        st.turn_count = self._turns
+
+    def _footer(self, without_cache, actual):
+        import claude_light.state as st
+        from claude_light.ui import print_session_footer
+        st.session_tokens.update({"input": 10, "cache_write": 600, "cache_read": 400, "output": 50})
+        st.session_costs.update({"input": 0.0, "cache_write": actual, "cache_read": 0.0,
+                                 "output": 0.0, "without_cache": without_cache})
+        st.turn_count = 7
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            print_session_footer()
+        return out.getvalue()
+
+    def test_footer_is_one_line_with_turns_tokens_and_cost(self):
+        print("\n  ▶ TestSessionFooter.test_footer_is_one_line_with_turns_tokens_and_cost")
+        out = self._footer(without_cache=0.02, actual=0.01)
+        self.assertEqual(len([l for l in out.splitlines() if l.strip()]), 1)
+        self.assertIn("7 turns", out)
+        self.assertIn("1,060", out)
+        self.assertIn("0.0100", out)
+        self.assertIn("saved 50.0%", out)
+
+    def test_a_loss_is_not_called_saved(self):
+        print("\n  ▶ TestSessionFooter.test_a_loss_is_not_called_saved")
+        # Live, /cost printed "Saved: -5.9%" in green after a cache-write turn.
+        out = self._footer(without_cache=0.01, actual=0.0106)
+        self.assertNotIn("saved", out)
+        self.assertIn("overhead 6.0%", out)
+
+    def test_nothing_to_report_prints_nothing(self):
+        print("\n  ▶ TestSessionFooter.test_nothing_to_report_prints_nothing")
+        import claude_light.state as st
+        from claude_light.ui import print_session_footer
+        for k in st.session_tokens:
+            st.session_tokens[k] = 0
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            print_session_footer()
+        self.assertEqual(out.getvalue(), "")
+
+    def test_summary_reports_turns_from_the_counter_not_the_history(self):
+        print("\n  ▶ TestSessionFooter.test_summary_reports_turns_from_the_counter_not_the_history")
+        # History compression shrinks the stored history; 7 turns are still 7.
+        import claude_light.state as st
+        st.turn_count = 7
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            print_session_summary()
+        self.assertRegex(out.getvalue(), r"Turns: \S*7")
+
+    def test_summary_shows_a_loss_as_overhead(self):
+        print("\n  ▶ TestSessionFooter.test_summary_shows_a_loss_as_overhead")
+        import claude_light.state as st
+        st.session_tokens.update({"input": 10, "cache_write": 600, "cache_read": 0, "output": 50})
+        st.session_costs.update({"input": 0.0, "cache_write": 0.0106, "cache_read": 0.0,
+                                 "output": 0.0, "without_cache": 0.01})
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            print_session_summary()
+        self.assertNotIn("Saved: \x1b[32m-", out.getvalue())
+        self.assertIn("Overhead", out.getvalue())
+
+
+class TestDiffDisplay(unittest.TestCase):
+
+    def _lines(self, fn):
+        import re
+        import claude_light.ui as ui
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            fn(ui)
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", out.getvalue())
+        return [l.strip(" │|") for l in plain.splitlines()]
+
+    def test_edit_diff_is_not_double_spaced(self):
+        print("\n  ▶ TestDiffDisplay.test_edit_diff_is_not_double_spaced")
+        # The lines kept their newline and were joined with another one, so
+        # every diff line was followed by a blank line.
+        for rich_available in (True, False):
+            with patch("claude_light.ui._RICH_AVAILABLE", rich_available):
+                lines = self._lines(lambda ui: ui.show_diff("x.py", "a\nB\nc\n", old_content="a\nb\nc\n"))
+            i = next(i for i, l in enumerate(lines) if l.strip() == "-b")
+            self.assertEqual(lines[i + 1].strip(), "+B", (rich_available, lines))
+
+    def test_long_diff_is_capped_with_a_count(self):
+        print("\n  ▶ TestDiffDisplay.test_long_diff_is_capped_with_a_count")
+        diff = "@@ -1,200 +1,200 @@\n" + "\n".join(f"+line{i}" for i in range(200))
+        text = "\n".join(self._lines(lambda ui: ui.show_unified_diff("big.py", diff, max_lines=50)))
+        self.assertIn("+line48", text)
+        self.assertNotIn("+line60", text)
+        self.assertIn("151 more lines", text)
+
+
+class TestAccessLabel(unittest.TestCase):
+    """The welcome box shows where access comes from through a fixed table,
+    never the resolver's own string: it is returned in the same tuple as the
+    key, and CodeQL flagged printing it as clear-text logging (alerts #22,
+    #24, #28, #34, #35)."""
+
+    def test_known_sources_get_readable_labels(self):
+        print("\n  ▶ TestAccessLabel.test_known_sources_get_readable_labels")
+        from claude_light.ui import access_label
+        self.assertEqual(access_label("Claude CLI (Pro Subscription)"), "Claude subscription")
+        self.assertEqual(access_label("Environment"), "API key from ANTHROPIC_API_KEY")
+        self.assertEqual(access_label("Dotfile (.env)"), "API key from .env")
+
+    def test_anything_else_is_not_echoed(self):
+        print("\n  ▶ TestAccessLabel.test_anything_else_is_not_echoed")
+        from claude_light.ui import access_label
+        self.assertEqual(access_label("sk-ant-api03-secret"), "")
+
+
+class TestStartupHeader(unittest.TestCase):
+
+    def test_header_names_the_model_access_and_help(self):
+        print("\n  ▶ TestStartupHeader.test_header_names_the_model_access_and_help")
+        # The model line and help hint used to appear only after the first
+        # query; they belong on the welcome screen.
+        import claude_light.ui as ui
+        for rich_available in (True, False):
+            out = io.StringIO()
+            with patch.object(ui, "_RICH_AVAILABLE", rich_available), patch("sys.stdout", out):
+                ui.print_startup_header("claude-sonnet-5-5", "Claude subscription")
+            text = out.getvalue()
+            self.assertIn("claude light", text)
+            self.assertIn("sonnet-5-5", text)
+            self.assertIn("Claude subscription", text)
+            self.assertIn("/help", text)
+
+
 class TestPrintReply(unittest.TestCase):
 
     def test_plain_text_fallback(self):
@@ -298,19 +443,161 @@ class TestPerModelPricing(unittest.TestCase):
 
 
 
-class TestBanner(unittest.TestCase):
+def _live_console(width=60, height=24):
+    """A rich Console that behaves like a colour terminal but writes to a buffer."""
+    from rich.console import Console
+    buf = io.StringIO()
+    return Console(file=buf, force_terminal=True, color_system=None,
+                   width=width, height=height, legacy_windows=False), buf
 
-    def test_banner_before_the_index_exists_says_so(self):
-        print("\n  ▶ TestBanner.test_banner_before_the_index_exists_says_so")
-        # Live, the first query of a cold session printed "RAG top-None".
-        import claude_light.ui as ui
-        out = io.StringIO()
-        with patch.object(ui, "_RICH_AVAILABLE", False), patch("sys.stdout", out):
-            ui.print_banner("claude-sonnet-5-5", None, "Claude CLI")
-        self.assertNotIn("None", out.getvalue())
-        self.assertIn("indexing", out.getvalue())
-        # Ctrl+C cancels the current turn; it no longer exits.
-        self.assertNotIn("Ctrl+C to exit", out.getvalue())
+
+class TestStreamedMarkdownSplit(unittest.TestCase):
+    """A streamed reply is printed block by block: a block is final once a
+    blank line follows it outside a code fence."""
+
+    def test_paragraph_is_committed_once_a_blank_line_follows(self):
+        print("\n  ▶ TestStreamedMarkdownSplit.test_paragraph_is_committed_once_a_blank_line_follows")
+        from claude_light.ui import _split_committable
+        done, rest = _split_committable("First paragraph.\n\nSecond is still arr")
+        self.assertEqual(done, "First paragraph.\n\n")
+        self.assertEqual(rest, "Second is still arr")
+
+    def test_nothing_is_committed_inside_an_open_code_fence(self):
+        print("\n  ▶ TestStreamedMarkdownSplit.test_nothing_is_committed_inside_an_open_code_fence")
+        from claude_light.ui import _split_committable
+        text = "```python\nx = 1\n\ny = 2\n"
+        self.assertEqual(_split_committable(text), ("", text))
+
+    def test_a_closed_fence_is_committed(self):
+        print("\n  ▶ TestStreamedMarkdownSplit.test_a_closed_fence_is_committed")
+        from claude_light.ui import _split_committable
+        done, rest = _split_committable("```\na\n\nb\n```\nAfter")
+        self.assertEqual(done, "```\na\n\nb\n```\n")
+        self.assertEqual(rest, "After")
+
+    def test_table_rows_stay_together(self):
+        print("\n  ▶ TestStreamedMarkdownSplit.test_table_rows_stay_together")
+        from claude_light.ui import _split_committable
+        text = "| a | b |\n|---|---|\n| 1 | 2 |\n"
+        self.assertEqual(_split_committable(text), ("", text))
+
+
+class TestResponseViewTerminal(unittest.TestCase):
+    """In a terminal the reply renders as markdown. Live, the CLI path printed
+    the raw text: tables showed as pipes and **bold** as asterisks."""
+
+    def _render(self, chunks, tools_after=None):
+        from claude_light.ui import ResponseView
+        con, buf = _live_console()
+        with ResponseView(console=con, animate=False) as view:
+            for i, chunk in enumerate(chunks):
+                view.text(chunk)
+                if tools_after and i in tools_after:
+                    view.tool(tools_after[i])
+        return buf.getvalue()  # animate=False: no redrawn frames to strip
+
+    def test_markdown_is_rendered_not_echoed(self):
+        print("\n  ▶ TestResponseViewTerminal.test_markdown_is_rendered_not_echoed")
+        out = self._render(["Some **bold** and `code`.\n\n",
+                            "| Module | Lines |\n|---|---|\n| llm.py | 1617 |\n"])
+        self.assertIn("bold", out)
+        self.assertNotIn("**bold**", out)
+        self.assertNotIn("|---|", out)
+        self.assertIn("llm.py", out)
+
+    def test_reply_is_complete_when_streamed_in_tiny_pieces(self):
+        print("\n  ▶ TestResponseViewTerminal.test_reply_is_complete_when_streamed_in_tiny_pieces")
+        text = "Alpha paragraph.\n\nBeta paragraph.\n\n```py\nx = 1\n```\nGamma."
+        out = self._render(list(text))
+        for word in ("Alpha", "Beta", "x = 1", "Gamma"):
+            self.assertEqual(out.count(word), 1, word)
+
+    def test_h1_heading_is_left_aligned(self):
+        print("\n  ▶ TestResponseViewTerminal.test_h1_heading_is_left_aligned")
+        out = self._render(["# Title\n\nBody."])
+        line = next(l for l in out.splitlines() if "Title" in l)
+        self.assertLess(line.index("Title"), 6)
+
+    def test_tool_call_gets_its_own_line_between_text_segments(self):
+        print("\n  ▶ TestResponseViewTerminal.test_tool_call_gets_its_own_line_between_text_segments")
+        out = self._render(["Let me look.", "Found it."], tools_after={0: "Read claude_light/llm.py"})
+        lines = [l.strip() for l in out.splitlines() if l.strip()]
+        i_look = next(i for i, l in enumerate(lines) if "Let me look." in l)
+        i_tool = next(i for i, l in enumerate(lines) if "Read claude_light/llm.py" in l)
+        i_found = next(i for i, l in enumerate(lines) if "Found it." in l)
+        self.assertLess(i_look, i_tool)
+        self.assertLess(i_tool, i_found)
+        self.assertNotIn("Let me look.", lines[i_tool])
+
+    def test_tail_taller_than_the_screen_is_cropped_to_its_last_lines(self):
+        print("\n  ▶ TestResponseViewTerminal.test_tail_taller_than_the_screen_is_cropped_to_its_last_lines")
+        from claude_light.ui import _Gutter, _reply_markdown
+        con, buf = _live_console(height=10)
+        body = "\n".join(f"line{i}" for i in range(40))
+        con.print(_Gutter(_reply_markdown(f"```\n{body}\n```"), max_lines=5))
+        out = buf.getvalue()
+        self.assertIn("line39", out)
+        self.assertNotIn("line10", out)
+
+
+class TestResponseViewPiped(unittest.TestCase):
+    """With stdout redirected, the reply goes to it as plain text and every
+    progress mark goes to stderr, so `claude_light "q" > answer.md` holds
+    only the answer. Live, the file started with \\r spinner frames."""
+
+    def test_piped_stdout_gets_only_the_reply(self):
+        print("\n  ▶ TestResponseViewPiped.test_piped_stdout_gets_only_the_reply")
+        from claude_light.ui import ResponseView
+        out, err = io.StringIO(), io.StringIO()
+        with patch("sys.stdout", out), patch("sys.stderr", err):
+            with ResponseView() as view:
+                view.text("Hello **world**")
+                view.tool("Grep retry")
+                view.text("Done.")
+        self.assertEqual(out.getvalue(), "Hello **world**\n\nDone.\n")
+        self.assertIn("Grep retry", err.getvalue())
+
+
+class TestResponseViewCleanup(unittest.TestCase):
+    """A turn that ends in an error or Ctrl+C must not leave the spinner
+    running: it would keep drawing over the next prompt."""
+
+    def _threads(self):
+        import threading
+        return {t.ident for t in threading.enumerate()}
+
+    def test_live_spinner_stops_when_the_turn_raises(self):
+        print("\n  ▶ TestResponseViewCleanup.test_live_spinner_stops_when_the_turn_raises")
+        from claude_light.ui import ResponseView
+        con, _ = _live_console()
+        before = self._threads()
+        with self.assertRaises(KeyboardInterrupt):
+            with ResponseView(console=con) as view:
+                view.text("partial")
+                self.assertGreater(len(self._threads() - before), 0)  # refresh thread runs
+                raise KeyboardInterrupt
+        # rich signals its refresh thread and lets it exit on its next tick
+        # (0.1 s); it re-checks the flag under the lock, so it never draws.
+        import time
+        deadline = time.monotonic() + 2
+        while self._threads() - before and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertEqual(self._threads() - before, set())
+
+    def test_stderr_ticker_stops_when_the_turn_raises(self):
+        print("\n  ▶ TestResponseViewCleanup.test_stderr_ticker_stops_when_the_turn_raises")
+        from claude_light.ui import ResponseView
+        out, err = io.StringIO(), io.StringIO()
+        err.isatty = lambda: True
+        before = self._threads()
+        with patch("sys.stdout", out), patch("sys.stderr", err):
+            with self.assertRaises(RuntimeError):
+                with ResponseView():
+                    self.assertGreater(len(self._threads() - before), 0)
+                    raise RuntimeError("boom")
+        self.assertEqual(self._threads() - before, set())
+        self.assertIn("Thinking", err.getvalue())
+        self.assertEqual(out.getvalue(), "")
 
 
 if __name__ == "__main__":

@@ -207,6 +207,24 @@ Run the script from the root of your project — it will immediately build the s
 ### 1. Interactive Loop (Default)
 `python3 claude_light.py`
 
+The prompt appears in about half a second: the index builds in the background, and the toolbar under the prompt says `indexing…` until it is ready, then shows the session's tokens, cache hit rate and cost. Replies stream in as rendered markdown (tables, lists, syntax-highlighted code), with a spinner and elapsed time while Claude thinks or runs a tool, and one line per file it reads, searches or edits. Edits are shown as diffs before they are committed.
+
+| Command / key | What it does |
+|---|---|
+| `/help` | Commands and keys |
+| `/clear` | Start a new conversation |
+| `/compact` | Replace the conversation so far with a summary, so later turns send fewer tokens |
+| `/cost` | Token usage and cost for this session, and lifetime savings |
+| `/run <cmd>` | Run a shell command and ask Claude about its output |
+| `/undo` | Undo the last `Claude:` commit. Keeps uncommitted work; refuses if the last commit is yours or its files have local edits |
+| `/why` | How the last query was routed and what was retrieved |
+| `exit` / `quit` | Quit; prints a one-line session summary |
+| Typing `/` | Menu of commands with descriptions |
+| `alt+enter` | New line in the prompt (`enter` sends) |
+| `ctrl+c` | Cancel the running turn; at the prompt, quit |
+
+One-shot runs write only the answer to stdout, as plain text; progress and tool lines go to stderr, so `claude_light.py "question" > answer.md` holds just the answer.
+
 The script runs three concurrent threads to keep your workflow seamless:
 
 * **Main Thread:** Handles the input loop, retrieves relevant chunks per query, and manages the conversation history.

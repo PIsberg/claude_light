@@ -4,8 +4,8 @@ Rate-limit handling and retry logic for Claude Light.
 Implements exponential backoff for transient API errors (429, 5xx).
 """
 
+import sys
 import time
-import anthropic
 from typing import Callable, TypeVar, Any
 from claude_light.ui import _T_SYS, _T_ERR, _ANSI_YELLOW, _ANSI_RESET, _ANSI_DIM
 
@@ -38,10 +38,13 @@ def _should_retry(error: Exception) -> bool:
     Returns:
         True if the error should trigger a retry.
     """
-    if isinstance(error, anthropic.RateLimitError):
+    # Not imported means the error cannot be one of its types; importing
+    # it here would cost seconds (llm builds the client lazily).
+    anthropic = sys.modules.get("anthropic")
+    if anthropic is not None and isinstance(error, anthropic.RateLimitError):
         return True
-    
-    if isinstance(error, anthropic.APIConnectionError):
+
+    if anthropic is not None and isinstance(error, anthropic.APIConnectionError):
         # Transient network issue
         return True
     

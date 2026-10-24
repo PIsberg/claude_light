@@ -126,20 +126,22 @@ class TestStreamingResponseHandler:
         assert usage["cache_creation_tokens"] == 50
         assert usage["cache_read_tokens"] == 25
 
-    def test_print_methods_no_exception(self, capsys):
-        """Test that print methods don't raise exceptions."""
+    def test_renders_into_a_supplied_view_without_the_thinking(self):
+        """A tool-loop turn passes one view for all rounds: text deltas go
+        to it, thinking only changes the spinner label."""
         handler = StreamingResponseHandler()
-
-        # These should not raise
-        handler._print_stream_start()
-        handler._print_thinking_start()
-        handler._print_thinking_chunk("thought")
-        handler._print_thinking_stop()
-        handler._print_text_chunk("text")
-        handler._print_stream_end()
-
-        captured = capsys.readouterr()
-        assert "text" in captured.out
+        view = MagicMock()
+        events = [
+            MockStreamEvent('content_block_start', content_block=Mock(type='thinking')),
+            MockStreamEvent('content_block_delta', delta=Mock(thinking="secret plan")),
+            MockStreamEvent('content_block_stop'),
+            MockStreamEvent('content_block_start', content_block=Mock(type='text')),
+            MockStreamEvent('content_block_delta', delta=Mock(text="Answer")),
+        ]
+        handler.process_stream(iter(events), view=view)
+        view.status.assert_any_call("Thinking")
+        view.text.assert_called_once_with("Answer")
+        view.close.assert_not_called()  # the caller owns a supplied view
 
 
 class TestCalculateUsageCost:

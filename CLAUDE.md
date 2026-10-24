@@ -140,12 +140,12 @@ The `claude_light/` package is organized by responsibility:
 | `linter.py` | Pre-apply syntax validation (Python `ast`, tree-sitter for other languages) |
 | `git_manager.py` | Auto-commit of AI edits; `/undo` reverts to the previous commit |
 | `executor.py` | Loads `SentenceTransformer` model, runs `auto_tune()`, executes `/run <cmd>` |
-| `streaming.py` | Real-time token streaming, thinking-block handling, usage accumulation |
+| `streaming.py` | Consumes the API token stream into a `ui.ResponseView`, tracks thinking blocks and usage |
 | `retry.py` | Exponential backoff (2s→4s→8s, max 3 attempts) for transient API errors |
 | `tools.py` | Read-only workspace tools for API-key mode (`read_file`, `grep`, `list_files`), confined to the project root with output caps. `llm._api_tool_loop()` runs them in a manual tool loop (max `_API_TOOL_STEPS` = 8 rounds); edits still use SEARCH/REPLACE |
 | `compressor.py` | Optional LLMLingua-2 prompt compression of the retrieved RAG context. Lazy singleton, never raises into the hot path |
 | `session_manager.py` | Persists conversation history to `.claude_light_cache/session.json` |
-| `ui.py` | ANSI colour, rich markdown rendering, diff display, cost formatting |
+| `ui.py` | ANSI colour, `ResponseView` (spinner + streamed markdown + tool lines, plain text when piped), diff display, welcome box, cost formatting |
 | `testing.py` | Test-mode helpers (synthetic file/chunk generation, mock API key) |
 | `__init__.py` | Re-exports all public symbols; wraps callables to sync shared state across modules |
 
@@ -194,7 +194,7 @@ The `claude_light/` package is organized by responsibility:
 - `retrieval.py`: `_dedup_retrieved_context()` — emits per-file preamble once when multiple chunks from the same file are retrieved
 - `indexer.py`: `_chunks_for_file()` — all chunk IDs for a file path
 
-**Interactive commands**: `/clear`, `/compact`, `/cost`, `/help`, `/run <cmd>`, `/undo`, `exit`/`quit`, `Ctrl+C`.
+**Interactive commands** (`_COMMANDS` in `main.py`, which also feeds `/help` and the `/` completion menu): `/clear`, `/compact` (summarise, via `llm.compact_history()`), `/cost`, `/help`, `/run <cmd>`, `/undo`, `/why`, `exit`/`quit`. Keys: `alt+enter` new line, `Ctrl+C` cancels a turn. Unknown `/word` input is rejected, not sent to Claude. Exit prints one line (`ui.print_session_footer()`); `/cost` prints the tables.
 
 **Auto-commit safety net**: When Claude makes file changes, the tool automatically commits them to git (`Claude: [summary]`, edited files listed in the body). `/undo` reverts that commit with `git reset --keep`, so uncommitted work elsewhere survives; it refuses if the last commit is not a `Claude:` commit or if a file in it has been edited since. Gracefully skipped if not in a git repo.
 
@@ -204,9 +204,11 @@ For a deeper dive, see [docs/architecture.md](docs/architecture.md).
 
 **Auto-Retry** (`retry.py`): exponential backoff 2s→4s→8s (capped at 60s), max 3 attempts. Non-retriable errors (401/403/404/400) fail immediately.
 
-**Thread-Safe State** (`state.py`): all shared state protected by `threading.Lock`. Global stats (`~/.claude_light_stats.json`) loaded on startup, saved on every usage update.
+**Thread-Safe State** (`state.py`): all shared state protected by `threading.Lock`. Global stats (`~/.claude_light_stats.json`, or `CLAUDE_LIGHT_STATS_FILE`) loaded on startup, saved on every usage update. `tests/conftest.py` points `CLAUDE_LIGHT_STATS_FILE` at a temp file so the suite never writes the real one. `state.turn_count` counts turns; do not derive it from `conversation_history`, which compression shrinks.
 
-**Streaming** (`streaming.py`): real-time token streaming; thinking blocks shown as a progress indicator; accurate token tracking from streaming events.
+**Streaming** (`streaming.py`, `ui.ResponseView`): both auth modes render through one `ResponseView` per turn. Finished markdown blocks are printed once; only the block still arriving is redrawn. Thinking changes the spinner label. OAuth history summaries go through the CLI (`render=False`), since that mode has no API key.
+
+**Startup**: the `anthropic` SDK is imported lazily (`llm._LazyClient`), so OAuth sessions never load it and the prompt appears in ~0.5 s instead of 2 s warm / 7 s cold. `retry.py` checks `sys.modules` instead of importing it.
 
 **Watchdog Lifecycle** (`main.py`): observer stopped and joined on exit (5 s timeout); Ctrl+C (default SIGINT, `KeyboardInterrupt`) cancels the current turn and kills the CLI agent's whole process tree (`_kill_process_tree` in `llm.py`; `taskkill /T` on Windows, where the CLI runs under `cmd.exe`), then returns to the prompt; at the prompt it exits. SIGTERM exits; `start_chat()`'s `finally` sets `stop_event`. Startup failures handled gracefully.
 
@@ -220,7 +222,7 @@ For a deeper dive, see [docs/architecture.md](docs/architecture.md).
 | `_RETRIEVAL_BUDGET` | Per-effort token budgets: low=1500, medium=3000, high=6000, max=9000 |
 | `MAX_HISTORY_TURNS` | Compress+cap when stored turns exceed this (default 6) |
 | `SUMMARIZE_BATCH` | Old turns collapsed per summary call (default 3) |
-| `GLOBAL_STATS_FILE` | Path to global savings persistence (`~/.claude_light_stats.json`) |
+| `GLOBAL_STATS_FILE` | Path to global savings persistence (`~/.claude_light_stats.json`; override with `CLAUDE_LIGHT_STATS_FILE`) |
 | `HEARTBEAT_SECS` | How often the heartbeat thread wakes (default 30) |
 | `CACHE_TTL_SECS` | Idle seconds before heartbeat warms the cache (default 240) |
 | `MODEL_HAIKU` / `MODEL_SONNET` / `MODEL_OPUS` | Model ID constants used by the router |

@@ -141,8 +141,10 @@ SKIP_DIRS      = {
     ".idea", "__pycache__", ".mvn", ".gradle",
 }
 
-# Global Stats - stored in home directory to persist across all repositories
-GLOBAL_STATS_FILE = Path.home() / ".claude_light_stats.json"
+# Global Stats - stored in home directory to persist across all repositories.
+# CLAUDE_LIGHT_STATS_FILE moves it; the test suite points it at a temp file.
+GLOBAL_STATS_FILE = Path(os.environ.get("CLAUDE_LIGHT_STATS_FILE")
+                         or Path.home() / ".claude_light_stats.json")
 
 # Disk cache — stored in a hidden dir so _is_skipped() ignores it automatically
 CACHE_DIR      = Path(".claude_light_cache")

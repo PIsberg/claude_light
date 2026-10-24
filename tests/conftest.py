@@ -18,6 +18,12 @@ sys.path.insert(0, str(project_root))
 # Set dummy API key to prevent import errors in test mode
 os.environ.setdefault("ANTHROPIC_API_KEY", "sk-ant-test-mock-key")
 
+# Keep the suite's fake token usage out of the real ~/.claude_light_stats.json.
+# Set before any claude_light import: config reads it at import time.
+import tempfile as _tempfile
+os.environ["CLAUDE_LIGHT_STATS_FILE"] = os.path.join(
+    _tempfile.mkdtemp(prefix="claude_light_stats_"), "stats.json")
+
 import pytest
 
 

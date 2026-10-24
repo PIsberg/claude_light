@@ -4,7 +4,7 @@ import time
 import json
 import subprocess
 import shutil
-import anthropic
+import threading
 from pathlib import Path
 
 import claude_light.config as config
@@ -18,7 +18,7 @@ from claude_light.config import (
 from claude_light.ui import (
     _T_ROUTE, _T_SYS, _T_ERR, _T_RAG, _T_CACHE, _T_EDIT,
     _ANSI_GREEN, _ANSI_CYAN, _ANSI_YELLOW, _ANSI_MAGENTA, _ANSI_BOLD, _ANSI_DIM, _ANSI_RESET, _ANSI_RED,
-    _SYM_RESP, _SYM_TOOL, print_stats, _Spinner, calculate_cost, _print_reply
+    _SYM_RESP, _SYM_TOOL, print_stats, _Spinner, calculate_cost, _print_reply, ResponseView, NullView,
 )
 import claude_light.state as state
 from claude_light.skeleton import build_skeleton, _refresh_tree_only, _assemble_skeleton, _refresh_single_md
@@ -48,9 +48,23 @@ if API_KEY == "sk-ant-test-mock-key":
     client.messages = MockClient()
     client.messages.create = None
 else:
-    # OAuth mode still needs a client object for non-chat calls (e.g. summarisation).
-    # It is only used in API_KEY mode for actual chat — OAuth routes via CLI subprocess.
-    client = anthropic.Anthropic(api_key=API_KEY if API_KEY else "sk-ant-placeholder")
+    class _LazyClient:
+        """The Anthropic client, built on first use. Importing the SDK took
+        1.3 s warm and 4.9 s cold before the prompt appeared, and OAuth turns
+        go through the Claude CLI and never need it."""
+
+        def __init__(self):
+            self._client = None
+            self._lock = threading.Lock()
+
+        def __getattr__(self, name):
+            with self._lock:
+                if self._client is None:
+                    import anthropic
+                    self._client = anthropic.Anthropic(api_key=API_KEY)
+            return getattr(self._client, name)
+
+    client = _LazyClient()
 
 # ---------------------------------------------------------------------------
 # Router — module-level keyword sets (not re-allocated per call)
@@ -356,7 +370,24 @@ def _summarize_turns(messages: list) -> tuple:
             content = " ".join(b.get("text", "") for b in content if b.get("type") == "text")
         lines.append(f"{role}: {content}")
     dialogue = "\n\n".join(lines)
-    
+    instructions = (
+        "Summarize the following conversation turns concisely (under 300 words).\n"
+        "Capture: what was asked, decisions reached, files edited and what changed, "
+        "key facts established about the codebase.\n"
+        "Output only the summary — no preamble.\n\n"
+        f"<turns>\n{dialogue}\n</turns>"
+    )
+
+    if AUTH_MODE == "OAUTH":
+        # No API key in this mode: the summary goes through the CLI too.
+        text, usage, _ = _make_cli_subprocess_call(
+            instructions, model=SUMMARY_MODEL,
+            extra_flags=["--system-prompt", "You summarize conversations."],
+            render=False,
+            tools=False,  # the turns may quote repo text; nothing may act on it
+        )
+        return text.strip(), usage
+
     @retry_with_backoff
     def _call_api():
         return client.messages.create(
@@ -364,20 +395,31 @@ def _summarize_turns(messages: list) -> tuple:
             # Thinking is always on and shares this cap with the summary.
             max_tokens=4_000,
             output_config={"effort": "low"},
-            messages=[{
-                "role": "user",
-                "content": (
-                    "Summarize the following conversation turns concisely (under 300 words).\n"
-                    "Capture: what was asked, decisions reached, files edited and what changed, "
-                    "key facts established about the codebase.\n"
-                    "Output only the summary — no preamble.\n\n"
-                    f"<turns>\n{dialogue}\n</turns>"
-                ),
-            }],
+            messages=[{"role": "user", "content": instructions}],
         )
     
     response = _call_api()
     return response.content[0].text.strip(), response.usage
+
+def compact_history() -> int:
+    """Replace the whole conversation with a summary of it (/compact).
+
+    Returns how many turns were summarised; 0 means there was nothing to do.
+    """
+    history = state.conversation_history
+    if not history:
+        return 0
+    turns = (len(history) + 1) // 2
+    summary_text, usage = _summarize_turns(list(history))
+    _accumulate_usage(usage, SUMMARY_MODEL)
+    with state.lock:
+        state.session_cost += calculate_cost(usage, SUMMARY_MODEL)
+    history[:] = [
+        {"role": "user",      "content": f"[Summary of earlier conversation]\n{summary_text}"},
+        {"role": "assistant", "content": "Understood, I have context from our earlier discussion."},
+    ]
+    return turns
+
 
 def _maybe_compress_history():
     if len(state.conversation_history) <= MAX_HISTORY_TURNS * 2:
@@ -457,13 +499,10 @@ def _commit_agent_edits(new_files, explanation, auto_apply=False):
         return
 
     print()
-    for f in files:
-        print(f"  {_T_EDIT}  {f}  {_ANSI_DIM}(agent edit){_ANSI_RESET}")
-
     # Render the diff straight from git so we don't have to track old content
+    from claude_light.ui import show_diff, show_unified_diff
     import subprocess as _sub
     for f in files:
-        print(f"  {_ANSI_DIM}── {f}{_ANSI_RESET}")
         try:
             diff_out = _sub.run(
                 ["git", "diff", "--", f],
@@ -473,18 +512,16 @@ def _commit_agent_edits(new_files, explanation, auto_apply=False):
             ).stdout
         except Exception:
             diff_out = ""
-        # Cap the diff so a huge refactor doesn't scroll the terminal.
-        lines = diff_out.splitlines()
-        max_lines = 80
-        for line in lines[:max_lines]:
-            if line.startswith("+") and not line.startswith("+++"):
-                print(f"{_ANSI_GREEN}{line}{_ANSI_RESET}")
-            elif line.startswith("-") and not line.startswith("---"):
-                print(f"{_ANSI_RED}{line}{_ANSI_RESET}")
-            else:
-                print(f"{_ANSI_DIM}{line}{_ANSI_RESET}")
-        if len(lines) > max_lines:
-            print(f"  {_ANSI_DIM}… {len(lines) - max_lines} more line(s) truncated{_ANSI_RESET}")
+        if diff_out.strip():
+            show_unified_diff(f"{f}  (agent edit)", diff_out)
+        elif os.path.isfile(f):
+            # git diff is silent for an untracked file: a new one the agent made.
+            try:
+                show_diff(f, Path(f).read_text(encoding="utf-8", errors="replace"), old_content="")
+            except OSError:
+                print(f"  {_T_EDIT}  {f}  {_ANSI_DIM}(agent edit){_ANSI_RESET}")
+        else:
+            print(f"  {_T_EDIT}  {f}  {_ANSI_DIM}(deleted by the agent){_ANSI_RESET}")
 
     if auto_apply:
         commit = True
@@ -506,62 +543,6 @@ def _commit_agent_edits(new_files, explanation, auto_apply=False):
         return
 
     git_manager.auto_commit(files, explanation)
-
-
-class _Heartbeat:
-    """Animated 'Processing… (Ns)' indicator with an elapsed-seconds counter.
-
-    Used as a context manager around a potentially long blocking call so the
-    user can tell the process is alive and how long it's been going. Call
-    .stop() as soon as real output starts so the counter doesn't interleave
-    with the response stream.
-    """
-
-    def __init__(self, message: str = "Processing", interval: float = 1.0):
-        import threading as _threading
-        self.message = message
-        self.interval = interval
-        self._stop_event = _threading.Event()
-        self._thread: _threading.Thread | None = None
-        self._start_time: float = 0.0
-        self._stopped = False
-
-    def __enter__(self):
-        import threading as _threading
-        self._start_time = time.monotonic()
-        self._stop_event.clear()
-        self._stopped = False
-        # Initial frame so the user sees *something* immediately.
-        print(
-            f"\r\033[K  {_ANSI_DIM}⏺  {self.message}…{_ANSI_RESET}",
-            end="", flush=True,
-        )
-        self._thread = _threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.stop()
-        return False
-
-    def stop(self):
-        """Stop the heartbeat and clear the line. Idempotent."""
-        if self._stopped:
-            return
-        self._stopped = True
-        self._stop_event.set()
-        if self._thread is not None:
-            self._thread.join(timeout=1.5)
-        print("\r\033[K", end="", flush=True)
-
-    def _run(self):
-        # Tick on self.interval without burning a CPU; stop() flips the event.
-        while not self._stop_event.wait(self.interval):
-            elapsed = int(time.monotonic() - self._start_time)
-            print(
-                f"\r\033[K  {_ANSI_DIM}⏺  {self.message}… ({elapsed}s){_ANSI_RESET}",
-                end="", flush=True,
-            )
 
 
 def _display_path(path: str) -> str:
@@ -639,6 +620,11 @@ def _kill_process_tree(proc) -> None:
 # change routinely takes several minutes while streaming events the whole
 # time. Kill it only when it goes silent; the overall cap is a backstop.
 _CLI_IDLE_TIMEOUT_SECS = 300
+# Every built-in CLI tool, denied by name for tool-free calls.
+_ALL_CLI_TOOLS = ",".join([
+    "Bash", "PowerShell", "Edit", "MultiEdit", "Write", "NotebookEdit", "Read", "Glob",
+    "Grep", "LS", "WebFetch", "WebSearch", "Task", "Agent", "TodoWrite",
+])
 _CLI_MAX_SECS = 3600
 
 
@@ -646,6 +632,8 @@ def _make_cli_subprocess_call(
     prompt: str,
     model: str = "",
     extra_flags: list | None = None,
+    render: bool = True,
+    tools: bool = True,
 ) -> tuple[str, any, str | None]:
     """
     Execute the official 'claude' CLI binary as a subprocess for OAUTH mode.
@@ -790,13 +778,24 @@ def _make_cli_subprocess_call(
         # unapproved one is denied (the model gets an error), never left
         # waiting on a prompt. config.ALLOWED_COMMANDS is the user's opt-in
         # list, e.g. the test command, so the agent can check its own edits.
+        if tools:
+            permission_mode = "acceptEdits"
+            # The shell stays off unless the user allowlisted commands.
+            disallowed = "PowerShell" if config.ALLOWED_COMMANDS else "PowerShell,Bash"
+        else:
+            # A hidden call over text that may quote repo content (the
+            # history summary): no tools at all. --tools "" alone is not
+            # relied on, since CLI 2.1.118 ignored it; with the default
+            # mode and -p, any edit is denied rather than auto-accepted.
+            permission_mode = "default"
+            disallowed = _ALL_CLI_TOOLS
         command = [claude_bin]
         command += [
             "-p", cmd_prompt,
             "--output-format", "stream-json",
             "--verbose",
             "--include-partial-messages",
-            "--permission-mode", "acceptEdits",
+            "--permission-mode", permission_mode,
             # Only claude_light's own settings apply. A repo's
             # .claude/settings*.json could add allow rules or hooks (which run
             # commands) and its .mcp.json could add servers. This also stops
@@ -805,10 +804,11 @@ def _make_cli_subprocess_call(
             "--setting-sources", "user",
             "--strict-mcp-config",
             "--settings", settings_path.as_posix(),
-            # The shell stays off unless the user allowlisted commands.
-            "--disallowed-tools", "PowerShell" if config.ALLOWED_COMMANDS else "PowerShell,Bash",
+            "--disallowed-tools", disallowed,
         ]
-        if config.ALLOWED_COMMANDS:
+        if not tools:
+            command += ["--tools", ""]
+        elif config.ALLOWED_COMMANDS:
             command += ["--allowedTools", ",".join(f"Bash({c}:*)" for c in config.ALLOWED_COMMANDS)]
         if model:
             command += ["--model", model]
@@ -859,60 +859,43 @@ def _make_cli_subprocess_call(
         _wd = _threading.Thread(target=_watchdog, daemon=True)
         _wd.start()
 
-        # Heartbeat: animated "Processing… (Ns)" so the user can tell the
-        # process is alive during warmup (before the first token arrives).
-        # Stops the moment the first text event lands so it doesn't
-        # interleave with streamed output.
-        heartbeat = _Heartbeat("Processing")
-        heartbeat.__enter__()
+        # One view for the whole turn: spinner until the first token, the
+        # reply as rendered markdown while it streams, a line per tool call.
+        view = ResponseView("Thinking") if render else NullView()
+        view.__enter__()
 
-        header_printed = False
         reply_parts: list[str] = []
         streamed_via_delta = False
         usage_data: dict = {}
         session_id = None
         final_result_text: str | None = None
         cli_cost_usd = None
+        denials = None
         # The agent narrates in separate text blocks between tool calls.
         # Without a break they print as one run-on paragraph.
         new_block = False
-        at_line_start = True
+        after_tool = False  # the view already separates text from a tool line
         shown_tool_ids: set = set()
 
-        def _ensure_header():
-            nonlocal header_printed
-            if not header_printed:
-                heartbeat.stop()  # clears the "Processing…" line
-                print(f"\n{_ANSI_CYAN}{_ANSI_BOLD}{_SYM_RESP}{_ANSI_RESET} ", end="", flush=True)
-                header_printed = True
-
         def _emit_text(text):
-            nonlocal new_block, at_line_start
-            heartbeat.stop()
-            _ensure_header()
+            nonlocal new_block, after_tool
             if new_block and reply_parts:
-                print("\n" if at_line_start else "\n\n", end="")
                 reply_parts.append("\n\n")
-            new_block = False
-            print(text, end="", flush=True)
+                if not after_tool:
+                    view.text("\n\n")
+            new_block = after_tool = False
+            view.text(text)
             reply_parts.append(text)
-            at_line_start = text.endswith("\n")
 
         def _show_tool_call(block):
-            nonlocal new_block, at_line_start
+            nonlocal new_block, after_tool
             tool_id = block.get("id")
             if tool_id in shown_tool_ids:
                 return
             shown_tool_ids.add(tool_id)
-            heartbeat.stop()
-            if not at_line_start:
-                print()
-            label = _describe_tool_call(block.get("name", "tool"), block.get("input"))
-            print(f"  {_ANSI_DIM}{_SYM_TOOL} {label}{_ANSI_RESET}", flush=True)
-            at_line_start = True
-            new_block = True
-            # Keep showing liveness while the tool runs and the model thinks.
-            heartbeat.__enter__()
+            view.tool(_describe_tool_call(block.get("name", "tool"), block.get("input")))
+            view.status("Working")
+            new_block = after_tool = True
 
         for raw_line in proc.stdout:
             last_activity[0] = time.monotonic()
@@ -930,8 +913,11 @@ def _make_cli_subprocess_call(
                 # Per-token deltas when --include-partial-messages is active.
                 inner = event.get("event", {})
                 if inner.get("type") == "content_block_start":
-                    if (inner.get("content_block") or {}).get("type") == "text":
+                    block_type = (inner.get("content_block") or {}).get("type")
+                    if block_type == "text":
                         new_block = True
+                    elif block_type == "thinking":
+                        view.status("Thinking")
                 elif inner.get("type") == "content_block_delta":
                     delta = inner.get("delta", {})
                     if delta.get("type") == "text_delta":
@@ -957,16 +943,19 @@ def _make_cli_subprocess_call(
                 final_result_text = event.get("result")
                 usage_data = event.get("usage", {}) or {}
                 cli_cost_usd = event.get("total_cost_usd")
-                _report_denied_commands(event.get("permission_denials"))
+                denials = event.get("permission_denials")
                 session_id = event.get("session_id")
 
         returncode = proc.wait()
 
-        if header_printed:
-            # flush=True because stdout is block-buffered when piped, so the
-            # trailing \n would otherwise stay in-buffer and print_stats()
-            # would land on the same line as the final response text.
-            print(flush=True)
+        if not reply_parts and final_result_text and returncode == 0:
+            # Fallback: deltas and assistant events missing (older CLI or
+            # unexpected format), so show the terminal result.
+            reply_parts.append(final_result_text)
+            view.text(final_result_text)
+        view.close()
+        if render:
+            _report_denied_commands(denials)
 
         if timed_out.is_set() or idle_out.is_set():
             try:
@@ -994,16 +983,6 @@ def _make_cli_subprocess_call(
             raise RuntimeError(f"Claude CLI error (code {returncode}): {error_output}")
 
         response_text = "".join(reply_parts)
-        if not response_text and final_result_text:
-            # Fallback: deltas and assistant events missing (older CLI or
-            # unexpected format) — use the terminal result. Print it now
-            # so the user still sees something.
-            response_text = final_result_text
-            _ensure_header()
-            print(response_text, flush=True)
-
-        # Heartbeat.stop() in the finally block clears any lingering
-        # "Processing…" line if we never printed real output.
 
         class UsageObj:
             pass
@@ -1027,13 +1006,12 @@ def _make_cli_subprocess_call(
         except NameError:
             pass  # Popen never ran
 
-        # Always stop the heartbeat (idempotent) so a raised exception
-        # doesn't leave the animated line ticking on screen forever.
+        # Always close the view (idempotent) so a raised exception does not
+        # leave the spinner running on screen.
         try:
-            heartbeat.stop()
+            view.close()
         except NameError:
-            # Raised before Popen succeeded — heartbeat never constructed.
-            pass
+            pass  # raised before the view existed
 
         # Cleanup temporary files if created
         for temp_file in (temp_context_file, temp_system_prompt_file):
@@ -1110,9 +1088,9 @@ def _make_streaming_api_call(**create_kwargs):
             reply_text, usage, _session_id = _make_cli_subprocess_call(
                 prompt, model=model, extra_flags=extra_flags
             )
-            # _make_cli_subprocess_call now streams text inline as the CLI
-            # emits stream-json events and owns its own "Processing…"
-            # heartbeat, so the caller must not print anything here.
+            # _make_cli_subprocess_call renders the reply as the CLI emits
+            # stream-json events (ResponseView), so the caller must not
+            # print it again.
             return reply_text, usage, True
         except ClaudeNotLoggedIn:
             raise
@@ -1179,14 +1157,21 @@ def _api_tool_loop(create_kwargs):
     messages = list(create_kwargs["messages"])
     usage = _TurnUsage()
     texts = []
+    with ResponseView("Thinking") as view:  # one view, so rounds read as one reply
+        _run_tool_rounds(kwargs, messages, usage, texts, view)
+    return "\n\n".join(texts), usage, True
+
+
+def _run_tool_rounds(kwargs, messages, usage, texts, view):
+    from claude_light import tools
     for step in range(_API_TOOL_STEPS + 1):
         kwargs["messages"] = messages
         try:
-            text, usage_dict = stream_chat_response(client, **kwargs)
+            text, usage_dict = stream_chat_response(client, view=view, **kwargs)
         except ValueError:
             # Tool input the SDK could not parse (eager input streaming).
             # Retry the request once; a second failure is a real error.
-            text, usage_dict = stream_chat_response(client, **kwargs)
+            text, usage_dict = stream_chat_response(client, view=view, **kwargs)
         message = usage_dict.get("message")
         usage.add(message.usage if message is not None else usage_dict)
         if text and text.strip():
@@ -1202,8 +1187,8 @@ def _api_tool_loop(create_kwargs):
         for block in message.content:
             if getattr(block, "type", None) != "tool_use":
                 continue
-            print(f"  {_ANSI_DIM}{_SYM_TOOL} {_describe_tool_call(block.name, block.input)}{_ANSI_RESET}",
-                  flush=True)
+            view.tool(_describe_tool_call(block.name, block.input))
+            view.status("Working")
             output, is_error = tools.run_tool(block.name, block.input)
             result = {"type": "tool_result", "tool_use_id": block.id, "content": output}
             if is_error:
@@ -1222,7 +1207,6 @@ def _api_tool_loop(create_kwargs):
             {"role": "assistant", "content": message.content},  # thinking blocks included, unchanged
             {"role": "user", "content": results},
         ]
-    return "\n\n".join(texts), usage, True
 
 
 def _apply_skeleton(new_skeleton):
@@ -1450,7 +1434,8 @@ def chat(query, auto_apply=False, use_index=True):
                 state.last_interaction = time.time()
                 state.session_cost += cost
 
-            turns = len(state.conversation_history) // 2
+            state.turn_count += 1
+            turns = state.turn_count
 
             explanation = _ANY_BLOCK.sub("", reply).strip() if edits else reply
             if explanation and not was_streamed:
@@ -1471,6 +1456,7 @@ def chat(query, auto_apply=False, use_index=True):
                 if agent_edits:
                     _commit_agent_edits(agent_edits, query, auto_apply=auto_apply)
 
+            print()
             print_stats(usage, label=f"Turn {turns}", model=routed_model)
             break
 

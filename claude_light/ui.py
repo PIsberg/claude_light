@@ -2,6 +2,7 @@ import sys
 import time
 import threading
 import difflib
+import re
 from pathlib import Path
 
 from claude_light.config import PRICE_WRITE, ECONOMY_MODE, model_prices
@@ -18,7 +19,12 @@ try:
 except ImportError:
     _RICH_AVAILABLE = False
 
-console = _RichConsole() if _RICH_AVAILABLE else None
+if _RICH_AVAILABLE:
+    from rich.theme import Theme as _RichTheme
+    # rich draws inline code bold cyan on black, a box per identifier; a
+    # reply naming many functions read as a wall of boxes.
+    _REPLY_THEME = _RichTheme({"markdown.code": "cyan"})
+console = _RichConsole(theme=_REPLY_THEME) if _RICH_AVAILABLE else None
 
 _ANSI_RED     = "\033[31m"
 _ANSI_GREEN   = "\033[32m"
@@ -98,37 +104,51 @@ def _display_path() -> str:
         return str(cwd).replace("\\", "/")
 
 
-def print_startup_header():
-    """Print name and working directory immediately on startup, before indexing."""
+# Display labels for config.API_KEY_SOURCE. The source string comes back from
+# _resolve_api_key() in the same tuple as the key, so it is mapped through
+# this table rather than printed: nothing from that tuple reaches the screen.
+_ACCESS_LABELS = {
+    "Claude CLI (Pro Subscription)": "Claude subscription",
+    "Environment": "API key from ANTHROPIC_API_KEY",
+    "Dotfile (.anthropic)": "API key from ~/.anthropic",
+    "Dotfile (.env)": "API key from .env",
+    "Test": "test mode",
+}
+
+
+def access_label(source: str) -> str:
+    """A readable label for an auth source, or "" for one not in the table."""
+    return _ACCESS_LABELS.get(source, "")
+
+
+def print_startup_header(model: str | None = None, access_mode: str | None = None):
+    """The welcome box: name, project, model and access, how to get help.
+
+    Printed before indexing starts, so it appears at once; the index status
+    lives in the toolbar under the prompt.
+    """
+    help_line = "/help for commands  ·  ctrl+c cancels a turn  ·  exit to quit"
+    model_line = ""
+    if model:
+        model_line = model.replace("claude-", "") + (f"  ·  {access_mode}" if access_mode else "")
     if _RICH_AVAILABLE:
+        from rich import box
         from rich.text import Text as _T
-        t = _T()
-        t.append(f"\n  {_SYM_MARK} claude light", style="bold cyan")
-        console.print(t)
-        console.print(f"  [dim]{_display_path()}[/dim]\n")
+        body = _T()
+        body.append(f"{_SYM_MARK} claude light", style="bold cyan")
+        body.append(f"\n\n{_display_path()}")
+        if model_line:
+            body.append(f"\n{model_line}", style="dim")
+        body.append(f"\n{help_line}", style="dim")
+        con = _RichConsole(file=sys.stdout)
+        con.print()
+        con.print(_RichPanel(body, box=box.ROUNDED, border_style="cyan", expand=False, padding=(0, 2)))
     else:
         print(f"\n  {_ANSI_CYAN}{_ANSI_BOLD}{_SYM_MARK} claude light{_ANSI_RESET}")
-        print(f"  {_ANSI_DIM}{_display_path()}{_ANSI_RESET}\n", flush=True)
-
-
-def print_banner(model: str, top_k: int, access_mode: str, device: str | None = None):
-    """Print model/stats line and help text before the first answer.
-
-    The first query can arrive while the index is still building (top_k is
-    None then), so say that instead of printing "top-None".
-    """
-    model_short = model.replace("claude-", "").replace("-20251001", "")
-    device_str = f"  ·  {device.upper()}" if device else ""
-    rag = f"RAG top-{top_k}" if top_k else "RAG indexing…"
-    help_line = "/help for commands  ·  Ctrl+C cancels a turn  ·  exit to quit"
-    if _RICH_AVAILABLE:
-        console.print(
-            f"  [dim]{model_short}  ·  {rag}{device_str}  ·  {access_mode}[/dim]"
-        )
-        console.print(f"  [dim]{help_line}[/dim]\n")
-    else:
-        print(f"  {_ANSI_DIM}{model_short}  ·  {rag}{device_str}  ·  {access_mode}{_ANSI_RESET}")
-        print(f"  {_ANSI_DIM}{help_line}{_ANSI_RESET}\n")
+        print(f"  {_display_path()}")
+        if model_line:
+            print(f"  {_ANSI_DIM}{model_line}{_ANSI_RESET}")
+        print(f"  {_ANSI_DIM}{help_line}{_ANSI_RESET}", flush=True)
 
 
 def _count(value) -> float:
@@ -220,7 +240,7 @@ def print_session_summary():
         compress_pre  = state.session_tokens.get("compress_pre", 0)
         compress_post = state.session_tokens.get("compress_post", 0)
         cost  = state.session_cost
-        turns = len(state.conversation_history) // 2
+        turns = state.turn_count
         # Accumulated per call at the rate of the model that ran it.
         cost_inp = state.session_costs["input"]
         cost_cw  = state.session_costs["cache_write"]
@@ -277,13 +297,15 @@ def print_session_summary():
 
     with state.lock:
         cost_without_cache = state.session_costs["without_cache"]
+    saved_label, saved_str = "Saved", "—"
     if cost_without_cache > 0:
         saved_pct = (cost_without_cache - cost_tot) / cost_without_cache * 100
-        saved_str = f"{_ANSI_GREEN}{saved_pct:.1f}%{_R}"
-    else:
-        saved_str = "—"
+        if saved_pct >= 0:
+            saved_str = f"{_ANSI_GREEN}{saved_pct:.1f}%{_R}"
+        else:  # cache writes cost more than they saved so far
+            saved_label, saved_str = "Overhead", f"{_ANSI_YELLOW}{-saved_pct:.1f}%{_R}"
 
-    print(f"  Turns: {_ANSI_BOLD}{turns}{_R}  ·  Cache hit rate: {hit_str}  ·  Saved: {saved_str}")
+    print(f"  Turns: {_ANSI_BOLD}{turns}{_R}  ·  Cache hit rate: {hit_str}  ·  {saved_label}: {saved_str}")
 
     # --- Global Lifetime Savings ---
     gs = state.global_stats
@@ -305,6 +327,27 @@ def print_session_summary():
     print(f"{_B}├{'─'*28}┴{'─'*28}┤{_R}")
     print(f"{_B}│{_R} Sessions: {sessions:<45} {_B}│{_R}")
     print(f"{_B}└{'─'*57}┘{_R}")
+
+
+def print_session_footer():
+    """One line on exit: turns, tokens, cache hits, cost. /cost has the tables."""
+    with state.lock:
+        inp, cw = state.session_tokens["input"], state.session_tokens["cache_write"]
+        cr, out = state.session_tokens["cache_read"], state.session_tokens["output"]
+        cost = sum(state.session_costs[k] for k in ("input", "cache_write", "cache_read", "output"))
+        without = state.session_costs["without_cache"]
+        turns = state.turn_count
+    total = inp + cw + cr + out
+    if not total:
+        return
+    parts = [f"{turns} turn{'' if turns == 1 else 's'}", f"{total:,} tokens"]
+    if inp + cw + cr:
+        parts.append(f"{cr / (inp + cw + cr) * 100:.1f}% cached")
+    parts.append(f"{'Cost' if ECONOMY_MODE == 'USD' else 'API equiv.'} ${cost:.4f}")
+    if without > 0:
+        pct = (without - cost) / without * 100
+        parts.append(f"saved {pct:.1f}%" if pct >= 0 else f"overhead {-pct:.1f}%")
+    print(f"\n  {_ANSI_DIM}{_SYM_MARK} " + "  ·  ".join(parts) + _ANSI_RESET)
 
 
 def _colorize_diff(lines):
@@ -355,18 +398,40 @@ def show_diff(path, new_content, old_content=None):
         print(f"  {_ANSI_DIM}(no changes detected in {path}){_ANSI_RESET}\n")
         return
 
+    # Content lines keep their own newline; joined with another, every diff
+    # line was followed by a blank one.
+    show_unified_diff(path, "\n".join(line.rstrip("\r\n") for line in diff))
+
+
+def show_unified_diff(path, diff_text, max_lines=80):
+    """A unified diff in a panel titled with the path.
+
+    The file headers (diff --git, index, ---/+++) before the first hunk are
+    dropped: the title already names the file. Longer diffs are cut at
+    max_lines with a count of what was left out.
+    """
+    lines = diff_text.splitlines()
+    first_hunk = next((i for i, l in enumerate(lines) if l.startswith("@@")), 0)
+    lines = lines[first_hunk:]
+    hidden = len(lines) - max_lines
+    lines = lines[:max_lines]
+    more = f"{hidden} more lines" if hidden > 0 else None
     if _RICH_AVAILABLE:
         _con = _RichConsole(file=sys.stdout)
-        diff_text = "\n".join(diff)
         _con.print(
             _RichPanel(
-                _RichSyntax(diff_text, "diff", theme="monokai", line_numbers=False),
+                _RichSyntax("\n".join(lines), "diff", theme="monokai", line_numbers=False),
                 title=f"[cyan]{path}[/cyan]",
+                title_align="left",
+                subtitle=f"[dim]{more}[/dim]" if more else None,
                 border_style="dim blue",
             )
         )
     else:
-        print("".join(_colorize_diff(line + "\n" for line in diff)))
+        print(f"  {_ANSI_CYAN}{path}{_ANSI_RESET}")
+        print("\n".join(_colorize_diff(lines)))
+        if more:
+            print(f"  {_ANSI_DIM}… {more}{_ANSI_RESET}")
 
 
 class ToolExecutionManager:
@@ -402,6 +467,294 @@ class ToolExecutionManager:
             f"{_ANSI_DIM}{self._label} ({elapsed:.1f}s){_ANSI_RESET}"
         )
         return False  # don't suppress exceptions
+
+
+def _isatty(stream) -> bool:
+    try:
+        return bool(stream.isatty())
+    except Exception:
+        return False
+
+
+_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+
+
+def _split_committable(text: str) -> tuple[str, str]:
+    """Split streamed markdown into (finished blocks, unfinished tail).
+
+    A block is finished once a blank line follows it, or its code fence has
+    closed. Inside an open fence nothing is finished: a blank line there is
+    part of the code.
+    """
+    cut = pos = 0
+    fence = None
+    for line in text.split("\n")[:-1]:  # the last piece has no newline yet
+        pos += len(line) + 1
+        m = _FENCE_RE.match(line)
+        if fence:
+            if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence) \
+                    and not line.strip().strip(fence[0]):
+                fence = None
+                cut = pos
+        elif m:
+            fence = m.group(1)
+        elif not line.strip():
+            cut = pos
+    return text[:cut], text[cut:]
+
+
+if _RICH_AVAILABLE:
+    from rich.markdown import Heading as _RichHeading
+    from rich.segment import Segment as _Segment
+    from rich.style import Style as _Style
+    from rich.text import Text as _Text
+
+    class _LeftHeading(_RichHeading):
+        # rich centres h1, which reads oddly in a chat transcript.
+        LEVEL_ALIGN = {**_RichHeading.LEVEL_ALIGN, "h1": "left"}
+
+    class _ReplyMarkdown(_RichMarkdown):
+        elements = {**_RichMarkdown.elements, "heading_open": _LeftHeading}
+
+    class _Gutter:
+        """Indent a renderable by two columns, with an optional marker in the
+        first line's gutter. With max_lines, keep only the last lines: the
+        part of a long block still streaming that fits on screen."""
+
+        def __init__(self, renderable, marker=None, max_lines=None):
+            self.renderable = renderable
+            self.marker = marker
+            self.max_lines = max_lines
+
+        @staticmethod
+        def _blank(line) -> bool:
+            return all(not seg.text.strip() and not (seg.style and seg.style.bgcolor)
+                       for seg in line)
+
+        def __rich_console__(self, console, options):
+            width = max(options.max_width - 2, 10)
+            lines = console.render_lines(self.renderable, options.update(width=width), pad=False)
+            while lines and self._blank(lines[0]):
+                lines.pop(0)
+            while lines and self._blank(lines[-1]):
+                lines.pop()
+            marker = self.marker
+            if self.max_lines and len(lines) > self.max_lines:
+                lines = lines[-self.max_lines:]
+                marker = None  # its line scrolled off
+            for i, line in enumerate(lines):
+                if i == 0 and marker:
+                    yield _Segment(f"{marker} ", _Style(color="cyan", bold=True))
+                else:
+                    yield _Segment("  ")
+                yield from line
+                yield _Segment.line()
+
+
+def _reply_markdown(text):
+    return _ReplyMarkdown(text)
+
+
+_SPINNER_DOTS = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏" if _UNICODE else r"-\|/"
+
+
+class ResponseView:
+    """One assistant turn on screen: a spinner while waiting, the reply as
+    rendered markdown while it streams, and a line per tool call.
+
+    Finished markdown blocks are printed once, in full; only the block still
+    arriving is redrawn, so a reply taller than the terminal never leaves
+    duplicated frames in the scrollback. Without a terminal on stdout the
+    reply is written there as plain text and progress goes to stderr, so a
+    redirected one-shot answer holds nothing else.
+    """
+
+    def __init__(self, label="Thinking", console=None, animate=True):
+        # animate=False: no spinner and no redrawn tail, blocks only.
+        self.label = label
+        self._animate = animate
+        if console is None and _RICH_AVAILABLE and _isatty(sys.stdout):
+            console = _RichConsole(file=sys.stdout, theme=_REPLY_THEME)
+        self._console = console
+        self._live = None
+        self._heartbeat = None
+        self._pending = ""
+        self._in_segment = False   # a text segment has started since the last tool
+        self._blocks = 0           # blocks printed in the current segment
+        self._wrote_plain = False
+        self._closed = False
+        self._start = time.monotonic()
+
+    # -- lifecycle ---------------------------------------------------------
+
+    def __enter__(self):
+        self._start = time.monotonic()
+        if self._console is not None:
+            if self._animate:
+                from rich.live import Live
+                self._live = Live(self, console=self._console, transient=True,
+                                  refresh_per_second=10)
+                self._live.start()
+        else:
+            self._start_heartbeat()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+        return False
+
+    def close(self):
+        """Print what is still pending and remove the spinner. Idempotent."""
+        if self._closed:
+            return
+        self._closed = True
+        if self._console is not None:
+            pending, self._pending = self._pending, ""
+            self._commit(pending)
+            if self._live is not None:
+                self._live.stop()
+        else:
+            self._stop_heartbeat()
+            if self._wrote_plain:
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+
+    # -- events ------------------------------------------------------------
+
+    def text(self, delta: str):
+        if not delta:
+            return
+        if self._console is None:
+            self._stop_heartbeat()
+            if not self._in_segment and self._wrote_plain:
+                sys.stdout.write("\n\n")
+            elif not self._wrote_plain and _isatty(sys.stdout):
+                sys.stdout.write(f"\n{_ANSI_CYAN}{_ANSI_BOLD}{_SYM_RESP}{_ANSI_RESET} ")
+            self._in_segment = True
+            self._wrote_plain = True
+            sys.stdout.write(delta)
+            sys.stdout.flush()
+            return
+        self._pending += delta
+        done, self._pending = _split_committable(self._pending)
+        self._commit(done)
+
+    def tool(self, label: str):
+        """A tool call: finish the text so far and show the call on its own line."""
+        line = f"{_SYM_TOOL} {label}"
+        if self._console is None:
+            self._stop_heartbeat()
+            if _isatty(sys.stdout):
+                if self._wrote_plain and self._in_segment:
+                    sys.stdout.write("\n")
+                print(f"  {_ANSI_DIM}{line}{_ANSI_RESET}", flush=True)
+            else:
+                print(f"  {line}", file=sys.stderr, flush=True)
+            self._in_segment = False
+            self._start_heartbeat()
+            return
+        pending, self._pending = self._pending, ""
+        self._commit(pending)
+        if self._in_segment:
+            self._console.print()
+        self._console.print(_Text(f"  {line}", style="dim"), highlight=False)
+        self._in_segment = False
+        self._blocks = 0
+
+    def status(self, label: str):
+        """Change the spinner's label, e.g. to "Thinking"."""
+        self.label = label
+
+    # -- rendering ---------------------------------------------------------
+
+    def _commit(self, block: str):
+        if not block.strip():
+            return
+        if self._blocks or not self._in_segment:
+            self._console.print()
+        marker = None if self._in_segment else _SYM_RESP
+        self._console.print(_Gutter(_reply_markdown(block.strip("\n")), marker=marker))
+        self._in_segment = True
+        self._blocks += 1
+
+    def __rich_console__(self, console, options):
+        # Called by Live on every refresh (another thread): read fields once.
+        pending = self._pending
+        if pending.strip():
+            room = max(console.size.height - 4, 3)
+            marker = None if self._in_segment else _SYM_RESP
+            if self._blocks or not self._in_segment:
+                yield _Text("")
+            yield _Gutter(_reply_markdown(pending), marker=marker, max_lines=room)
+        elapsed = int(time.monotonic() - self._start)
+        frame = _SPINNER_DOTS[int(time.monotonic() * 10) % len(_SPINNER_DOTS)]
+        ellipsis = "…" if _UNICODE else "..."
+        status = _Text()
+        status.append(f"\n{frame} ", style="cyan")
+        status.append(f"{self.label}{ellipsis} ", style="")
+        status.append(f"({elapsed}s · ctrl+c to interrupt)", style="dim")
+        yield status
+
+    # -- plain-mode spinner ------------------------------------------------
+
+    def _start_heartbeat(self):
+        if self._animate and _isatty(sys.stderr):
+            self._heartbeat = _StderrHeartbeat(self.label)
+            self._heartbeat.start()
+
+    def _stop_heartbeat(self):
+        if self._heartbeat is not None:
+            self._heartbeat.stop()
+            self._heartbeat = None
+
+
+class NullView:
+    """A ResponseView that shows nothing, for calls whose output is not a reply."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def text(self, delta):
+        pass
+
+    def tool(self, label):
+        pass
+
+    def status(self, label):
+        pass
+
+    def close(self):
+        pass
+
+
+class _StderrHeartbeat:
+    """A one-line '⏺ Thinking… (Ns)' ticker on stderr for terminals without rich."""
+
+    def __init__(self, label):
+        self.label = label
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._start = time.monotonic()
+
+    def start(self):
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        self._thread.join(timeout=1.5)
+        print("\r\033[K", end="", file=sys.stderr, flush=True)
+
+    def _run(self):
+        ellipsis = "…" if _UNICODE else "..."
+        while True:
+            elapsed = int(time.monotonic() - self._start)
+            print(f"\r\033[K  {_ANSI_DIM}{_SYM_TOOL}  {self.label}{ellipsis} ({elapsed}s){_ANSI_RESET}",
+                  end="", file=sys.stderr, flush=True)
+            if self._stop.wait(1.0):
+                return
 
 
 def _print_reply(text):
