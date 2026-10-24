@@ -1,253 +1,57 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code in this repository. This file is kept short on purpose: it routes to the documents that hold the detail. Read the document for your task before changing code.
 
-## What This Project Does
+## What this project is
 
-`claude_light` is an interactive CLI chat tool for querying and editing a multi-language codebase using Claude. It uses a hybrid RAG + prompt caching strategy: project docs and directory structure are cached as a system prompt, while source files are split into method/function-level chunks via tree-sitter, embedded, and retrieved per-query.
+`claude_light` is an interactive CLI for querying and editing a multi-language codebase with Claude. It caches a project skeleton in the prompt cache and retrieves only the method-level code chunks each question needs (tree-sitter chunks, embedded, top-K per query).
 
-## Repository Layout
+## Where to read
 
-| Path | Purpose |
+| Task | Read |
 |---|---|
-| `claude_light/` | Main package — all application code |
-| `claude_light.py` | Thin shim that delegates to `claude_light/__main__.py` |
-| `installers/` | OS-specific installers (`install.sh`, `install_macos.sh`, `install.ps1`) |
-| `tests/unit/` | Unit tests for each module |
-| `tests/integration/` | Integration tests (git, benchmarks) |
-| `tests/utilities/` | Utility/mock tests |
-| `tests/linting/` | Syntax and regression linting checks |
-| `tests/benchmarks/` | Benchmark scripts (not run by default pytest) |
-| `tests/fixtures/` | Static fixture data (excluded from pytest discovery) |
-| `docs/architecture.md` | In-depth implementation walkthrough |
-| `docs/BENCHMARKS.md` | Benchmark methodology and interpretation |
-| `scripts/` | SBOM generation scripts |
+| Repo map, what each file does, agent harness | [HARNESS.md](HARNESS.md) |
+| How a part works (routing, caching, retrieval, indexing, compression) | [docs/architecture/ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md) |
+| Config constants and env vars | [docs/CONFIG.md](docs/CONFIG.md) |
+| Running, adding and fixing tests, test layout | [TESTING.md](TESTING.md) and [docs/test_strategy.md](docs/test_strategy.md) |
+| What CI runs on a push or PR | [docs/WORKFLOW.md](docs/WORKFLOW.md) |
+| Benchmarks and how to measure a token change | [docs/BENCHMARKS.md](docs/BENCHMARKS.md) |
+| Token-savings levers and their measured results | [TOKEN-SAVINGS.md](TOKEN-SAVINGS.md) |
+| Compression design rationale | [docs/llmlingua_plan.md](docs/llmlingua_plan.md) |
+| Index of all docs | [docs/DOCS.md](docs/DOCS.md) |
 
-## Running
+## Commands
 
 ```bash
+# Interactive
 ANTHROPIC_API_KEY=sk-ant-... python3 claude_light.py
 
-# One-shot (no interactive loop)
+# One-shot, or piped
 python3 claude_light.py "What does OrderService do?"
-
-# Pipe
 echo "List all REST endpoints" | python3 claude_light.py
 
-# Simulation / test mode (no API key or costs required)
-# Let the OAuth agent run your tests (command prefixes, repeatable)
+# Offline, no API key: the OAuth agent may run these commands
 python3 claude_light.py --allow-command "python -m pytest"
-
 python3 claude_light.py --test-mode small        # 5 files, 10 methods each
-python3 claude_light.py --test-mode extra-large  # 1000 files, 20 methods each
-```
 
-Run from the root of a project. Exits with an error if no authentication is found (unless using `--test-mode`).
-
-**Authentication resolution order:**
-1. **Environment Variable**: `ANTHROPIC_API_KEY=sk-ant-...`
-2. **Local Dotfiles**: `~/.anthropic` or project-local `./.env`
-3. **Automation Token**: `~/.claude_light_automation_token` (recommended for Windows)
-4. **Claude CLI OAuth**: `~/.claude/.credentials.json` (detected via standard `claude auth login`)
-
-The tool supports both **API Keys** (usage-based billing) and **Claude Pro Subscriptions** (flat-rate). It determines the mode dynamically based on the key found.
-
-## Installation
-
-```bash
-# Linux
-bash installers/install.sh
-
-# macOS (creates .venv + run.sh wrapper, handles Homebrew + zsh)
-bash installers/install_macos.sh
-
-# Windows PowerShell 5.1+
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\installers\install.ps1
-```
-
-## Dependencies
-
-Python 3.12 or newer. The installers and the SBOM job read [`requirements.txt`](requirements.txt), which is the one list of versions; `pyproject.toml` carries the same floors. The CI test job (`.github/workflows/test.yml`) installs its own package list, so it must be kept in step by hand.
-
-```bash
-pip install -r requirements.txt
-# Note: sentence-transformers pulls in PyTorch (~1.5 GB on first install)
-```
-
-Without tree-sitter, chunking falls back to whole-file mode. Without rich/prompt_toolkit, the tool degrades gracefully to plain text output and basic `input()`.
-
-**Optional (prompt compression):**
-```bash
-pip install llmlingua
-```
-
-Enables LLMLingua-2 compression of the retrieved RAG context before the API call. See [`docs/architecture.md`](docs/architecture.md#llmlingua-2-prompt-compression-optional) for what/why/how, and [`docs/llmlingua_plan.md`](docs/llmlingua_plan.md) for the design doc.
-
-**On by default** once the package is installed. First use downloads a ~280 MB BERT model and runs on CPU; subsequent compressions take 100–400 ms per query. If `llmlingua` isn't installed, the tool silently skips compression with no behaviour change — so nothing breaks on fresh machines.
-
-To opt out: `export CLAUDE_LIGHT_LLMLINGUA=0` (or set `LLMLINGUA_ENABLED=False` in `config.py`).
-
-## Tests
-
-```bash
-# Run all tests (unit + integration + utilities + linting)
+# Tests (see TESTING.md for the full picture)
 pytest
-
-# Single test file
-pytest tests/unit/test_retrieval.py
-
-# Single test function
-pytest tests/unit/test_retrieval.py::test_retrieve_top_k
-
-# Benchmarks (excluded from default run, require sentence-transformers)
-python tests/benchmarks/benchmark.py
-python tests/benchmarks/benchmark_retrieval.py --split dev
-python tests/benchmarks/benchmark_cost.py --dry-run
 ```
 
-`conftest.py` sets `ANTHROPIC_API_KEY=sk-ant-test-mock-key` so unit tests never make real API calls. `pytest.ini` excludes `tests/fixtures/` and `tests/benchmarks/` from collection.
+Run from the root of the project you want to query. Exits with an error if no authentication is found, unless `--test-mode` is used.
 
-## Package Architecture
+Authentication, in order: `ANTHROPIC_API_KEY`; `~/.anthropic` or `./.env`; `~/.claude_light_automation_token` (recommended on Windows); `~/.claude/.credentials.json` from `claude auth login`. An API key bills per token; a Pro subscription is flat-rate. The mode follows the credential found.
 
-The `claude_light/` package is organized by responsibility:
+Install with `installers/install.sh`, `installers/install_macos.sh` or `installers/install.ps1`. Dependencies come from `requirements.txt`; the CI test job installs its own list (`.github/workflows/test.yml`), so keep the two in step by hand. Python 3.12 or newer.
 
-| Module | Role |
-|---|---|
-| `config.py` | All constants, API key resolution, tree-sitter language loading, pricing |
-| `state.py` | Shared mutable state (`chunk_store`, `conversation_history`, `embedder`, etc.) protected by `threading.Lock` |
-| `main.py` | Entry point; chat loop, signal handlers, heartbeat thread, watchdog lifecycle |
-| `llm.py` | API calls, response streaming, query routing, skeleton/history management |
-| `retrieval.py` | Cosine similarity search (`embs @ q_emb`), dedup of multi-chunk files |
-| `indexer.py` | File watcher (`SourceHandler`), incremental re-embed, disk cache (`.claude_light_cache/`) |
-| `skeleton.py` | Compressed directory tree + `.md` file assembly for the cached system prompt |
-| `parsing.py` | Tree-sitter AST traversal, method-level chunk extraction for all supported languages |
-| `editor.py` | Parses `SEARCH/REPLACE` blocks from Claude responses, applies and diffs edits |
-| `linter.py` | Pre-apply syntax validation (Python `ast`, tree-sitter for other languages) |
-| `git_manager.py` | Auto-commit of AI edits; `/undo` reverts to the previous commit |
-| `executor.py` | Loads `SentenceTransformer` model, runs `auto_tune()`, executes `/run <cmd>` |
-| `streaming.py` | Consumes the API token stream into a `ui.ResponseView`, tracks thinking blocks and usage |
-| `retry.py` | Exponential backoff (2s→4s→8s, max 3 attempts) for transient API errors |
-| `tools.py` | Read-only workspace tools for API-key mode (`read_file`, `grep`, `list_files`), confined to the project root with output caps. `llm._api_tool_loop()` runs them in a manual tool loop (max `_API_TOOL_STEPS` = 8 rounds); edits still use SEARCH/REPLACE |
-| `compressor.py` | Optional LLMLingua-2 prompt compression of the retrieved RAG context. Lazy singleton, never raises into the hot path |
-| `ui.py` | ANSI colour, `ResponseView` (spinner + streamed markdown + tool lines, plain text when piped), diff display, welcome box, cost formatting |
-| `testing.py` | Test-mode helpers (synthetic file/chunk generation, mock API key) |
-| `__init__.py` | Re-exports all public symbols; wraps callables to sync shared state across modules |
+## Invariants: check these before editing
 
-**`__init__.py` design note:** Because modules import each other's globals at load time, `__init__.py` uses a `_wrap()` decorator that calls `_sync_bindings()` before and `_refresh_exports()` after every public function call. This keeps all modules' references to shared state (e.g. `state.embedder`, `state.chunk_store`) consistent without circular imports.
-
-## Architecture
-
-**Hybrid RAG + prompt caching. Two tiers:**
-
-| Tier | Content | Strategy |
-|---|---|---|
-| Skeleton (cached system prompt) | Directory tree + all `.md` files | Ephemeral cache — paid once, re-read cheaply |
-| Source files | Method/function-level chunks via tree-sitter | RAG — top-K chunks retrieved per query |
-
-**Three concurrent threads:**
-
-1. **Main thread** — input loop; retrieves relevant chunks per query via `retrieve()`, injects them as a second cached system block, stores only the clean query in `conversation_history`. The first index build runs in a background thread; until it finishes, OAuth-mode queries skip retrieval (the CLI agent searches the code itself) and API-key queries wait (`_index_ready_for_query()` in `main.py`). One-shot OAuth runs build the index in a thread, wait up to `_ONE_SHOT_INDEX_WAIT_SECS` (20 s), answer without it if needed, and join the build before exit. The router never waits for the embedder while the index build holds `embedder_lock` (`_encode_if_free()`); it falls back to lexical scores
-2. **Watchdog** (`SourceHandler`) — source file change → `reindex_file()` (re-chunks + re-embeds that file, cancels any pending timer first via 1.5 s debounce); `.md` change → `refresh_md_file()`. Event paths go through `indexer._project_path()` (watchdog reports `./a.py`, the index keys `a.py`; without it a re-index duplicated the file's chunks), and files under skipped directories (`.git`, `.venv`, `node_modules`, ...) are ignored
-3. **Heartbeat daemon** — checks every 30 s; if idle > 4 min (`CACHE_TTL_SECS`), calls `warm_cache(quiet=True)` to keep the ephemeral cache alive
-
-**Background threads never print.** A print from the watcher or the heartbeat lands inside a streaming reply or over the prompt being typed. They call `ui.notify()`, and the toolbar shows the notice for `ui.NOTICE_SECS` (8 s).
-
-**Multi-language support** (`_WANTED_LANGS` in `config.py`): tree-sitter grammars extract method/function nodes from `.java`, `.py`, `.js`, `.go`, `.rs`, `.ts`, `.tsx`. Falls back to whole-file chunking if tree-sitter is unavailable or a grammar is missing. Python decorators are included in their function chunk.
-
-**Method-level chunking** (`parsing.py`): Each chunk includes a file path comment and the class preamble (package + imports + class header) so it is self-contained. Overloaded method names get numeric suffixes. Chunk IDs use `filepath::methodName` (`::` is not valid in source identifiers). Falls back to whole-file if no methods are found.
-
-**Disk cache** (`.claude_light_cache/`): Embeddings are persisted to `index.npz` between runs (ids and texts as JSON, vectors as float32 arrays, loaded with `allow_pickle=False`: the directory may come from a cloned repo, and the old `index.pkl` ran whatever a repo shipped in it; an old `index.pkl` is deleted, never read); a `manifest.json` tracks per-file MD5 hashes and the embedding model used. Only changed or new files are re-embedded on restart. Command history (prompt_toolkit) is also stored here. The conversation itself is not saved between runs (#65).
-
-**Hybrid index** (`config.HYBRID_RETRIEVAL`, on by default; #61): `index_files()` embeds every chunk with the static model `FAST_EMBED_MODEL` (`emb_fast`, ~2 s for this repo) and returns, so retrieval works from the first query. Unless `dense="skip"` (one-shot runs), `indexer._complete_dense_index()` then adds `DENSE_EMBED_MODEL` vectors (`emb`, all-mpnet-base-v2) in a background thread, `_DENSE_BATCH` chunks per `embedder_lock` hold, and sets `state.dense_ready`. `retrieve()` uses `retrieval.hybrid_scores()`: z-scored cosine per model, averaged by `HYBRID_FAST_WEIGHT`; nothing is retrieved unless one model's best chunk clears its floor in `HYBRID_MIN_SCORE`; chunks within `HYBRID_SCORE_GAP` of the top go to the usual budget selection. Static alone until every chunk has a dense vector. On a warm start (every vector cached) both models load in background threads (`state.fast_ready`, `state.embedder_ready`) and `index_files()` returns in ~0.3 s; the first query waits for the static model, and up to 30 s for the dense one. Measure changes with `tests/benchmarks/benchmark_models.py` (questions in `tests/fixtures/repo_questions.json`). The suite runs with `CLAUDE_LIGHT_HYBRID=0` (`tests/conftest.py`); `tests/unit/test_hybrid.py` switches it on.
-
-**Auto-tuning** (`auto_tune` in `executor.py`): with `CLAUDE_LIGHT_HYBRID=0`, called twice in `index_files()` — first to select and load the embedding model (based on file count), then again after chunking to set `TOP_K` (`set_top_k()`, shared with the hybrid path) based on actual chunk sizes, targeting `TARGET_RETRIEVED_TOKENS` of context per query.
-
-| File count (`CLAUDE_LIGHT_HYBRID=0`) | Embedding model |
-|---|---|
-| < 50 | `all-MiniLM-L6-v2` (22 MB) |
-| 50–199 | `all-mpnet-base-v2` (420 MB) |
-| 200+ | `nomic-ai/nomic-embed-text-v1.5` (requires `einops`) |
-
-**Scoring**: `retrieve()` uses a single matrix multiply (`embs @ q_emb`) over all chunk embeddings — no per-chunk loop. With `CLAUDE_LIGHT_HYBRID=0`, two filters: `MIN_SCORE` (0.35, absolute floor) and `RELATIVE_SCORE_FLOOR` (0.60, fraction of the top chunk's score); on this repo's questions that floor dropped the answering file more often than not (mpnet's best chunk for it: median 0.31). Per-effort token budgets in `_RETRIEVAL_BUDGET` scale the context window from 1 500 (low) to 9 000 (max) tokens.
-
-**Token optimisations:**
-- Skeleton cached; retrieved chunks also cached (second `cache_control` block) — repeated queries over the same code pay the cache-read rate ($0.10/M on Sonnet 5.5) instead of full input ($2.00/M)
-- Conversation history capped at `MAX_HISTORY_TURNS` (6) via sliding window; old turns are summarised in batches of `SUMMARIZE_BATCH` (3) using the cheap Haiku model
-- `build_skeleton()` renders the directory tree with two compressions: (1) single-child directory chains collapsed (`main/java/com/example/`), (2) sibling files sharing an extension grouped with brace notation (`{OrderService,UserService}.java`). Typical savings: 30–50% of skeleton tokens.
-- **LLMLingua-2** *(on by default when `pip install llmlingua` is present; silent no-op otherwise)* — post-retrieval BERT-based token pruning of the retrieved-context block. Closes the gap left by caching: the retrieved block changes per query and rarely hits the cross-query cache, so halving it halves the cache-write cost on that block. Skeleton, history, and the user query are **not** compressed. See `compressor.py` and the architecture doc's [LLMLingua-2 section](docs/architecture.md#llmlingua-2-prompt-compression-optional) for the full rationale.
-
-**Key functions by module:**
-- `llm.py`: `route_query()` — weighted intent classifier (Arch/Logic/Infra) selects model + effort; `_build_system_blocks()` — constructs the system prompt list; `_update_skeleton()` — rebuilds skeleton under lock; `_extract_text()` — joins text blocks, skips thinking blocks
-- `skeleton.py`: `_build_compressed_tree()` / `_render_compressed_node()` — tree with chain collapse + brace grouping
-- `retrieval.py`: `_dedup_retrieved_context()` — emits per-file preamble once when multiple chunks from the same file are retrieved
-- `indexer.py`: `_chunks_for_file()` — all chunk IDs for a file path
-
-**Interactive commands** (`_COMMANDS` in `main.py`, which also feeds `/help` and the `/` completion menu): `/clear`, `/compact` (summarise, via `llm.compact_history()`), `/cost`, `/help`, `/run <cmd>`, `/undo`, `/why`, `exit`/`quit`. Keys: `alt+enter` new line, `Ctrl+C` cancels a turn. Unknown `/word` input is rejected, not sent to Claude. Exit prints one line (`ui.print_session_footer()`); `/cost` prints the tables. Every yes/no question (applying edits, committing the CLI agent's edits, `/undo`, token setup) goes through `ui.choose()`: an inline prompt_toolkit menu drawn under the diff, falling back to typed input without a console. "Don't ask again" sets `state.auto_approve_edits` (SEARCH/REPLACE writes) or `state.auto_commit_agent_edits` (agent commits), never both. `choose()` discards type-ahead before drawing and only numbers pick at once, so keys typed during a turn cannot answer it. Paths in diff titles are markup-escaped: they come from the model.
-
-**Auto-commit safety net**: When Claude makes file changes, the tool automatically commits them to git (`Claude: [summary]`, edited files listed in the body). `/undo` reverts that commit with `git reset --keep`, so uncommitted work elsewhere survives; it refuses if the last commit is not a `Claude:` commit or if a file in it has been edited since. Gracefully skipped if not in a git repo.
-
-For a deeper dive, see [docs/architecture.md](docs/architecture.md).
-
-## Reliability Features
-
-**Auto-Retry** (`retry.py`): exponential backoff 2s→4s→8s (capped at 60s), max 3 attempts. Non-retriable errors (401/403/404/400) fail immediately.
-
-**Thread-Safe State** (`state.py`): all shared state protected by `threading.Lock`. Global stats (`~/.claude_light_stats.json`, or `CLAUDE_LIGHT_STATS_FILE`) loaded on startup, saved on every usage update. `tests/conftest.py` points `CLAUDE_LIGHT_STATS_FILE` at a temp file so the suite never writes the real one. `state.turn_count` counts turns; do not derive it from `conversation_history`, which compression shrinks.
-
-**Streaming** (`streaming.py`, `ui.ResponseView`): both auth modes render through one `ResponseView` per turn. Finished markdown blocks are printed once; only the block still arriving is redrawn. Thinking changes the spinner label. OAuth history summaries go through the CLI (`render=False`), since that mode has no API key.
-
-**Startup**: the `anthropic` SDK is imported lazily (`llm._LazyClient`), so OAuth sessions never load it and the prompt appears in ~0.5 s instead of 2 s warm / 7 s cold. `retry.py` checks `sys.modules` instead of importing it.
-
-**Watchdog Lifecycle** (`main.py`): observer stopped and joined on exit (5 s timeout); Ctrl+C (default SIGINT, `KeyboardInterrupt`) cancels the current turn and kills the CLI agent's whole process tree (`_kill_process_tree` in `llm.py`; `taskkill /T` on Windows, where the CLI runs under `cmd.exe`), then returns to the prompt; at the prompt it exits. SIGTERM exits; `start_chat()`'s `finally` sets `stop_event`. Startup failures handled gracefully.
-
-## Key Config (`claude_light/config.py`)
-
-| Variable | Purpose |
-|---|---|
-| `TARGET_RETRIEVED_TOKENS` | Token budget for retrieved context per query (default 6 000) |
-| `MIN_SCORE` | Absolute cosine similarity floor to include a chunk (default 0.35; 0.45 dropped most natural-language questions) |
-| `RELATIVE_SCORE_FLOOR` | Drop chunks below this fraction of the top chunk's score (default 0.60) |
-| `HYBRID_RETRIEVAL` | Static + dense index (default on); `CLAUDE_LIGHT_HYBRID=0` restores one auto-tuned model and the two floors above |
-| `FAST_EMBED_MODEL` / `DENSE_EMBED_MODEL` | `static-retrieval-mrl-en-v1` / `all-mpnet-base-v2` |
-| `HYBRID_MIN_SCORE` | Per-model cosine floor for "anything related at all" (static 0.22, mpnet 0.21: just above the best chunk for off-topic questions) |
-| `HYBRID_SCORE_GAP` / `HYBRID_FAST_WEIGHT` | Keep chunks within this fused z-score of the top (1.5) / static model's share of the fused score (0.5) |
-| `_RETRIEVAL_BUDGET` | Per-effort token budgets: low=1500, medium=3000, high=6000, max=9000 |
-| `MAX_HISTORY_TURNS` | Compress+cap when stored turns exceed this (default 6) |
-| `SUMMARIZE_BATCH` | Old turns collapsed per summary call (default 3) |
-| `GLOBAL_STATS_FILE` | Path to global savings persistence (`~/.claude_light_stats.json`; override with `CLAUDE_LIGHT_STATS_FILE`) |
-| `HEARTBEAT_SECS` | How often the heartbeat thread wakes (default 30) |
-| `CACHE_TTL_SECS` | Idle seconds before heartbeat warms the cache (default 240) |
-| `MODEL_HAIKU` / `MODEL_SONNET` / `MODEL_OPUS` | Model ID constants used by the router |
-| `SUMMARY_MODEL` | Model used for history compression (set to `MODEL_HAIKU`) |
-| `MODEL_PRICES` / `model_prices()` | Per-model USD per M tokens (input, 5 m and 1 h cache write, read, output); every call is priced at the model that ran it. `PRICE_INPUT/WRITE/READ/OUTPUT` are the default model's rates (Sonnet 5.5: $2.00 / $2.50 / $0.10 / $10.00) |
-| `SKIP_DIRS` | Directory names excluded from indexing |
-| `EMBED_MODEL`, `TOP_K` | Set at runtime by `auto_tune()` — do not set manually |
-| `LLMLINGUA_ENABLED` | **On** by default (silent no-op if `llmlingua` isn't installed). Opt out via `CLAUDE_LIGHT_LLMLINGUA=0` |
-| `LLMLINGUA_MODEL` | Default `microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank` (~280 MB). Override with `CLAUDE_LIGHT_LLMLINGUA_MODEL` |
-| `LLMLINGUA_TARGET_RATE` | Fraction of tokens to **keep** (default 0.5 = halve). Override with `CLAUDE_LIGHT_LLMLINGUA_RATE` |
-| `LLMLINGUA_MIN_TOKENS` | Skip compression below this size — overhead > savings (default 800). Override with `CLAUDE_LIGHT_LLMLINGUA_MIN_TOKENS`; the retrieval budgets (1 500–9 000) are all above it |
-| `AGENT_SYSTEM_PROMPT` | Replaces `SYSTEM_PROMPT` in OAuth mode when `ALLOWED_COMMANDS` is non-empty: the agent edits with its Edit/Write tools and runs the allowed commands to check its work (SEARCH/REPLACE blocks only land after the turn, too late to test) |
-| `ALLOWED_COMMANDS` | Shell command prefixes the OAuth CLI agent may run (each becomes `Bash(<prefix>:*)`, or `PowerShell(<prefix>:*)` for a `powershell:` or `pwsh:` entry). From `--allow-command` or `CLAUDE_LIGHT_ALLOW_COMMANDS` (`;`-separated). The CLI runs with `--permission-mode acceptEdits`, `--setting-sources user` and `--strict-mcp-config`, so the target repo's `.claude/settings*.json` (allow rules, hooks) and `.mcp.json` never apply. A shell stays disallowed unless an entry names it: Bash for untagged or `bash:` entries, PowerShell for `powershell:` or `pwsh:`. Refused commands are listed after the turn |
-| `LLMLINGUA_FORCE_TOKENS` | Tokens preserved verbatim (default `["\n", "```", "::", "//"]` so chunk structure survives) |
-
-## SBOM
-
-```bash
-bash scripts/generate_sbom.sh   # Linux / macOS
-.\scripts\generate_sbom.ps1    # Windows
-```
-
-Also generated automatically as a GitHub Actions artifact on every push to `main`.
-
-## Benchmarks
-
-See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for full methodology.
-
-| Script | What it tests | API key needed |
-|---|---|---|
-| `tests/benchmarks/benchmark.py` | Analytical token savings (synthetic) | No |
-| `tests/benchmarks/benchmark_retrieval.py` | RAG quality — Hit@K, MRR on SWE-bench Lite | No |
-| `tests/benchmarks/benchmark_models.py` | Embedding models and hybrid fusion on this repo: does the answering file reach the context (`tests/fixtures/repo_questions.json`); `--budgets` adds recall and tokens per effort budget | No |
-| `tests/benchmarks/benchmark_router.py` | Effort tier and model the router picks per question (escalation-margin replay) | No |
-| `tests/benchmarks/benchmark_cost.py` | Real-world cost vs naive baseline | Yes (~$0.10–0.20) |
+- **Background threads never print.** The watcher and the heartbeat call `ui.notify()`. A print lands inside a streamed reply or over the prompt being typed.
+- **Shared state goes through `state.py` under `state.lock`.** Modules import each other's globals at load time, so `__init__.py` wraps public functions in `_wrap()` to sync bindings. Do not add a new cross-module global without going through it.
+- **`EMBED_MODEL` and `TOP_K` are set at runtime by `auto_tune()`.** Do not set them by hand.
+- **`state.turn_count` counts turns.** Do not derive it from `conversation_history`, which compression shrinks.
+- **Chunk ids are `filepath::methodName`.** Watchdog paths go through `indexer._project_path()`, or a re-index duplicates the file's chunks.
+- **Never load `index.pkl`.** The disk cache loads with `allow_pickle=False` because a cloned repo can ship a hostile pickle.
+- **Tests never call the real API or write the real stats file.** `tests/conftest.py` sets a mock key, `CLAUDE_LIGHT_HYBRID=0` and a temp `CLAUDE_LIGHT_STATS_FILE`. Keep those settings when you add tests.
+- **Auto-commit is the undo path.** AI edits commit as `Claude: [summary]`. `/undo` refuses unless the last commit is one of those and no file in it has changed since.
+- **A token change needs a measurement.** Run the relevant benchmark before and after, and keep only changes that show a gain. See [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
