@@ -33,7 +33,8 @@ comparison, and this document now reflects that.
 |---|---|---|---|
 | `benchmark.py` | Analytical token savings formula | No | Free |
 | `benchmark_retrieval.py` | RAG retrieval quality (Hit@K, MRR) | No | Free* |
-| `benchmark_models.py` | Embedding models and hybrid fusion on this repo | No | Free (models download on first run) |
+| `benchmark_models.py` | Embedding models, hybrid fusion, and per-effort budgets on this repo | No | Free (models download on first run) |
+| `benchmark_router.py` | Effort tier and model the router picks for each question | No | Free (static model download on first run) |
 | `benchmark_cost.py` | Real-world cost savings vs naive baseline | Yes | ~$0.05–$0.50 |
 | `benchmark_claude_code.py` | Claude Code vs `claude_light` vs naive baseline | Yes | Varies with live API/tool runs |
 
@@ -291,6 +292,9 @@ that answers the question reach the context the model is given?
 ```bash
 python tests/benchmarks/benchmark_models.py          # all configurations
 python tests/benchmarks/benchmark_models.py --sweep  # also sweep the gap and floors
+python tests/benchmarks/benchmark_models.py --budgets  # recall and tokens sent per effort budget
+python tests/benchmarks/benchmark_router.py            # effort and model per question
+python tests/benchmarks/benchmark_router.py --margin 0.30  # replay with another escalation margin
 ```
 
 ### Results (2026-10-24, CPU)
@@ -309,6 +313,34 @@ the defaults: floors of 0.22 (static) and 0.21 (mpnet) are the lowest that keep
 all six off-topic questions empty, and a gap of 1.5 sends a median of 3 files
 (3.0 finds two more answers but sends 6). 35 questions on one repository:
 differences of one or two questions are noise.
+
+### Per-effort budget (2026-10-24, `--budgets`)
+
+The configured hybrid (static + mpnet), with each effort's `_RETRIEVAL_BUDGET`.
+Tokens are the estimated size of the selected chunk text, not the rendered
+context, which adds file summaries on top.
+
+| Effort (budget) | Identifier | Paraphrase | Off-topic got nothing | Tokens sent, median | Tokens sent, mean |
+|---|---|---|---|---|---|
+| low (1,500) | 13/23 | 8/12 | 6/6 | 1,141 | 971 |
+| medium (3,000) | 14/23 | 9/12 | 6/6 | 1,901 | 1,689 |
+| high (6,000) | 16/23 | 9/12 | 6/6 | 1,997 | 2,732 |
+| max (9,000) | 16/23 | 9/12 | 6/6 | 1,997 | 3,443 |
+
+Lowering a budget costs recall: low gives up one identifier and one paraphrase
+answer against medium. Above high, the budget adds tokens without adding
+answers on these questions, but none of the 41 questions routes to max, so
+this result says nothing about the max tier's own questions.
+
+### Router replay (2026-10-24, `benchmark_router.py`)
+
+| Queries | Low | Medium | High | Max | Scores in the escalation band |
+|---|---|---|---|---|---|
+| 41 (repo questions) | 32 (78%) | 2 | 7 | 0 | 0 at margin 0.15, 0.30 and 0.50 |
+
+The Opus cost gate only changes a query's tier when its score is between 12.0
+and 12.0 × (1 + margin). No query falls there, so the escalation margin has no
+effect on this set. The replay measures routing only; it does not score answers.
 
 ---
 

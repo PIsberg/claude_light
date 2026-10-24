@@ -248,5 +248,6 @@ See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for full methodology.
 |---|---|---|
 | `tests/benchmarks/benchmark.py` | Analytical token savings (synthetic) | No |
 | `tests/benchmarks/benchmark_retrieval.py` | RAG quality — Hit@K, MRR on SWE-bench Lite | No |
-| `tests/benchmarks/benchmark_models.py` | Embedding models and hybrid fusion on this repo: does the answering file reach the context (`tests/fixtures/repo_questions.json`) | No |
+| `tests/benchmarks/benchmark_models.py` | Embedding models and hybrid fusion on this repo: does the answering file reach the context (`tests/fixtures/repo_questions.json`); `--budgets` adds recall and tokens per effort budget | No |
+| `tests/benchmarks/benchmark_router.py` | Effort tier and model the router picks per question (escalation-margin replay) | No |
 | `tests/benchmarks/benchmark_cost.py` | Real-world cost vs naive baseline | Yes (~$0.10–0.20) |
