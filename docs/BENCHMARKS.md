@@ -19,9 +19,6 @@ Measured on 2026-03-23:
 | `encode/httpx` 0.25.2 | 191K tokens | $1.75 | $0.45 | **74%** |
 | `bottlepy/bottle` 0.13.2 | 92K tokens | $1.52 | $0.30 | **80%** |
 | **Total (≈40 queries)** | | **$5.81** | **$1.16** | **80% / 5× cheaper** |
-| `encode/httpx` 0.25.2 | 191K tokens | $1.75 | $0.45 | **74%** |
-| `bottlepy/bottle` 0.13.2 | 92K tokens | $1.52 | $0.30 | **80%** |
-| **Total (≈40 queries)** | | **$5.81** | **$1.16** | **80% / 5× cheaper** |
 
 `benchmark_cost.py` is still useful, but it answers a different question:
 Claude Light vs a naive "send the whole repo" baseline. The README headline
