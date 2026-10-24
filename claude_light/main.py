@@ -317,10 +317,7 @@ def start_chat(auto_apply=False):
                 confirm = choose(f"Undo \"{msg_preview}\"?",
                                  [("yes", "Yes, revert it"), ("no", "No")]) == "yes"
                 if confirm:
-                    if git_manager.undo_last_commit():
-                        print(f"  {_T_SYS}  Reverted.\n")
-                    else:
-                        print(f"  {_T_ERR}  Undo failed.\n")
+                    git_manager.undo_last_commit()  # prints what it undid, or why not
                 else:
                     print(f"  {_T_SYS}  Cancelled.\n")
                 continue

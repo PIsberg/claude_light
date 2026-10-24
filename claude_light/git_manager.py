@@ -218,7 +218,9 @@ def undo_last_commit() -> bool:
         print(f"{_T_ERR} Failed to undo: files in that commit have uncommitted edits")
         return False
     
-    msg_display = f" ({last_msg})" if last_msg else ""
+    # The subject only: the body lists the files, one per line.
+    subject = last_msg.strip().splitlines()[0]
+    msg_display = f" ({subject})"
     print(f"{_T_EDIT} {_ANSI_GREEN}Undone{_ANSI_RESET}: {commit_hash}{msg_display}")
     return True
 

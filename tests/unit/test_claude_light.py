@@ -6652,6 +6652,21 @@ class TestGitManager(unittest.TestCase):
         # File should be gone (working directory reverted)
         self.assertFalse(Path("file.py").exists())
 
+    def test_undo_reports_the_subject_on_one_line(self):
+        # Live, the whole message (with its "- calc.py" file list) was
+        # printed inside the parentheses, leaving a stray "- calc.py)" line.
+        from claude_light import git_manager
+        Path("calc.py").write_text("x = 1\n", encoding="utf-8")
+        captured = io.StringIO()
+        with patch("sys.stdout", captured):
+            git_manager.auto_commit(["calc.py"], "Add multiply")
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            self.assertTrue(git_manager.undo_last_commit())
+        lines = [l for l in out.getvalue().splitlines() if l.strip()]
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("Claude: Add multiply", lines[0])
+
     def test_undo_keeps_uncommitted_work_in_other_files(self):
         from claude_light import git_manager
         Path("file.py").write_text("x = 1\n", encoding="utf-8")
