@@ -18,7 +18,7 @@ Enable the following branch protection rules in GitHub Settings → Branches →
 - [x] **Require status checks to pass before merging**
   - [x] Require branches to be up to date before merging
   - Required status checks:
-    - `test (3.11)`
+    - `test (3.12)`
     - `dependency-review`
     - `sbom`
     - `CodeQL`

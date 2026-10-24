@@ -68,25 +68,11 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 ## Dependencies
 
-**Required:**
-```bash
-pip install "sentence-transformers>=5.3.0" "numpy>=2.4.3" "watchdog>=6.0.0" "anthropic>=0.86.0"
-# Note: sentence-transformers pulls in PyTorch (~1.5 GB on first install)
-```
+Python 3.12 or newer. The installers and the SBOM job read [`requirements.txt`](requirements.txt), which is the one list of versions; `pyproject.toml` carries the same floors. The CI test job (`.github/workflows/test.yml`) installs its own package list, so it must be kept in step by hand.
 
-**Optional (strongly recommended):**
 ```bash
-pip install \
-    "tree-sitter>=0.25.2" \
-    "tree-sitter-java>=0.23.5" \
-    "tree-sitter-python>=0.25.0" \
-    "tree-sitter-go>=0.25.0" \
-    "tree-sitter-rust>=0.24.1" \
-    "tree-sitter-javascript>=0.25.0" \
-    "tree-sitter-typescript>=0.23.2" \
-    "rich>=14.3.3" \
-    "prompt_toolkit>=3.0.52" \
-    "einops>=0.8.2"
+pip install -r requirements.txt
+# Note: sentence-transformers pulls in PyTorch (~1.5 GB on first install)
 ```
 
 Without tree-sitter, chunking falls back to whole-file mode. Without rich/prompt_toolkit, the tool degrades gracefully to plain text output and basic `input()`.
