@@ -17,7 +17,13 @@ sys.path.insert(0, project_root)
 
 from claude_light.retry import retry_with_backoff, _should_retry, MAX_RETRIES, INITIAL_BACKOFF_SECS, MAX_BACKOFF_SECS
 import anthropic
-import httpx
+
+# anthropic>=2 replaced httpx with httpx2 and no longer installs httpx at all,
+# so mock against whichever HTTP library the installed SDK actually uses.
+try:
+    import httpx2 as httpx
+except ImportError:
+    import httpx
 
 
 def _make_status_error(cls, message="error", status_code=400):
