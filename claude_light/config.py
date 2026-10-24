@@ -82,9 +82,9 @@ def _resolve_api_key() -> tuple[str, str, str, str]:
 API_KEY, AUTH_MODE, API_KEY_SOURCE, AUTH_TOKEN = _resolve_api_key()
 ECONOMY_MODE = "USD" if AUTH_MODE == "API_KEY" else "TOKENS"
 
-MODEL_HAIKU             = "claude-haiku-4-5-20251001"
-MODEL_SONNET            = "claude-sonnet-4-6"
-MODEL_OPUS              = "claude-opus-4-6"
+MODEL_HAIKU             = "claude-haiku-5-5"
+MODEL_SONNET            = "claude-sonnet-5-5"
+MODEL_OPUS              = "claude-opus-5-5"
 MODEL                   = MODEL_SONNET              # default; overridden per-turn by router
 SUMMARY_MODEL           = MODEL_HAIKU               # cheap model for history compression
 HEARTBEAT_SECS          = 30

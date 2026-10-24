@@ -340,7 +340,9 @@ def _summarize_turns(messages: list) -> tuple:
     def _call_api():
         return client.messages.create(
             model=SUMMARY_MODEL,
-            max_tokens=400,
+            # Thinking is always on and shares this cap with the summary.
+            max_tokens=4_000,
+            output_config={"effort": "low"},
             messages=[{
                 "role": "user",
                 "content": (
@@ -381,6 +383,17 @@ def _maybe_compress_history():
 # The 1h cache TTL used in _build_system_blocks() requires this beta header;
 # without it the API silently drops the cache_control block (no caching at all).
 _EXTENDED_CACHE_HEADERS = {"anthropic-beta": "extended-cache-ttl-2025-04-11"}
+
+# The 5.5 models always think adaptively; depth is set by output_config.effort
+# and a thinking budget is rejected with a 400. Thinking tokens count against
+# max_tokens, so the router's caps (sized for the answer alone) would truncate
+# replies. Requests stream, so a larger cap costs nothing unless it is used.
+_MIN_MAX_TOKENS = {"low": 8_000, "medium": 16_000, "high": 32_000, "max": 64_000}
+
+
+def _apply_effort(create_kwargs: dict, effort: str) -> None:
+    create_kwargs["output_config"] = {"effort": effort}
+    create_kwargs["max_tokens"] = max(create_kwargs["max_tokens"], _MIN_MAX_TOKENS[effort])
 
 
 def _build_system_blocks(skeleton):
@@ -1031,7 +1044,8 @@ def warm_cache(quiet=False):
     try:
         response = client.messages.create(
             model=MODEL,
-            max_tokens=1,
+            # 0 = prefill only: writes the cache, bills no output tokens.
+            max_tokens=0,
             system=_build_system_blocks(skeleton),
             messages=[{"role": "user", "content": "ok"}],
             extra_headers=_EXTENDED_CACHE_HEADERS,
@@ -1177,8 +1191,7 @@ def chat(query, auto_apply=False):
         messages=messages,
         extra_headers=_EXTENDED_CACHE_HEADERS,
     )
-    if effort == "max":
-        create_kwargs["thinking"] = {"type": "enabled", "budget_tokens": 10_000}
+    _apply_effort(create_kwargs, effort)
 
     # Snapshot dirty files BEFORE the API call so we can distinguish agent
     # edits (OAUTH mode: the CLI's own Read/Edit/Bash tools aren't actually
@@ -1293,8 +1306,7 @@ def one_shot(prompt, auto_apply=False):
         messages=[{"role": "user", "content": f"{ctx_prefix}Question:\n{prompt}"}],
         extra_headers=_EXTENDED_CACHE_HEADERS,
     )
-    if effort == "max":
-        create_kwargs["thinking"] = {"type": "enabled", "budget_tokens": 10_000}
+    _apply_effort(create_kwargs, effort)
 
     # See chat() for rationale — snapshot to detect agent edits in OAUTH mode.
     pre_modified = _git_modified_snapshot() if AUTH_MODE == "OAUTH" else set()

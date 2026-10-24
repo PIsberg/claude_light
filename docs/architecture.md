@@ -397,12 +397,14 @@ The Retrieval-Augmented Generation pipeline finds and injects only relevant code
 
 ### Effort Levels
 
-| Effort | Model | Max Tokens | Retrieval Budget | Thinking |
-|--------|-------|------------|------------------|----------|
-| low | Haiku | 2,048 | 1,500 | off |
-| medium | Sonnet | 4,096 | 3,000 | off |
-| high | Sonnet | 8,192 | 6,000 | off |
-| max | Opus | 16,000 | 9,000 | on |
+| Effort | Model | Router Max Tokens | Sent Max Tokens | Retrieval Budget |
+|--------|-------|-------------------|-----------------|------------------|
+| low | Haiku 5.5 | 2,048 | 8,000 | 1,500 |
+| medium | Sonnet 5.5 | 4,096 | 16,000 | 3,000 |
+| high | Sonnet 5.5 | 8,192 | 32,000 | 6,000 |
+| max | Opus 5.5 | 16,000 | 64,000 | 9,000 |
+
+The 5.5 models always think adaptively. The tier's effort is sent as `output_config.effort` (a thinking budget is rejected with a 400), and because thinking tokens count against `max_tokens`, `_apply_effort()` raises the cap to the "Sent" column. The router's own figure is still what the cost gate below estimates with. In OAuth mode only the model is passed to the CLI.
 
 ### Hybrid Router (`route_query`)
 
@@ -498,9 +500,7 @@ partition "3. Context Assembly" {
 }
 
 partition "4. API Call" {
-  if (effort == max) then (yes)
-    :Enable thinking mode\nbudget_tokens = 10,000;
-  endif
+  :Send output_config.effort = tier\nraise max_tokens for thinking;
   :Call Anthropic API\nwith streaming;
   :Stream response to terminal;
 }
