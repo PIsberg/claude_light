@@ -144,7 +144,6 @@ The `claude_light/` package is organized by responsibility:
 | `retry.py` | Exponential backoff (2s→4s→8s, max 3 attempts) for transient API errors |
 | `tools.py` | Read-only workspace tools for API-key mode (`read_file`, `grep`, `list_files`), confined to the project root with output caps. `llm._api_tool_loop()` runs them in a manual tool loop (max `_API_TOOL_STEPS` = 8 rounds); edits still use SEARCH/REPLACE |
 | `compressor.py` | Optional LLMLingua-2 prompt compression of the retrieved RAG context. Lazy singleton, never raises into the hot path |
-| `session_manager.py` | Persists conversation history to `.claude_light_cache/session.json` |
 | `ui.py` | ANSI colour, `ResponseView` (spinner + streamed markdown + tool lines, plain text when piped), diff display, welcome box, cost formatting |
 | `testing.py` | Test-mode helpers (synthetic file/chunk generation, mock API key) |
 | `__init__.py` | Re-exports all public symbols; wraps callables to sync shared state across modules |
@@ -172,7 +171,7 @@ The `claude_light/` package is organized by responsibility:
 
 **Method-level chunking** (`parsing.py`): Each chunk includes a file path comment and the class preamble (package + imports + class header) so it is self-contained. Overloaded method names get numeric suffixes. Chunk IDs use `filepath::methodName` (`::` is not valid in source identifiers). Falls back to whole-file if no methods are found.
 
-**Disk cache** (`.claude_light_cache/`): Embeddings are persisted to `index.pkl` between runs; a `manifest.json` tracks per-file MD5 hashes and the embedding model used. Only changed or new files are re-embedded on restart. Command history (prompt_toolkit) and session state are also stored here.
+**Disk cache** (`.claude_light_cache/`): Embeddings are persisted to `index.pkl` between runs; a `manifest.json` tracks per-file MD5 hashes and the embedding model used. Only changed or new files are re-embedded on restart. Command history (prompt_toolkit) is also stored here. The conversation itself is not saved between runs (#65).
 
 **Auto-tuning** (`auto_tune` in `executor.py`): called twice in `index_files()` — first to select and load the embedding model (based on file count), then again after chunking to set `TOP_K` based on actual chunk sizes, targeting `TARGET_RETRIEVED_TOKENS` of context per query.
 
