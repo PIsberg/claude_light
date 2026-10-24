@@ -288,6 +288,18 @@ Rules:
 5. After all blocks, write a short plain-English summary of what changed.
 """
 
+# Used instead of SYSTEM_PROMPT in OAuth mode when the user allowlisted
+# commands (ALLOWED_COMMANDS). SEARCH/REPLACE blocks are applied only after
+# the turn ends, so an agent writing them could never run the tests on its
+# own change; editing with the CLI's tools lets it check its work. claude_light
+# still shows a diff of the agent's edits and commits them for /undo.
+AGENT_SYSTEM_PROMPT = """You are an expert code assistant working in the user's repository. Answer questions about the codebase provided below. Be concise and precise.
+
+You can edit and create files with your Edit and Write tools; the changes are applied directly and committed for the user afterwards, so never ask for confirmation and never ask the user to paste content. Do not write files with shell commands or scripts.
+
+After changing code, run the allowed commands listed at the end of this prompt (for example the tests) to check your work, and fix what fails before you finish. End with a short plain-English summary of what changed and how you checked it.
+"""
+
 # PRICING (USD per million tokens), Claude API list prices from
 # platform.claude.com/docs/en/about-claude/pricing, checked 2026-10-24.
 # "write" is a 5-minute cache write (1.25x input); "write_1h" a 1-hour write

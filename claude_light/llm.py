@@ -1082,6 +1082,9 @@ def _make_streaming_api_call(**create_kwargs):
             b.get("text", "") for b in system_blocks if b.get("text")
         )
         if config.ALLOWED_COMMANDS:
+            # The agent may run the tests, so it edits with its own tools and
+            # can check the result (SEARCH/REPLACE lands only after the turn).
+            system_text = system_text.replace(SYSTEM_PROMPT, config.AGENT_SYSTEM_PROMPT, 1)
             system_text += (
                 "\n\nYou may run these shell commands with the Bash tool to check your"
                 " work, for example the tests after an edit: "

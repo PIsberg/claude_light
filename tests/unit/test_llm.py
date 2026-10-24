@@ -937,6 +937,44 @@ class TestCliCommandPermissions(unittest.TestCase):
         self.assertNotIn("--system-prompt", seen["cmd"])
         self.assertEqual(seen.get("text"), "SECRET SKELETON")
 
+    def _system_text_sent(self, allowed):
+        """System prompt the OAuth path hands to the CLI for one turn."""
+        from claude_light import llm, config
+        seen = {}
+
+        def fake_cli(prompt, model="", extra_flags=None):
+            flags = list(extra_flags or [])
+            seen["system"] = flags[flags.index("--system-prompt") + 1]
+            usage = MagicMock(input_tokens=1, output_tokens=1, cost_usd=None,
+                              cache_creation_input_tokens=0, cache_read_input_tokens=0)
+            return "ok", usage, None
+
+        with patch.object(config, "AUTH_MODE", "OAUTH"), \
+             patch.object(config, "ALLOWED_COMMANDS", allowed), \
+             patch.object(llm, "_make_cli_subprocess_call", side_effect=fake_cli):
+            llm._make_streaming_api_call(
+                model="m", max_tokens=10,
+                system=llm._build_system_blocks("SKELETON"),
+                messages=[{"role": "user", "content": "hi"}])
+        return seen["system"]
+
+    def test_agent_edits_directly_when_it_may_run_the_tests(self):
+        print("\n  ▶ TestCliCommandPermissions.test_agent_edits_directly_when_it_may_run_the_tests")
+        # SEARCH/REPLACE blocks are applied only after the turn ends, so an
+        # agent told to use them can never run the tests on its own change.
+        system = self._system_text_sent(["python -m pytest"])
+        self.assertNotIn("SEARCH/REPLACE blocks (described below) ARE your write mechanism", system)
+        self.assertIn("Edit", system)
+        self.assertIn("python -m pytest", system)
+        self.assertIn("SKELETON", system)
+
+    def test_search_replace_stays_without_an_allowlist(self):
+        print("\n  ▶ TestCliCommandPermissions.test_search_replace_stays_without_an_allowlist")
+        # Without verification there is no reason to give up the lint check,
+        # diff preview and approval prompt of the SEARCH/REPLACE path.
+        system = self._system_text_sent([])
+        self.assertIn("SEARCH/REPLACE blocks (described below) ARE your write mechanism", system)
+
     def test_no_bare_flag_on_posix(self):
         print("\n  ▶ TestCliCommandPermissions.test_no_bare_flag_on_posix")
         # --bare never reads OAuth credentials: live, with the OAuth token and
