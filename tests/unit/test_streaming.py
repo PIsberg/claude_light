@@ -35,7 +35,10 @@ class TestStreamingResponseHandler:
     def setup_method(self):
         """Reset state before each test."""
         state.session_cost = 0.0
-        state.session_tokens = {"input": 0, "cache_write": 0, "cache_read": 0, "output": 0}
+        # Reset in place: other modules hold references to this dict, and
+        # replacing it broke later tests that read it through claude_light.
+        for key in state.session_tokens:
+            state.session_tokens[key] = 0
 
     def test_handler_initialization(self):
         """Test that handler initializes correctly."""
@@ -192,7 +195,10 @@ class TestAccumulateUsageFromDict:
     def setup_method(self):
         """Reset state before each test."""
         state.session_cost = 0.0
-        state.session_tokens = {"input": 0, "cache_write": 0, "cache_read": 0, "output": 0}
+        # Reset in place: other modules hold references to this dict, and
+        # replacing it broke later tests that read it through claude_light.
+        for key in state.session_tokens:
+            state.session_tokens[key] = 0
 
     def test_accumulate_basic_usage(self):
         """Test accumulating basic usage."""

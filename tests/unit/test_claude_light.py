@@ -4042,6 +4042,10 @@ class TestOneShotWithHits(unittest.TestCase):
         mock_emb = MagicMock()
         mock_emb.encode.return_value = np.array([1.0, 0.0])
         cl.embedder = mock_emb
+        # retrieve() waits for this event; without it the test only passed
+        # when an earlier test happened to leave it set.
+        import claude_light.state as _st
+        _st.embedder_ready.set()
 
         resp = MagicMock()
         block = MagicMock()
