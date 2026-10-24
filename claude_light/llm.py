@@ -590,6 +590,11 @@ def _kill_process_tree(proc) -> None:
             proc.kill()
         except Exception:
             pass
+    # Reap it, so it does not linger as a zombie on POSIX.
+    try:
+        proc.wait(timeout=5)
+    except Exception:
+        pass
 
 
 # The CLI runs a full agent loop (read files, edit, re-read), so a multi-file
