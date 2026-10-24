@@ -71,6 +71,27 @@ class TestRouteQuery(unittest.TestCase):
             _, effort, _ = route_query(q)
             self.assertEqual(effort, "low", msg=f"query: {q!r}")
 
+    def test_edit_requests_without_the_listed_verbs_are_not_sent_to_haiku(self):
+        print("\n  ▶ TestRouteQuery.test_edit_requests_without_the_listed_verbs_are_not_sent_to_haiku")
+        # Live, "Make divide raise ValueError..." went to Haiku at low
+        # effort: none of make/rename/handle/raise was a logic signal.
+        for q in (
+            "Make divide raise ValueError with a clear message when b is 0.",
+            "Rename load_cache to read_cache everywhere",
+            "Handle the empty list case in parse_args",
+            "Remove the unused import in ui.py",
+        ):
+            model, effort, _ = route_query(q)
+            self.assertNotEqual(model, MODEL_HAIKU, msg=q)
+            self.assertNotEqual(effort, "low", msg=q)
+
+    def test_edit_verbs_match_whole_words_only(self):
+        print("\n  ▶ TestRouteQuery.test_edit_verbs_match_whole_words_only")
+        # "make_report" and "makefile" name things; they are not requests.
+        from claude_light.llm import _lexical_dimension_scores
+        self.assertEqual(_lexical_dimension_scores("where is make_report defined")["logic"], 0)
+        self.assertEqual(_lexical_dimension_scores("show the makefile")["logic"], 0)
+
     def test_high_effort_code_modification(self):
         print("\n  ▶ TestRouteQuery.test_high_effort_code_modification")
         model, effort, tokens = route_query("refactor the parse method to handle exceptions")

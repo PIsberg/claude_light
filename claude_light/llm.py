@@ -3,6 +3,7 @@ import os
 import time
 import json
 import subprocess
+import re
 import shutil
 import threading
 from pathlib import Path
@@ -84,6 +85,12 @@ _LOGIC_SIGNALS = frozenset({
     "build", "develop", "generate", "update", "change", "modify",
     "migrate", "convert", "extend", "integrate", "logic", "algorithm"
 })
+# Edit verbs matched as whole words: "make" must not fire on "makefile" or
+# "make_report". Without them, "Make divide raise ValueError..." and
+# "Rename x to y" went to Haiku at low effort.
+_EDIT_VERB_RE = re.compile(
+    r"\b(?:make|rename|remove|delete|replace|raise|handle|rewrite|move|split|validate|wrap|drop|inline|extract)\b"
+)
 _INFRA_SIGNALS = frozenset({
     "list", "show", "where", "what is", "what are",
     "how many", "print", "display", "tell me", "which file",
@@ -148,7 +155,8 @@ def _lexical_dimension_scores(q: str) -> dict:
     """Weighted substring match scores for each intent dimension."""
     return {
         "arch":  sum(4.0 for s in _ARCH_SIGNALS  if s in q),
-        "logic": sum(5.0 for s in _LOGIC_SIGNALS if s in q),
+        "logic": sum(5.0 for s in _LOGIC_SIGNALS if s in q)
+                 + (5.0 if _EDIT_VERB_RE.search(q) else 0.0),
         "infra": sum(0.5 for s in _INFRA_SIGNALS if s in q),
     }
 
