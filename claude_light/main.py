@@ -329,8 +329,17 @@ def main():
     parser.add_argument("--test-mode", choices=["small", "medium", "large", "extra-large"],
                         help="Run in test mode with a synthetic codebase and mocked API.")
     parser.add_argument("-y", "--yes", action="store_true", help="Automatically apply changes without asking.")
+    parser.add_argument("--allow-command", action="append", default=[], metavar="PREFIX",
+                        help="Let the Claude CLI agent (subscription mode) run shell commands starting "
+                             "with PREFIX, e.g. \"python -m pytest\". Repeatable. Also "
+                             "CLAUDE_LIGHT_ALLOW_COMMANDS=\"a; b\".")
     parser.add_argument("query", nargs="*", help="Optional query for one-shot mode.")
     args, unknown = parser.parse_known_args()
+
+    import claude_light.config as _config
+    for prefix in args.allow_command:
+        if prefix.strip() and prefix.strip() not in _config.ALLOWED_COMMANDS:
+            _config.ALLOWED_COMMANDS.append(prefix.strip())
 
     if args.test_mode:
         from tests.utilities.test_mocks import MockManager

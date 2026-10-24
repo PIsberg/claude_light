@@ -849,6 +849,63 @@ def _tool_use_event(tool_id, name, tool_input):
         {"type": "tool_use", "id": tool_id, "name": name, "input": tool_input}]}}
 
 
+class TestCliCommandPermissions(unittest.TestCase):
+    """The CLI used to run with --dangerously-skip-permissions and Bash banned
+    outright, so the agent could edit code but never run the tests to check
+    it. Now edits are auto-accepted, the CLI's own read-only commands work,
+    and anything else must be on an allowlist the user opts into. Verified
+    live (claude 2.1.310): a command outside the list is denied with an
+    error the model sees, not a prompt that hangs."""
+
+    def _cmd_for(self, allowed):
+        from claude_light import llm, config
+        captured = io.StringIO()
+        mock_proc = _fake_popen(['{"type":"result","subtype":"success","result":"","usage":{}}'])
+        with patch.object(config, "ALLOWED_COMMANDS", allowed), \
+             patch("claude_light.llm.subprocess.Popen", return_value=mock_proc) as popen_mock, \
+             patch("shutil.which", return_value="/fake/bin/claude"), \
+             patch("sys.stdout", captured):
+            llm._make_cli_subprocess_call("hi")
+        return popen_mock.call_args.args[0]
+
+    def test_permissions_are_not_skipped(self):
+        print("\n  ▶ TestCliCommandPermissions.test_permissions_are_not_skipped")
+        cmd = self._cmd_for([])
+        self.assertNotIn("--dangerously-skip-permissions", cmd)
+        self.assertEqual(cmd[cmd.index("--permission-mode") + 1], "acceptEdits")
+        self.assertNotIn("--allowedTools", cmd)
+
+    def test_allowlisted_commands_become_bash_rules(self):
+        print("\n  ▶ TestCliCommandPermissions.test_allowlisted_commands_become_bash_rules")
+        cmd = self._cmd_for(["python -m pytest", "npm test"])
+        allowed = cmd[cmd.index("--allowedTools") + 1]
+        self.assertEqual(allowed, "Bash(python -m pytest:*),Bash(npm test:*)")
+
+    def test_denied_command_is_reported_with_how_to_allow_it(self):
+        print("\n  ▶ TestCliCommandPermissions.test_denied_command_is_reported_with_how_to_allow_it")
+        import json as _json
+        from claude_light import llm, config
+        result = {"type": "result", "subtype": "success", "result": "done", "usage": {},
+                  "permission_denials": [{"tool_name": "Bash",
+                                          "tool_input": {"command": "npm test -- --watch=false"}}]}
+        out = io.StringIO()
+        with patch.object(config, "ALLOWED_COMMANDS", []), \
+             patch("claude_light.llm.subprocess.Popen", return_value=_fake_popen([_json.dumps(result)])), \
+             patch("shutil.which", return_value="/fake/bin/claude"), \
+             patch("sys.stdout", out):
+            llm._make_cli_subprocess_call("hi")
+        text = out.getvalue()
+        self.assertIn("npm test -- --watch=false", text)
+        self.assertIn("--allow-command", text)
+
+    def test_allowlist_parsing(self):
+        print("\n  ▶ TestCliCommandPermissions.test_allowlist_parsing")
+        from claude_light.config import parse_allowed_commands
+        self.assertEqual(parse_allowed_commands(" python -m pytest ; npm test;; "),
+                         ["python -m pytest", "npm test"])
+        self.assertEqual(parse_allowed_commands(""), [])
+
+
 class TestCliAgentActivity(unittest.TestCase):
     """In OAuth mode the CLI agent reads and edits files on its own. The user
     must see those actions as they happen, and narration from separate
@@ -921,7 +978,12 @@ class TestChatWithoutIndex(unittest.TestCase):
             return "answer", usage, True
 
         out = io.StringIO()
-        with patch.object(llm, "retrieve") as retrieve_mock,              patch.object(llm, "_make_streaming_api_call", side_effect=fake_call),              patch.object(llm, "route_query", return_value=("m", "medium", 4096)),              patch.object(llm, "record_retrieval"),              patch.object(llm, "print_stats"),              patch("sys.stdout", out):
+        with patch.object(llm, "retrieve") as retrieve_mock, \
+             patch.object(llm, "_make_streaming_api_call", side_effect=fake_call), \
+             patch.object(llm, "route_query", return_value=("m", "medium", 4096)), \
+             patch.object(llm, "record_retrieval"), \
+             patch.object(llm, "print_stats"), \
+             patch("sys.stdout", out):
             llm.chat("where is the retry loop?", use_index=False)
 
         retrieve_mock.assert_not_called()

@@ -6273,6 +6273,19 @@ class TestModuleEntrypoint(unittest.TestCase):
 
 class TestMainRouting(unittest.TestCase):
 
+    def test_allow_command_flags_extend_the_allowlist(self):
+        import claude_light.main as main_mod
+        import claude_light.config as config
+        with patch.object(config, "ALLOWED_COMMANDS", ["npm test"]), \
+             patch.object(main_mod.sys, "argv", ["claude_light", "--allow-command", "python -m pytest",
+                                                 "--allow-command", "ruff check", "fix the bug"]), \
+             patch.object(main_mod, "one_shot") as mock_one_shot, \
+             patch.object(main_mod, "start_chat"):
+            main_mod.main()
+            allowed = list(config.ALLOWED_COMMANDS)
+        self.assertEqual(allowed, ["npm test", "python -m pytest", "ruff check"])
+        mock_one_shot.assert_called_once_with("fix the bug", auto_apply=False)
+
     def test_main_non_tty_stdin_routes_to_one_shot(self):
         import claude_light.main as main_mod
 

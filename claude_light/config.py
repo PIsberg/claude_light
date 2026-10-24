@@ -124,6 +124,18 @@ LLMLINGUA_FORCE_TOKENS = ["\n", "```", "::", "//"]
 # to also strip docstrings/Javadoc when you need to squeeze the context further.
 STRIP_DOCSTRINGS = os.environ.get("CLAUDE_LIGHT_STRIP_DOCS", "0") == "1"
 
+def parse_allowed_commands(spec: str) -> list:
+    """Split a ';'-separated list of command prefixes, dropping blanks."""
+    return [c.strip() for c in (spec or "").split(";") if c.strip()]
+
+
+# Shell commands the OAuth CLI agent may run unattended (e.g. the test suite),
+# as prefixes: "python -m pytest" allows "python -m pytest tests/ -q". Each
+# becomes a Bash(<prefix>:*) rule. Anything else is denied, apart from the
+# read-only commands the CLI approves by itself. Set with --allow-command
+# (repeatable) or CLAUDE_LIGHT_ALLOW_COMMANDS="python -m pytest; npm test".
+ALLOWED_COMMANDS = parse_allowed_commands(os.environ.get("CLAUDE_LIGHT_ALLOW_COMMANDS", ""))
+
 SKIP_DIRS      = {
     ".git", "target", "build", "node_modules",
     ".idea", "__pycache__", ".mvn", ".gradle",

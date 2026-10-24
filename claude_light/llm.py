@@ -588,6 +588,23 @@ def _describe_tool_call(name: str, tool_input) -> str:
     return name
 
 
+def _report_denied_commands(denials) -> None:
+    """Tell the user which commands the agent was not allowed to run, and how
+    to allow them (the agent itself only sees an error)."""
+    commands = []
+    for d in denials or []:
+        cmd = ((d or {}).get("tool_input") or {}).get("command")
+        if isinstance(cmd, str) and cmd.strip() and cmd not in commands:
+            commands.append(" ".join(cmd.split()))
+    if not commands:
+        return
+    print(f"\n  {_ANSI_DIM}{_SYM_TOOL} not allowed to run:{_ANSI_RESET}")
+    for cmd in commands[:3]:
+        print(f"    {_ANSI_DIM}{cmd[:100]}{_ANSI_RESET}")
+    print(f"  {_ANSI_DIM}  allow a command prefix with --allow-command \"<prefix>\""
+          f" or CLAUDE_LIGHT_ALLOW_COMMANDS{_ANSI_RESET}", flush=True)
+
+
 def _kill_process_tree(proc) -> None:
     """Stop the CLI and everything it started.
 
@@ -763,12 +780,12 @@ def _make_cli_subprocess_call(
         # generates it, instead of the old blocking subprocess.run() that
         # showed nothing but "Processing…" for up to 3 minutes.
         #
-        # --dangerously-skip-permissions: the CLI runs with stdin=DEVNULL so
-        # any interactive permission prompt would block forever. This flag is
-        # the standard way to run the CLI non-interactively; the user has
-        # already opted in by running claude_light in this directory.
-        # Bash and PowerShell are still blocked separately because they can
-        # execute arbitrary shell commands beyond just file edits.
+        # Permissions: acceptEdits lets the agent edit files without asking,
+        # and the CLI also runs the commands it classifies as read-only. Any
+        # other command needs an allow rule; with -p and stdin=DEVNULL an
+        # unapproved one is denied (the model gets an error), never left
+        # waiting on a prompt. config.ALLOWED_COMMANDS is the user's opt-in
+        # list, e.g. the test command, so the agent can check its own edits.
         command = [claude_bin]
         if current_os != 'nt':
             command.append("--bare")
@@ -777,10 +794,11 @@ def _make_cli_subprocess_call(
             "--output-format", "stream-json",
             "--verbose",
             "--include-partial-messages",
-            "--dangerously-skip-permissions",
-            "--disallowed-tools", "Bash,PowerShell",
+            "--permission-mode", "acceptEdits",
             "--settings", settings_path.as_posix(),
         ]
+        if config.ALLOWED_COMMANDS:
+            command += ["--allowedTools", ",".join(f"Bash({c}:*)" for c in config.ALLOWED_COMMANDS)]
         if model:
             command += ["--model", model]
         if processed_extra_flags:
@@ -928,6 +946,7 @@ def _make_cli_subprocess_call(
                 final_result_text = event.get("result")
                 usage_data = event.get("usage", {}) or {}
                 cli_cost_usd = event.get("total_cost_usd")
+                _report_denied_commands(event.get("permission_denials"))
                 session_id = event.get("session_id")
 
         returncode = proc.wait()
@@ -1051,6 +1070,13 @@ def _make_streaming_api_call(**create_kwargs):
         system_text = "\n".join(
             b.get("text", "") for b in system_blocks if b.get("text")
         )
+        if config.ALLOWED_COMMANDS:
+            system_text += (
+                "\n\nYou may run these shell commands with the Bash tool to check your"
+                " work, for example the tests after an edit: "
+                + "; ".join(config.ALLOWED_COMMANDS)
+                + ". Other commands, apart from read-only ones, will be refused."
+            )
 
         history_parts = []
         for msg in messages[:-1]:

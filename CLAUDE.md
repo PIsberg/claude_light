@@ -35,6 +35,9 @@ python3 claude_light.py "What does OrderService do?"
 echo "List all REST endpoints" | python3 claude_light.py
 
 # Simulation / test mode (no API key or costs required)
+# Let the OAuth agent run your tests (command prefixes, repeatable)
+python3 claude_light.py --allow-command "python -m pytest"
+
 python3 claude_light.py --test-mode small        # 5 files, 10 methods each
 python3 claude_light.py --test-mode extra-large  # 1000 files, 20 methods each
 ```
@@ -228,6 +231,7 @@ For a deeper dive, see [docs/architecture.md](docs/architecture.md).
 | `LLMLINGUA_MODEL` | Default `microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank` (~280 MB). Override with `CLAUDE_LIGHT_LLMLINGUA_MODEL` |
 | `LLMLINGUA_TARGET_RATE` | Fraction of tokens to **keep** (default 0.5 = halve). Override with `CLAUDE_LIGHT_LLMLINGUA_RATE` |
 | `LLMLINGUA_MIN_TOKENS` | Skip compression below this size — overhead > savings (default 800) |
+| `ALLOWED_COMMANDS` | Shell command prefixes the OAuth CLI agent may run (each becomes `Bash(<prefix>:*)`). From `--allow-command` or `CLAUDE_LIGHT_ALLOW_COMMANDS` (`;`-separated). The CLI runs with `--permission-mode acceptEdits`: edits and read-only commands are allowed, anything else is denied and listed after the turn |
 | `LLMLINGUA_FORCE_TOKENS` | Tokens preserved verbatim (default `["\n", "```", "::", "//"]` so chunk structure survives) |
 
 ## SBOM
