@@ -807,6 +807,71 @@ class TestCliSubprocessStreaming(unittest.TestCase):
         self.assertIn("--include-partial-messages", cmd)
 
 
+def _text_block_events(text):
+    """stream-json events for one streamed text block, as the CLI emits them."""
+    return [
+        {"type": "stream_event", "event": {
+            "type": "content_block_start", "content_block": {"type": "text", "text": ""}}},
+        {"type": "stream_event", "event": {
+            "type": "content_block_delta", "delta": {"type": "text_delta", "text": text}}},
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}},
+        {"type": "stream_event", "event": {"type": "content_block_stop"}},
+    ]
+
+
+def _tool_use_event(tool_id, name, tool_input):
+    return {"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": tool_id, "name": name, "input": tool_input}]}}
+
+
+class TestCliAgentActivity(unittest.TestCase):
+    """In OAuth mode the CLI agent reads and edits files on its own. The user
+    must see those actions as they happen, and narration from separate
+    agent steps must not run together into one paragraph."""
+
+    _call_with_events = TestCliSubprocessStreaming._call_with_events
+
+    _result = {"type": "result", "subtype": "success", "result": "", "usage": {}}
+
+    def test_tool_calls_are_shown_with_relative_paths(self):
+        print("\n  ▶ TestCliAgentActivity.test_tool_calls_are_shown_with_relative_paths")
+        import os as _os
+        abs_path = _os.path.join(_os.getcwd(), "claude_light", "retry.py")
+        events = (
+            _text_block_events("Let me look.")
+            + [_tool_use_event("t1", "Read", {"file_path": abs_path}),
+               _tool_use_event("t2", "Grep", {"pattern": "MAX_RETRIES", "path": "."})]
+            + _text_block_events("It is 3.")
+            + [self._result]
+        )
+        (reply, _, _), output, _ = self._call_with_events(events)
+        self.assertIn("Read", output)
+        self.assertIn("claude_light/retry.py", output.replace("\\", "/"))
+        self.assertNotIn(_os.getcwd(), output)
+        self.assertIn("Grep", output)
+        self.assertIn("MAX_RETRIES", output)
+        # Tool lines are UI only; they must not leak into the stored reply.
+        self.assertNotIn("Read", reply)
+
+    def test_text_blocks_from_separate_steps_are_separated(self):
+        print("\n  ▶ TestCliAgentActivity.test_text_blocks_from_separate_steps_are_separated")
+        events = (
+            _text_block_events("First step.")
+            + [_tool_use_event("t1", "Read", {"file_path": "a.py"})]
+            + _text_block_events("Second step.")
+            + [self._result]
+        )
+        (reply, _, _), output, _ = self._call_with_events(events)
+        self.assertEqual(reply, "First step.\n\nSecond step.")
+        self.assertNotIn("First step.Second", output)
+
+    def test_repeated_tool_event_is_shown_once(self):
+        print("\n  ▶ TestCliAgentActivity.test_repeated_tool_event_is_shown_once")
+        ev = _tool_use_event("t1", "Edit", {"file_path": "a.py"})
+        (_, _, _), output, _ = self._call_with_events([ev, ev, self._result])
+        self.assertEqual(output.count("Edit"), 1)
+
+
 class _PacedProc:
     """Popen stand-in whose stdout emits lines on a schedule.
 

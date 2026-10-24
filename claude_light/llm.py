@@ -19,7 +19,7 @@ from claude_light.config import (
 from claude_light.ui import (
     _T_ROUTE, _T_SYS, _T_ERR, _T_RAG, _T_CACHE, _T_EDIT,
     _ANSI_GREEN, _ANSI_CYAN, _ANSI_YELLOW, _ANSI_MAGENTA, _ANSI_BOLD, _ANSI_DIM, _ANSI_RESET, _ANSI_RED,
-    _SYM_RESP, print_stats, _Spinner, calculate_cost, _print_reply
+    _SYM_RESP, _SYM_TOOL, print_stats, _Spinner, calculate_cost, _print_reply
 )
 import claude_light.state as state
 from claude_light.skeleton import build_skeleton, _refresh_tree_only, _assemble_skeleton, _refresh_single_md
@@ -530,6 +530,30 @@ class _Heartbeat:
             )
 
 
+def _display_path(path: str) -> str:
+    """Project-relative, forward-slash path; absolute only if outside cwd."""
+    try:
+        rel = os.path.relpath(path)
+    except ValueError:  # different drive on Windows
+        return path.replace("\\", "/")
+    return (path if rel.startswith("..") else rel).replace("\\", "/")
+
+
+def _describe_tool_call(name: str, tool_input) -> str:
+    """One-line label for a CLI agent tool call, e.g. 'Read claude_light/llm.py'."""
+    inp = tool_input if isinstance(tool_input, dict) else {}
+    for key in ("file_path", "notebook_path", "pattern", "command", "url", "query", "path"):
+        val = inp.get(key)
+        if isinstance(val, str) and val.strip():
+            if key in ("file_path", "notebook_path", "path"):
+                val = _display_path(val)
+            val = " ".join(val.split())
+            if len(val) > 80:
+                val = val[:77] + "..."
+            return f"{name} {val}"
+    return name
+
+
 # The CLI runs a full agent loop (read files, edit, re-read), so a multi-file
 # change routinely takes several minutes while streaming events the whole
 # time. Kill it only when it goes silent; the overall cap is a backstop.
@@ -742,6 +766,11 @@ def _make_cli_subprocess_call(
         usage_data: dict = {}
         session_id = None
         final_result_text: str | None = None
+        # The agent narrates in separate text blocks between tool calls.
+        # Without a break they print as one run-on paragraph.
+        new_block = False
+        at_line_start = True
+        shown_tool_ids: set = set()
 
         def _ensure_header():
             nonlocal header_printed
@@ -749,6 +778,34 @@ def _make_cli_subprocess_call(
                 heartbeat.stop()  # clears the "Processing…" line
                 print(f"\n{_ANSI_CYAN}{_ANSI_BOLD}{_SYM_RESP}{_ANSI_RESET} ", end="", flush=True)
                 header_printed = True
+
+        def _emit_text(text):
+            nonlocal new_block, at_line_start
+            heartbeat.stop()
+            _ensure_header()
+            if new_block and reply_parts:
+                print("\n" if at_line_start else "\n\n", end="")
+                reply_parts.append("\n\n")
+            new_block = False
+            print(text, end="", flush=True)
+            reply_parts.append(text)
+            at_line_start = text.endswith("\n")
+
+        def _show_tool_call(block):
+            nonlocal new_block, at_line_start
+            tool_id = block.get("id")
+            if tool_id in shown_tool_ids:
+                return
+            shown_tool_ids.add(tool_id)
+            heartbeat.stop()
+            if not at_line_start:
+                print()
+            label = _describe_tool_call(block.get("name", "tool"), block.get("input"))
+            print(f"  {_ANSI_DIM}{_SYM_TOOL} {label}{_ANSI_RESET}", flush=True)
+            at_line_start = True
+            new_block = True
+            # Keep showing liveness while the tool runs and the model thinks.
+            heartbeat.__enter__()
 
         for raw_line in proc.stdout:
             last_activity[0] = time.monotonic()
@@ -765,27 +822,29 @@ def _make_cli_subprocess_call(
             if ev_type == "stream_event":
                 # Per-token deltas when --include-partial-messages is active.
                 inner = event.get("event", {})
-                if inner.get("type") == "content_block_delta":
+                if inner.get("type") == "content_block_start":
+                    if (inner.get("content_block") or {}).get("type") == "text":
+                        new_block = True
+                elif inner.get("type") == "content_block_delta":
                     delta = inner.get("delta", {})
                     if delta.get("type") == "text_delta":
                         text = delta.get("text", "")
                         if text:
-                            _ensure_header()
-                            print(text, end="", flush=True)
-                            reply_parts.append(text)
+                            _emit_text(text)
                             streamed_via_delta = True
 
             elif ev_type == "assistant":
-                # Complete message; only print if deltas didn't already cover it.
-                if not streamed_via_delta:
-                    msg = event.get("message", {})
-                    for block in msg.get("content", []):
-                        if block.get("type") == "text":
-                            text = block.get("text", "")
-                            if text:
-                                _ensure_header()
-                                print(text, end="", flush=True)
-                                reply_parts.append(text)
+                # The CLI emits one complete block per event. Text is only
+                # printed here if deltas didn't already cover it.
+                msg = event.get("message", {})
+                for block in msg.get("content", []):
+                    if block.get("type") == "tool_use":
+                        _show_tool_call(block)
+                    elif block.get("type") == "text" and not streamed_via_delta:
+                        text = block.get("text", "")
+                        if text:
+                            new_block = True
+                            _emit_text(text)
 
             elif ev_type == "result":
                 final_result_text = event.get("result")
