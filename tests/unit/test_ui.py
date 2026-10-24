@@ -640,6 +640,20 @@ class TestResponseViewTerminal(unittest.TestCase):
         self.assertIn("calc.py", out)
         self.assertNotIn("<<<<<<<", out)
 
+    def test_live_tail_never_reaches_the_last_column(self):
+        print("\n  ▶ TestResponseViewTerminal.test_live_tail_never_reaches_the_last_column")
+        # A full-width line wraps in ConPTY and throws off Live's erase,
+        # leaving a stale frame (an empty marker bar) in the scrollback.
+        import re
+        from claude_light.ui import ResponseView
+        con, buf = _live_console(width=60)
+        view = ResponseView(console=con, animate=False)
+        view.text("```python\nx = 1\n")  # only the live tail: nothing committed yet
+        con.print(view)
+        plain = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", buf.getvalue())
+        self.assertTrue(plain.strip())
+        self.assertLess(max(len(l) for l in plain.splitlines()), 60)
+
     def test_plain_code_blocks_still_render(self):
         print("\n  ▶ TestResponseViewTerminal.test_plain_code_blocks_still_render")
         out = self._render(["Example:\n\n```python\nvalue = 42\n```\n"])

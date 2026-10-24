@@ -856,8 +856,14 @@ class ResponseView:
             marker = None if self._in_segment else _SYM_RESP
             if self._blocks or not self._in_segment:
                 yield _Text("")
-            yield _Gutter(_reply_markdown(_summarize_edit_blocks(pending, streaming=True)),
-                          marker=marker, max_lines=room)
+            # One column short of the edge: a code block's background fills
+            # the line, and in ConPTY a line reaching the last column wraps,
+            # so Live erased one line too few and left a frame behind (seen
+            # live as an empty "◆" bar above the reply).
+            from rich.constrain import Constrain
+            yield Constrain(_Gutter(_reply_markdown(_summarize_edit_blocks(pending, streaming=True)),
+                                    marker=marker, max_lines=room),
+                            width=max(options.max_width - 1, 10))
         elapsed = int(time.monotonic() - self._start)
         frame = _SPINNER_DOTS[int(time.monotonic() * 10) % len(_SPINNER_DOTS)]
         ellipsis = "…" if _UNICODE else "..."
