@@ -23,7 +23,8 @@ import claude_light.state as state
 from claude_light.config import MODEL, CACHE_DIR, HEARTBEAT_SECS, CACHE_TTL_SECS, AUTH_MODE, ECONOMY_MODE, API_KEY_SOURCE
 from claude_light.ui import (
     _ANSI_BOLD, _ANSI_RESET, _ANSI_CYAN, _ANSI_DIM, _ANSI_GREEN, _ANSI_RED, _T_SYS, _T_ERR,
-    _UNICODE, print_session_summary, print_session_footer, print_startup_header, ToolExecutionManager,
+    _UNICODE, access_label, print_session_summary, print_session_footer, print_startup_header,
+    ToolExecutionManager,
 )
 from claude_light.llm import full_refresh, chat, one_shot, warm_cache, compact_history, ClaudeNotLoggedIn
 from claude_light.indexer import SourceHandler
@@ -144,7 +145,7 @@ def _index_ready_for_query() -> bool:
 
 
 def start_chat(auto_apply=False):
-    print_startup_header(MODEL, API_KEY_SOURCE)
+    print_startup_header(MODEL, access_label(API_KEY_SOURCE))
     _setup_signal_handlers()
 
     # Kick off indexing in background so the prompt appears immediately.

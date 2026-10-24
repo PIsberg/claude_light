@@ -261,6 +261,25 @@ class TestDiffDisplay(unittest.TestCase):
         self.assertIn("151 more lines", text)
 
 
+class TestAccessLabel(unittest.TestCase):
+    """The welcome box shows where access comes from through a fixed table,
+    never the resolver's own string: it is returned in the same tuple as the
+    key, and CodeQL flagged printing it as clear-text logging (alerts #22,
+    #24, #28, #34, #35)."""
+
+    def test_known_sources_get_readable_labels(self):
+        print("\n  ▶ TestAccessLabel.test_known_sources_get_readable_labels")
+        from claude_light.ui import access_label
+        self.assertEqual(access_label("Claude CLI (Pro Subscription)"), "Claude subscription")
+        self.assertEqual(access_label("Environment"), "API key from ANTHROPIC_API_KEY")
+        self.assertEqual(access_label("Dotfile (.env)"), "API key from .env")
+
+    def test_anything_else_is_not_echoed(self):
+        print("\n  ▶ TestAccessLabel.test_anything_else_is_not_echoed")
+        from claude_light.ui import access_label
+        self.assertEqual(access_label("sk-ant-api03-secret"), "")
+
+
 class TestStartupHeader(unittest.TestCase):
 
     def test_header_names_the_model_access_and_help(self):
@@ -271,11 +290,11 @@ class TestStartupHeader(unittest.TestCase):
         for rich_available in (True, False):
             out = io.StringIO()
             with patch.object(ui, "_RICH_AVAILABLE", rich_available), patch("sys.stdout", out):
-                ui.print_startup_header("claude-sonnet-5-5", "Claude CLI (Pro Subscription)")
+                ui.print_startup_header("claude-sonnet-5-5", "Claude subscription")
             text = out.getvalue()
             self.assertIn("claude light", text)
             self.assertIn("sonnet-5-5", text)
-            self.assertIn("Claude CLI", text)
+            self.assertIn("Claude subscription", text)
             self.assertIn("/help", text)
 
 

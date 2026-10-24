@@ -104,6 +104,23 @@ def _display_path() -> str:
         return str(cwd).replace("\\", "/")
 
 
+# Display labels for config.API_KEY_SOURCE. The source string comes back from
+# _resolve_api_key() in the same tuple as the key, so it is mapped through
+# this table rather than printed: nothing from that tuple reaches the screen.
+_ACCESS_LABELS = {
+    "Claude CLI (Pro Subscription)": "Claude subscription",
+    "Environment": "API key from ANTHROPIC_API_KEY",
+    "Dotfile (.anthropic)": "API key from ~/.anthropic",
+    "Dotfile (.env)": "API key from .env",
+    "Test": "test mode",
+}
+
+
+def access_label(source: str) -> str:
+    """A readable label for an auth source, or "" for one not in the table."""
+    return _ACCESS_LABELS.get(source, "")
+
+
 def print_startup_header(model: str | None = None, access_mode: str | None = None):
     """The welcome box: name, project, model and access, how to get help.
 
