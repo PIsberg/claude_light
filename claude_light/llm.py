@@ -530,6 +530,13 @@ class _Heartbeat:
             )
 
 
+# The CLI runs a full agent loop (read files, edit, re-read), so a multi-file
+# change routinely takes several minutes while streaming events the whole
+# time. Kill it only when it goes silent; the overall cap is a backstop.
+_CLI_IDLE_TIMEOUT_SECS = 300
+_CLI_MAX_SECS = 3600
+
+
 def _make_cli_subprocess_call(
     prompt: str,
     model: str = "",
@@ -686,7 +693,6 @@ def _make_cli_subprocess_call(
         #   (Popen has no timeout on iteration).
         # - shell=True on Windows ensures the Bun-based CLI finds its shim.
         import threading as _threading
-        _CLI_TIMEOUT_SECS = 180
 
         proc = subprocess.Popen(
             command,
@@ -701,18 +707,24 @@ def _make_cli_subprocess_call(
         )
 
         timed_out = _threading.Event()
+        idle_out = _threading.Event()
         start_time = time.monotonic()
+        last_activity = [start_time]  # list so the stdout loop can update it
 
         def _watchdog():
             while proc.poll() is None:
-                if time.monotonic() - start_time > _CLI_TIMEOUT_SECS:
+                now = time.monotonic()
+                if now - last_activity[0] > _CLI_IDLE_TIMEOUT_SECS:
+                    idle_out.set()
+                elif now - start_time > _CLI_MAX_SECS:
                     timed_out.set()
+                if idle_out.is_set() or timed_out.is_set():
                     try:
                         proc.kill()
                     except Exception:
                         pass
                     return
-                time.sleep(0.5)
+                time.sleep(min(0.5, _CLI_IDLE_TIMEOUT_SECS / 4))
 
         _wd = _threading.Thread(target=_watchdog, daemon=True)
         _wd.start()
@@ -739,6 +751,7 @@ def _make_cli_subprocess_call(
                 header_printed = True
 
         for raw_line in proc.stdout:
+            last_activity[0] = time.monotonic()
             line = raw_line.strip()
             if not line:
                 continue
@@ -787,13 +800,18 @@ def _make_cli_subprocess_call(
             # would land on the same line as the final response text.
             print(flush=True)
 
-        if timed_out.is_set():
+        if timed_out.is_set() or idle_out.is_set():
             try:
                 stderr_tail = (proc.stderr.read() or "")[-2000:]
             except Exception:
                 stderr_tail = ""
+            reason = (
+                f"produced no output for {_CLI_IDLE_TIMEOUT_SECS:g}s"
+                if idle_out.is_set()
+                else f"timed out after {_CLI_MAX_SECS:g}s"
+            )
             raise RuntimeError(
-                f"Claude CLI timed out after {_CLI_TIMEOUT_SECS}s. "
+                f"Claude CLI {reason}. "
                 f"Last stderr: {stderr_tail.strip() or '(empty)'}"
             )
 

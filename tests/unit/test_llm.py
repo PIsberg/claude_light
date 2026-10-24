@@ -807,6 +807,84 @@ class TestCliSubprocessStreaming(unittest.TestCase):
         self.assertIn("--include-partial-messages", cmd)
 
 
+class _PacedProc:
+    """Popen stand-in whose stdout emits lines on a schedule.
+
+    ``schedule`` is a list of (delay_secs, line). A delay of None means "go
+    silent until killed" (a hung CLI). kill() ends the stream immediately.
+    """
+
+    def __init__(self, schedule):
+        import threading as _threading
+        self._schedule = schedule
+        self._killed = _threading.Event()
+        self._done = False
+        self.stderr = io.StringIO("")
+        self.returncode = 0
+
+    @property
+    def stdout(self):
+        for delay, line in self._schedule:
+            # Hung CLI: block until killed, with a safety cap so a broken
+            # implementation fails the test instead of hanging the suite.
+            if self._killed.wait(5.0 if delay is None else delay):
+                break
+            yield line + "\n"
+        self._done = True
+
+    def poll(self):
+        return -9 if self._killed.is_set() else (0 if self._done else None)
+
+    def wait(self):
+        return -9 if self._killed.is_set() else 0
+
+    def kill(self):
+        self._killed.set()
+
+
+class TestCliSubprocessTimeouts(unittest.TestCase):
+    """The CLI runs a full agent loop (read, edit, re-read), so a long task is
+    normal. Only a CLI that stops producing events should be killed."""
+
+    def _run(self, schedule, idle=0.6, cap=30.0):
+        from claude_light import llm
+        proc = _PacedProc(schedule)
+        with patch("claude_light.llm.subprocess.Popen", return_value=proc), \
+             patch("shutil.which", return_value="/fake/bin/claude"), \
+             patch.object(llm, "_CLI_IDLE_TIMEOUT_SECS", idle), \
+             patch.object(llm, "_CLI_MAX_SECS", cap), \
+             patch("sys.stdout", io.StringIO()):
+            return llm._make_cli_subprocess_call("hi")
+
+    def test_long_but_active_run_is_not_killed(self):
+        print("\n  ▶ TestCliSubprocessTimeouts.test_long_but_active_run_is_not_killed")
+        delta = '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"x"}}}'
+        # 8 events 0.25 s apart: 2 s total, well past the 0.6 s idle limit,
+        # but never silent for longer than 0.25 s.
+        schedule = [(0.25, delta)] * 8 + [
+            (0.0, '{"type":"result","subtype":"success","result":"xxxxxxxx","usage":{}}')]
+        reply, _, _ = self._run(schedule)
+        self.assertEqual(reply, "xxxxxxxx")
+
+    def test_silent_cli_is_killed_with_idle_message(self):
+        print("\n  ▶ TestCliSubprocessTimeouts.test_silent_cli_is_killed_with_idle_message")
+        schedule = [
+            (0.0, '{"type":"system","subtype":"init"}'),
+            (None, ""),  # hangs
+        ]
+        with self.assertRaises(RuntimeError) as ctx:
+            self._run(schedule)
+        self.assertIn("no output", str(ctx.exception))
+
+    def test_total_cap_still_applies(self):
+        print("\n  ▶ TestCliSubprocessTimeouts.test_total_cap_still_applies")
+        delta = '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"x"}}}'
+        schedule = [(0.2, delta)] * 40  # 8 s of steady output
+        with self.assertRaises(RuntimeError) as ctx:
+            self._run(schedule, idle=5.0, cap=1.0)
+        self.assertIn("timed out", str(ctx.exception))
+
+
 class TestAgentEditDetection(unittest.TestCase):
     """Verify _git_modified_snapshot + _commit_agent_edits — the OAUTH safety
     net that catches files the Claude CLI agent edited directly (outside our

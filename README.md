@@ -181,6 +181,7 @@ Without tree-sitter, chunking falls back to whole-file mode. Without `rich`, out
 If you have a **Claude Pro** or **Team** subscription and have authorized the official [Claude CLI](https://github.com/anthropics/claude-code), `claude_light` will automatically use your flat-rate subscription. 
 *   **Cost**: Included in your $20/mo subscription.
 *   **Setup**: Just run `claude auth login` once.
+*   **Long tasks**: each turn runs the CLI's own agent loop (it can read and edit files itself), so a multi-file change can take several minutes. The turn is cancelled only if the CLI produces no output for 5 minutes, or after 1 hour in total.
 
 #### Option B: Anthropic API Key
 If you prefer to pay per-token or don't have a Pro subscription:
