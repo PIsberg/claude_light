@@ -120,6 +120,9 @@ def _load_embedding_model(model_name: str, quiet: bool = False):
         try:
             import transformers.utils.logging as _tf_logging
             _tf_logging.set_verbosity_error()
+            # transformers 5 draws a "Loading weights" bar on every load; from
+            # a background load it lands over the prompt.
+            _tf_logging.disable_progress_bar()
         except Exception:
             pass
         # Detect device only alongside the real model load. torch's first import

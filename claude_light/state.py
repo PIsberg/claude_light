@@ -86,6 +86,8 @@ indexing_done = threading.Event()
 # Hybrid retrieval (config.HYBRID_RETRIEVAL): the static model, loaded with the
 # first index pass, and an event set once every chunk also has its dense vector.
 fast_embedder = None
+fast_ready = threading.Event()    # the static model's load has finished (or failed)
+hybrid_index = False              # chunk_store holds static vectors
 dense_ready = threading.Event()
 last_retrieval_mode = ""   # for /why: which vectors the last retrieval used
 embedder_load_error: Exception | None = None

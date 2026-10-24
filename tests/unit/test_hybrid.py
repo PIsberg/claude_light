@@ -66,12 +66,14 @@ class _HybridProject(unittest.TestCase):
         # index_files rebinds the hash dicts; later tests hold the originals.
         self._saved = {k: getattr(state, k) for k in (
             "fast_embedder", "embedder", "EMBED_MODEL", "TOP_K", "last_retrieval_mode",
-            "_file_hashes", "_file_stats", "_source_files")}
+            "_file_hashes", "_file_stats", "_source_files", "hybrid_index")}
         self._store = dict(state.chunk_store)
         state.chunk_store.clear()
         state.fast_embedder = state.embedder = None
         state.embedder_ready.clear()
         state.dense_ready.clear()
+        state.fast_ready.clear()
+        state.hybrid_index = False
         for p in (patch.object(config, "HYBRID_RETRIEVAL", True),
                   patch.object(indexer, "_load_embedding_model", side_effect=self._load),
                   patch("claude_light.executor._load_embedding_model", side_effect=self._load)):
@@ -175,6 +177,51 @@ class TestHybridIndex(_HybridProject):
         entries = list(state.chunk_store.values())
         self.assertTrue(all("emb_fast" in e for e in entries))
         self.assertFalse(any("emb" in e for e in entries))  # re-embedded later, not reused
+
+    def test_warm_start_does_not_wait_for_the_model(self):
+        print("\n  ▶ TestHybridIndex.test_warm_start_does_not_wait_for_the_model")
+        # Live, a warm start took 16 s: the static model was loaded before
+        # index_files returned although every vector came from the cache.
+        indexer.index_files(quiet=True, dense="sync")
+        state.chunk_store.clear()
+        state.fast_embedder = state.embedder = None
+        state.fast_ready.clear()
+        gate = threading.Event()
+        loaded = self._load
+
+        def slow_load(name, quiet=False):
+            if name == config.FAST_EMBED_MODEL:
+                gate.wait(5)
+            return loaded(name, quiet)
+
+        with patch.object(indexer, "_load_embedding_model", side_effect=slow_load):
+            indexer.index_files(quiet=True, dense="skip")
+            self.assertTrue(state.chunk_store)            # the index is usable...
+            self.assertFalse(state.fast_ready.is_set())   # ...before the model is loaded
+            gate.set()
+            self.assertEqual(self._files_retrieved("login user password")[0], "auth.py")
+
+    def test_first_query_after_a_warm_start_waits_for_the_dense_model(self):
+        print("\n  ▶ TestHybridIndex.test_first_query_after_a_warm_start_waits_for_the_dense_model")
+        # Live, the first query after a warm start used the static model
+        # alone although every dense vector was cached: mpnet was loading.
+        indexer.index_files(quiet=True, dense="sync")
+        state.chunk_store.clear()
+        state.fast_embedder = state.embedder = None
+        state.embedder_ready.clear()
+        gate = threading.Event()
+        loaded = self._load
+
+        def slow_load(name, quiet=False):
+            if name == config.DENSE_EMBED_MODEL:
+                gate.wait(5)
+            return loaded(name, quiet)
+
+        with patch("claude_light.executor._load_embedding_model", side_effect=slow_load):
+            indexer.index_files(quiet=True, dense="background")
+            threading.Timer(0.2, gate.set).start()
+            self._files_retrieved("login user password")
+        self.assertIn("hybrid", state.last_retrieval_mode)
 
     def test_saved_file_gets_both_vectors(self):
         print("\n  ▶ TestHybridIndex.test_saved_file_gets_both_vectors")

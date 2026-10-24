@@ -309,6 +309,10 @@ def _retrieve_hybrid(query, budget, k, effort):
 
     fast_scores = fast_embs @ state.fast_embedder.encode(query, normalize_embeddings=True)
     dense_scores = None
+    if dense_embs is not None and not state.embedder_ready.is_set():
+        # Every dense vector is cached and only the model is still loading
+        # (warm start): worth a short wait for the better answer.
+        state.embedder_ready.wait(30)
     # Fuse only when every chunk has its dense vector and the model is free
     # within 2 s (a saved file being re-embedded); otherwise static alone.
     if dense_embs is not None and state.embedder_ready.is_set() and state.embedder is not None \
@@ -334,7 +338,10 @@ def retrieve(query, token_budget=None, effort="medium"):
     k = max(2, round(base_k * budget / TARGET_RETRIEVED_TOKENS))
 
     from claude_light import config
-    if config.HYBRID_RETRIEVAL and state.fast_embedder is not None:
+    if config.HYBRID_RETRIEVAL and state.hybrid_index:
+        state.fast_ready.wait()  # loading in the background after a warm start
+        if state.fast_embedder is None:
+            raise RuntimeError("the static embedding model failed to load")
         return _retrieve_hybrid(query, budget, k, effort)
 
     with state.lock:

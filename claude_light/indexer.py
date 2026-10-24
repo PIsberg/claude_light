@@ -328,9 +328,12 @@ def _load_hybrid_cache(source_files, quiet):
 
 
 def _ensure_fast_embedder(quiet):
-    if state.fast_embedder is None:
-        state.fast_embedder = _load_embedding_model(config.FAST_EMBED_MODEL, quiet=quiet)
-    return state.fast_embedder
+    try:
+        if state.fast_embedder is None:
+            state.fast_embedder = _load_embedding_model(config.FAST_EMBED_MODEL, quiet=quiet)
+        return state.fast_embedder
+    finally:
+        state.fast_ready.set()
 
 
 def _index_files_hybrid(quiet, dense):
@@ -356,16 +359,24 @@ def _index_files_hybrid(quiet, dense):
                 store[c["id"]] = {"text": c["text"]}
 
     missing = [cid for cid, e in store.items() if "emb_fast" not in e]
-    fast = _ensure_fast_embedder(quiet)
     if missing:
+        fast = _ensure_fast_embedder(quiet)
         vecs = fast.encode([store[cid]["text"] for cid in missing], normalize_embeddings=True, batch_size=256)
         for cid, v in zip(missing, vecs):
             store[cid]["emb_fast"] = v
+    elif state.fast_embedder is None:
+        # Everything came from the cache: only queries need the model, and
+        # loading it (with the sentence-transformers import) takes ~10 s.
+        # retrieve() waits on state.fast_ready if a query beats it.
+        state.fast_ready.clear()
+        threading.Thread(target=_ensure_fast_embedder, args=(True,), daemon=True,
+                         name="claude-light-fast-embedder").start()
 
     set_top_k(sum(len(e["text"]) for e in store.values()), len(store))
     with state.lock:
         state.chunk_store.clear()
         state.chunk_store.update(store)
+        state.hybrid_index = True
     if missing or stale:
         _save_cache(state.EMBED_MODEL)
 
@@ -420,7 +431,9 @@ def _chunks_for_file(filepath):
     return [k for k in state.chunk_store if k == filepath or k.startswith(prefix)]
 
 def reindex_file(path):
-    hybrid = config.HYBRID_RETRIEVAL and state.fast_embedder is not None
+    hybrid = config.HYBRID_RETRIEVAL and state.hybrid_index
+    if hybrid:
+        state.fast_ready.wait()
     if state.embedder is None and not hybrid:
         return
     path = _project_path(path)
@@ -430,7 +443,7 @@ def reindex_file(path):
         chunks = chunk_file(path, text)
         entries = [{"text": c["text"]} for c in chunks]
 
-        if hybrid:
+        if hybrid and state.fast_embedder is not None:
             fast = state.fast_embedder.encode([c["text"] for c in chunks], normalize_embeddings=True)
             for entry, v in zip(entries, fast):
                 entry["emb_fast"] = v
