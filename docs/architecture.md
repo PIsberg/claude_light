@@ -571,7 +571,7 @@ Skeleton is **not** compressed (already cached across many queries, so per-query
 
 * Optional dependency — if `pip install llmlingua` hasn't been run, `compress_context()` returns the input unchanged with `skipped=True`.
 * Any `ImportError` or `RuntimeError` inside the compressor is swallowed; original text is returned.
-* Skipped below `LLMLINGUA_MIN_TOKENS` (800 estimated tokens) — below that, 100–400 ms of compression overhead is larger than the token saving.
+* Skipped below `LLMLINGUA_MIN_TOKENS` (800 estimated tokens, override with `CLAUDE_LIGHT_LLMLINGUA_MIN_TOKENS`) — below that, 100–400 ms of compression overhead is larger than the token saving.
 * Sanity check: if LLMLingua ever returns a **longer** output, we ignore its result and send the original.
 * `force_tokens=["\n", "```", "::", "//"]` preserves newlines, fenced-code markers, `::` chunk-ID separators, and comment delimiters so RAG chunk structure survives compression.
 * **Non-blocking model load.** The ~280 MB BERT model is loaded in a background daemon thread launched from `main()` so indexing and skeleton-building run in parallel with the download. If a query arrives before the loader finishes, `compress_context()` skips that turn (returns the uncompressed text with `reason="still_loading"`) rather than blocking the query. This prevents the "Processing…" hang on first run — compression simply kicks in from the turn after the load completes.

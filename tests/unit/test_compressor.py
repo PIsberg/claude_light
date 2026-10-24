@@ -14,6 +14,12 @@ from claude_light import compressor
 
 
 def _reset_singleton():
+    # A loader thread started by another test (main() starts one) can still be
+    # running. Once the model loads it sets the singleton after this reset, so
+    # wait for it first.
+    thread = compressor._load_thread
+    if thread is not None and thread.is_alive():
+        thread.join(timeout=120)
     compressor._compressor = None
     compressor._load_error = None
     compressor._load_attempted = False
@@ -165,6 +171,48 @@ class TestAccumulateCompressionStats(unittest.TestCase):
             self.assertEqual(state.global_stats["total_tokens_post_compress"], post_before + 1200)
             expected_d = d_before + (1800 / 1_000_000.0) * PRICE_WRITE
             self.assertAlmostEqual(state.global_stats["total_dollars_saved_llmlingua"], expected_d)
+
+
+class TestLoaderDevice(unittest.TestCase):
+    """Without CUDA the loader must ask llmlingua for the CPU. Its default is
+    device_map="cuda", so on a CPU-only torch build (this machine) the model
+    failed to load and every compression was silently skipped."""
+
+    def setUp(self):
+        _reset_singleton()
+
+    def tearDown(self):
+        _reset_singleton()
+
+    def _load_with(self, cuda_available):
+        fake_llmlingua = MagicMock()
+        fake_torch = MagicMock()
+        fake_torch.cuda.is_available.return_value = cuda_available
+        with patch.dict(sys.modules, {"llmlingua": fake_llmlingua, "torch": fake_torch}):
+            compressor.get_compressor()
+        return fake_llmlingua.PromptCompressor.call_args.kwargs
+
+    def test_uses_cpu_when_cuda_is_unavailable(self):
+        kwargs = self._load_with(cuda_available=False)
+        self.assertEqual(kwargs["device_map"], "cpu")
+
+    def test_uses_cuda_when_available(self):
+        kwargs = self._load_with(cuda_available=True)
+        self.assertEqual(kwargs["device_map"], "cuda")
+
+
+class TestMinTokensSetting(unittest.TestCase):
+    """The skip threshold is configurable, like the other LLMLingua settings."""
+
+    def test_min_tokens_is_read_from_environment(self):
+        import subprocess
+        env = dict(os.environ, CLAUDE_LIGHT_LLMLINGUA_MIN_TOKENS="400",
+                   ANTHROPIC_API_KEY="sk-ant-test-key")
+        out = subprocess.run(
+            [sys.executable, "-c", "from claude_light import config; print(config.LLMLINGUA_MIN_TOKENS)"],
+            cwd=project_root, env=env, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        self.assertEqual(out, "400")
 
 
 if __name__ == "__main__":

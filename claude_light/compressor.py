@@ -55,6 +55,15 @@ def _noop(text: str, reason: str) -> tuple[str, dict]:
     }
 
 
+def _device() -> str:
+    """"cuda" when torch can use a GPU, otherwise "cpu"."""
+    try:
+        import torch  # type: ignore
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    except ImportError:
+        return "cpu"
+
+
 def get_compressor():
     """Lazy-load the LLMLingua-2 PromptCompressor. Thread-safe singleton.
 
@@ -83,6 +92,9 @@ def get_compressor():
         try:
             _compressor = PromptCompressor(
                 model_name=config.LLMLINGUA_MODEL,
+                # llmlingua defaults to CUDA, which a CPU-only torch build
+                # cannot load: the model then never loads and nothing compresses.
+                device_map=_device(),
                 use_llmlingua2=True,
             )
         except Exception as e:
