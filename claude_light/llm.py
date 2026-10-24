@@ -688,8 +688,8 @@ def _make_cli_subprocess_call(
         # Isolate HOME/USERPROFILE so the Claude CLI's CLAUDE.md auto-discovery
         # cannot pull in the user's personal ~/.claude/CLAUDE.md. Without this,
         # instructions like "always prefer ctx_read/ctx_shell MCP tools" leak
-        # into the model's context and it hallucinates <tool_call> blocks we
-        # cannot honor (we pass --tools "" so no real tool exists). The `--bare`
+        # into the model's context and it tries tools it does not have here.
+        # The `--bare`
         # CLI flag would also disable this, but `--bare` forbids OAuth reads
         # even when CLAUDE_CODE_OAUTH_TOKEN is set, so it breaks subscription
         # users. This HOME-override sidesteps that: we keep OAuth auth via the
@@ -773,8 +773,9 @@ def _make_cli_subprocess_call(
                     i += 1
             processed_extra_flags = new_flags
 
-        # --bare disables the CLI system prompt for a cleaner response.
-        # On Windows it also breaks Credential Manager access, so we omit it there.
+        # No --bare on any OS: it never reads OAuth credentials, so subscription
+        # users get "Not logged in" (verified with claude 2.1.310 even with
+        # CLAUDE_CODE_OAUTH_TOKEN set and .credentials.json present).
         # stream-json + --verbose + --include-partial-messages gives us per-
         # token content_block_delta events so we can echo text as the model
         # generates it, instead of the old blocking subprocess.run() that
@@ -787,8 +788,6 @@ def _make_cli_subprocess_call(
         # waiting on a prompt. config.ALLOWED_COMMANDS is the user's opt-in
         # list, e.g. the test command, so the agent can check its own edits.
         command = [claude_bin]
-        if current_os != 'nt':
-            command.append("--bare")
         command += [
             "-p", cmd_prompt,
             "--output-format", "stream-json",

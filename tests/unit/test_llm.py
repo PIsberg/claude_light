@@ -911,6 +911,21 @@ class TestCliCommandPermissions(unittest.TestCase):
         self.assertIn("npm test -- --watch=false", text)
         self.assertIn("--allow-command", text)
 
+    def test_no_bare_flag_on_posix(self):
+        print("\n  ▶ TestCliCommandPermissions.test_no_bare_flag_on_posix")
+        # --bare never reads OAuth credentials: live, with the OAuth token and
+        # .credentials.json both present, `claude --bare -p` said "Not logged
+        # in" while the same call without it answered. It was added on every
+        # non-Windows OS, so subscription mode could not authenticate there.
+        import os as _os
+        import types as _types
+        from claude_light import llm
+        posix_os = _types.SimpleNamespace(**{k: getattr(_os, k) for k in dir(_os) if not k.startswith("__")})
+        posix_os.name = "posix"
+        with patch.object(llm, "os", posix_os):
+            cmd = self._cmd_for([])
+        self.assertNotIn("--bare", cmd)
+
     def test_allowlist_parsing(self):
         print("\n  ▶ TestCliCommandPermissions.test_allowlist_parsing")
         from claude_light.config import parse_allowed_commands
