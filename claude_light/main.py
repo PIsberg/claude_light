@@ -63,6 +63,23 @@ def _setup_signal_handlers():
         pass
 
 
+def _index_ready_for_query() -> bool:
+    """Decide whether this query can use the RAG index, waiting if it must.
+
+    A cold index build embeds every chunk on CPU (314 s for a 64-file repo
+    in testing). In OAuth mode the Claude CLI agent can Read/Grep the code
+    itself, so the query goes ahead without retrieval. In API-key mode the
+    model has no tools and would answer blind, so the query waits.
+    """
+    if state.indexing_done.is_set():
+        return True
+    if AUTH_MODE == "OAUTH":
+        return False
+    print(f"  {_T_SYS}  Indexing…", flush=True)
+    state.indexing_done.wait()
+    return True
+
+
 def start_chat(auto_apply=False):
     print_startup_header()
     _setup_signal_handlers()
@@ -161,12 +178,7 @@ def start_chat(auto_apply=False):
             if not query:
                 continue
 
-            # Wait for background indexing to finish before any query.
-            # On cache-hit runs this is nearly instant; on first run the user
-            # simply sees a brief pause rather than a blocking startup.
-            if not state.indexing_done.is_set():
-                print(f"  {_T_SYS}  Indexing…", flush=True)
-                state.indexing_done.wait()
+            use_index = _index_ready_for_query()
 
             if not _banner_shown:
                 _banner_shown = True
@@ -225,7 +237,7 @@ def start_chat(auto_apply=False):
                     continue
                 from claude_light.executor import _run_command
                 transcript = _run_command(cmd)
-                chat(f"I ran the following command and got this output. Please help me understand or fix any issues:\n\n```\n{transcript}\n```", auto_apply=auto_apply)
+                chat(f"I ran the following command and got this output. Please help me understand or fix any issues:\n\n```\n{transcript}\n```", auto_apply=auto_apply, use_index=use_index)
                 continue
             if query == "/undo":
                 from claude_light import git_manager
@@ -257,7 +269,7 @@ def start_chat(auto_apply=False):
 
             # Standard Chat Query
             try:
-                chat(query, auto_apply=auto_apply)
+                chat(query, auto_apply=auto_apply, use_index=use_index)
             except ClaudeNotLoggedIn:
                 print(f"\n  {_T_ERR}  Claude CLI is not logged in.")
                 print(f"  {_T_SYS}  Set up a long-lived Automation Token? [{_ANSI_GREEN}y{_ANSI_RESET}/{_ANSI_RED}n{_ANSI_RESET}] ", end="", flush=True)
@@ -285,7 +297,7 @@ def start_chat(auto_apply=False):
                                 from claude_light import config
                                 config.API_KEY, config.AUTH_MODE, config.API_KEY_SOURCE, config.AUTH_TOKEN = config._resolve_api_key()
                                 full_refresh()
-                                chat(query, auto_apply=auto_apply)
+                                chat(query, auto_apply=auto_apply, use_index=use_index)
                             else:
                                 print(f"  {_T_ERR}  Token must start with 'sk-ant-oat01'.")
                         except (KeyboardInterrupt, EOFError):

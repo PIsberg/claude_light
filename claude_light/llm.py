@@ -1120,13 +1120,19 @@ def _is_followup_clarification(query: str) -> bool:
     return False
 
 
-def chat(query, auto_apply=False):
+def chat(query, auto_apply=False, use_index=True):
     routed_model, effort, max_tok = route_query(query)
     token_budget = _RETRIEVAL_BUDGET[effort]
 
     from claude_light.indexer import _chunk_label
     skipped_reason = None
-    if _is_followup_clarification(query):
+    if not use_index:
+        retrieved_ctx, hits = "", []
+        skipped_reason = "index still building"
+        print(
+            f"  {_T_RAG}  {_ANSI_DIM}index still building — Claude will search the code itself{_ANSI_RESET}"
+        )
+    elif _is_followup_clarification(query):
         retrieved_ctx, hits = "", []
         skipped_reason = "clarification follow-up"
         print(

@@ -158,7 +158,7 @@ The `claude_light/` package is organized by responsibility:
 
 **Three concurrent threads:**
 
-1. **Main thread** — input loop; retrieves relevant chunks per query via `retrieve()`, injects them as a second cached system block, stores only the clean query in `conversation_history`
+1. **Main thread** — input loop; retrieves relevant chunks per query via `retrieve()`, injects them as a second cached system block, stores only the clean query in `conversation_history`. The first index build runs in a background thread; until it finishes, OAuth-mode queries skip retrieval (the CLI agent searches the code itself) and API-key queries wait (`_index_ready_for_query()` in `main.py`)
 2. **Watchdog** (`SourceHandler`) — source file change → `reindex_file()` (re-chunks + re-embeds that file, cancels any pending timer first via 1.5 s debounce); `.md` change → `refresh_md_file()`
 3. **Heartbeat daemon** — checks every 30 s; if idle > 4 min (`CACHE_TTL_SECS`), calls `warm_cache()` to keep the ephemeral cache alive
 

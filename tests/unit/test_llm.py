@@ -872,6 +872,38 @@ class TestCliAgentActivity(unittest.TestCase):
         self.assertEqual(output.count("Edit"), 1)
 
 
+class TestChatWithoutIndex(unittest.TestCase):
+    """While the first index build runs (minutes on a cold start), OAuth
+    queries go straight to the CLI agent, which can search the code itself."""
+
+    def setUp(self):
+        from claude_light import state
+        self._hist = list(state.conversation_history)
+
+    def tearDown(self):
+        from claude_light import state
+        state.conversation_history[:] = self._hist
+
+    def test_use_index_false_skips_retrieval(self):
+        print("\n  ▶ TestChatWithoutIndex.test_use_index_false_skips_retrieval")
+        from claude_light import llm
+        captured = {}
+
+        def fake_call(**kwargs):
+            captured.update(kwargs)
+            usage = MagicMock(input_tokens=1, output_tokens=1,
+                              cache_creation_input_tokens=0, cache_read_input_tokens=0)
+            return "answer", usage, True
+
+        out = io.StringIO()
+        with patch.object(llm, "retrieve") as retrieve_mock,              patch.object(llm, "_make_streaming_api_call", side_effect=fake_call),              patch.object(llm, "route_query", return_value=("m", "medium", 4096)),              patch.object(llm, "record_retrieval"),              patch.object(llm, "print_stats"),              patch("sys.stdout", out):
+            llm.chat("where is the retry loop?", use_index=False)
+
+        retrieve_mock.assert_not_called()
+        self.assertNotIn("Retrieved Codebase Context", str(captured["messages"]))
+        self.assertIn("index", out.getvalue().lower())
+
+
 class _PacedProc:
     """Popen stand-in whose stdout emits lines on a schedule.
 

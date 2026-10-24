@@ -6720,6 +6720,49 @@ class TestGitManager(unittest.TestCase):
         self.assertIn("Batch update", msg)
 
 
+class TestIndexGate(unittest.TestCase):
+    """A cold index build took 314 s on a 64-file repo. OAuth turns must not
+    wait for it (the CLI agent searches the code itself); API-key turns have
+    no tools, so they still wait for retrieval."""
+
+    def setUp(self):
+        import claude_light.state as state
+        self._was_set = state.indexing_done.is_set()
+        state.indexing_done.clear()
+
+    def tearDown(self):
+        import claude_light.state as state
+        if self._was_set:
+            state.indexing_done.set()
+        else:
+            state.indexing_done.clear()
+
+    def test_oauth_query_does_not_wait_for_index(self):
+        import time as _time
+        from claude_light import main
+        with patch.object(main, "AUTH_MODE", "OAUTH"), patch("builtins.print"):
+            start = _time.monotonic()
+            ready = main._index_ready_for_query()
+        self.assertFalse(ready)
+        self.assertLess(_time.monotonic() - start, 1.0)
+
+    def test_api_key_query_waits_for_index(self):
+        import threading as _threading
+        import claude_light.state as state
+        from claude_light import main
+        _threading.Timer(0.3, state.indexing_done.set).start()
+        with patch.object(main, "AUTH_MODE", "API_KEY"), patch("builtins.print"):
+            ready = main._index_ready_for_query()
+        self.assertTrue(ready)
+        self.assertTrue(state.indexing_done.is_set())
+
+    def test_ready_index_is_used(self):
+        import claude_light.state as state
+        from claude_light import main
+        state.indexing_done.set()
+        with patch.object(main, "AUTH_MODE", "OAUTH"), patch("builtins.print"):
+            self.assertTrue(main._index_ready_for_query())
+
 if __name__ == "__main__":
     unittest.main()
 
