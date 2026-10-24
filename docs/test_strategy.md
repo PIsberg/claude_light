@@ -690,5 +690,5 @@ start htmlcov/index.html  # Windows
 ## Related Documentation
 
 - [README.md](../README.md) - Getting started and usage
-- [Architecture](architecture.md) - System architecture diagrams
+- [Architecture](architecture/ARCHITECTURE.md) - System architecture diagrams
 - [CLAUDE.md](../CLAUDE.md) - Project guidelines

@@ -231,7 +231,7 @@ so CI prints the projected savings envelope.
 4. UI updates in `ui.py` (per-turn + session summary).
 5. Update `benchmark.py` analytical model; add `--llmlingua` to
    `benchmark_retrieval.py` and `benchmark_cost.py`.
-6. Update `CLAUDE.md` and `docs/architecture.md`.
+6. Update `CLAUDE.md` and `docs/architecture/compression.md`.
 7. Default `LLMLINGUA_ENABLED=True` — safe because `compress_context()` is a
    silent no-op when the `llmlingua` package isn't installed. Users who have
    it installed get the savings automatically; anyone who wants to opt out
