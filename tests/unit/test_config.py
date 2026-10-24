@@ -77,3 +77,27 @@ class TestLoadLanguages(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestGlobalStatsFile(unittest.TestCase):
+    """The suite once wrote its fake token usage into the developer's real
+    ~/.claude_light_stats.json, inflating the lifetime savings it reports."""
+
+    def test_the_test_suite_does_not_use_the_real_stats_file(self):
+        print("\n  ▶ TestGlobalStatsFile.test_the_test_suite_does_not_use_the_real_stats_file")
+        from claude_light import config, state
+        real = Path.home() / ".claude_light_stats.json"
+        self.assertNotEqual(config.GLOBAL_STATS_FILE.resolve(), real.resolve())
+        self.assertNotEqual(state.GLOBAL_STATS_FILE.resolve(), real.resolve())
+
+    def test_env_var_moves_the_stats_file(self):
+        print("\n  ▶ TestGlobalStatsFile.test_env_var_moves_the_stats_file")
+        import subprocess
+        import tempfile
+        target = Path(tempfile.mkdtemp()) / "stats.json"
+        env = dict(os.environ, CLAUDE_LIGHT_STATS_FILE=str(target))
+        out = subprocess.run(
+            [sys.executable, "-c", "import claude_light.config as c; print(c.GLOBAL_STATS_FILE)"],
+            env=env, capture_output=True, text=True, cwd=str(Path(__file__).resolve().parents[2]),
+        )
+        self.assertEqual(out.stdout.strip(), str(target), out.stderr)
