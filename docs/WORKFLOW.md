@@ -2,15 +2,13 @@
 
 Every workflow lives in `.github/workflows/`. This page lists what each one runs, in order, and the command to run the same step locally. Read the YAML for the exact versions and pinned action SHAs, which change often.
 
-Every job starts with the same `step-security/harden-runner` step in `audit` mode, which records outbound calls without blocking them. Permissions are read-only at the workflow level (`read-all` or `contents: read`). The one job that grants more is `scorecards.yml`, which asks for `id-token: write` to publish its results.
-
-**Open question:** `sbom.yml` sets `read-all`, yet its "Upload SBOM to Release" step (on a published release) needs write access to the release. This has not been run, so it is unverified. Check the next release run before relying on that step.
+Every job starts with the same `step-security/harden-runner` step in `audit` mode, which records outbound calls without blocking them. Permissions are read-only at the workflow level (`read-all` or `contents: read`). Two jobs grant more: `scorecards.yml` asks for `id-token: write` to publish its results, and the `sbom` job in `sbom.yml` asks for `contents: write`, which its release-upload step needs. A job's own `permissions` block replaces the workflow-level one, so a job-level grant must list every permission the job uses.
 
 ## At a glance
 
 | Workflow file | Name in GitHub | Runs on | Purpose |
 |---|---|---|---|
-| `test.yml` | Test Suite | push and PR to `main` | Unit tests, token and retrieval regression checks |
+| `test.yml` | Test Suite | push and PR to `main` | Unit, integration and utilities tests; token and retrieval regression checks |
 | `fuzz.yml` | Fuzz Testing | push and PR to `main`, weekly Monday 00:00 UTC | Hypothesis tests of the parsers and router |
 | `build-wheel.yml` | Build Wheel | push and PR to `main`, manual | Build and validate the sdist and wheel |
 | `sbom.yml` | Generate SBOM | push and PR to `main`, release published, manual | CycloneDX software bill of materials |
@@ -30,14 +28,15 @@ Runs on Python 3.12 on `ubuntu-latest`. Steps, in order:
    - `tests/unit/test_editor.py` first, with a 60 s per-test timeout. It runs before `MockManager` patches `Path`.
    - `tests/unit/test_config.py`, same reason, same timeout.
    - Every other file in `tests/unit/`, with a 120 s timeout and `-x` (stop at the first failure).
-4. **Run analytical benchmark.** Runs `tests/benchmarks/benchmark.py --json` into `tests/baseline_token_stats_new.json`, then `tests/linting/check_regression.py tokens` compares it with `tests/fixtures/baseline_token_stats.json`. The step fails if `check_regression.py` finds the numbers regressed against the baseline.
-5. **Run retrieval benchmark (offline fixture).** Runs `benchmark_retrieval.py` on `tests/fixtures/retrieval_cases.json`, then `check_regression.py retrieval` compares it with `tests/fixtures/baseline_retrieval_stats.json`.
+4. **Run integration and utilities tests.** `pytest tests/integration/ tests/utilities/` with a 120 s timeout and `-x`. These are import and wiring checks, and they need no network.
+5. **Run analytical benchmark.** Runs `tests/benchmarks/benchmark.py --json` into `tests/baseline_token_stats_new.json`, then `tests/linting/check_regression.py tokens` compares it with `tests/fixtures/baseline_token_stats.json`. The step fails if `check_regression.py` finds the numbers regressed against the baseline.
+6. **Run retrieval benchmark (offline fixture).** Runs `benchmark_retrieval.py` on `tests/fixtures/retrieval_cases.json`, then `check_regression.py retrieval` compares it with `tests/fixtures/baseline_retrieval_stats.json`.
 
-Steps 4 and 5 write their `*_new.json` output into `tests/`. Those files are not meant to be committed. Do not commit them by accident.
+Steps 5 and 6 write their `*_new.json` output into `tests/`. Those files are not meant to be committed. Do not commit them by accident.
 
-**Not run by this workflow:** `tests/integration/` and `tests/utilities/`. Those suites run only on a developer machine. The regression script in `tests/linting/` does run, in step 4 and step 5. See [TESTING.md](../TESTING.md).
+Not run by this workflow: the benchmark scripts that need a model or an API key, and `tests/test_fuzz.py`, which `fuzz.yml` covers. See [TESTING.md](../TESTING.md).
 
-Local equivalent: the unit commands above, then the two benchmark and regression pairs.
+Local equivalent: the unit commands and the integration and utilities command above, then the two benchmark and regression pairs.
 
 ## `fuzz.yml`: Fuzz Testing
 

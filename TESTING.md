@@ -20,8 +20,8 @@ The CI unit step runs two files first, `test_editor.py` and `test_config.py`, be
 | Directory | What is in it | Run by |
 |---|---|---|
 | `tests/unit/` | One file per module (`test_retrieval.py` for `retrieval.py`, and so on), plus `test_benchmark_budget.py` for the benchmark helpers | CI `test.yml`, and `pytest` |
-| `tests/integration/` | Import and wiring checks across modules, the git manager, the API tool loop, and the benchmark scripts | `pytest` only |
-| `tests/utilities/` | Mock and download-progress helpers | `pytest` only |
+| `tests/integration/` | Import and wiring checks across modules, the git manager, the API tool loop, and the benchmark scripts | CI `test.yml`, and `pytest` |
+| `tests/utilities/` | Mock and download-progress helpers | CI `test.yml`, and `pytest` |
 | `tests/linting/` | Scripts, not pytest tests: `check_regression.py` (the regression gate CI calls) and two syntax-check scripts | `test.yml` runs `check_regression.py`; the syntax scripts are run by hand |
 | `tests/test_fuzz.py` | Hypothesis property tests for the parsers and the router | `pytest`; `fuzz.yml` runs it with a larger example budget |
 | `tests/benchmarks/` | Scripts that measure token and retrieval changes | Not collected by pytest. See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) |
@@ -29,7 +29,7 @@ The CI unit step runs two files first, `test_editor.py` and `test_config.py`, be
 
 `pytest.ini` sets `testpaths = tests` and excludes `tests/fixtures` and `tests/benchmarks`.
 
-**CI does not run the integration or utilities suites.** A change in those areas is checked only by a developer's local `pytest`. Keep that in mind when a change touches them.
+CI runs the unit, integration and utilities suites, plus the two benchmark regression checks. The fuzz suite runs in its own workflow.
 
 ## Environment the suite sets
 
