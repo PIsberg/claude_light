@@ -112,17 +112,23 @@ def print_startup_header():
 
 
 def print_banner(model: str, top_k: int, access_mode: str, device: str | None = None):
-    """Print model/stats line and help text after indexing completes."""
+    """Print model/stats line and help text before the first answer.
+
+    The first query can arrive while the index is still building (top_k is
+    None then), so say that instead of printing "top-None".
+    """
     model_short = model.replace("claude-", "").replace("-20251001", "")
     device_str = f"  ·  {device.upper()}" if device else ""
+    rag = f"RAG top-{top_k}" if top_k else "RAG indexing…"
+    help_line = "/help for commands  ·  Ctrl+C cancels a turn  ·  exit to quit"
     if _RICH_AVAILABLE:
         console.print(
-            f"  [dim]{model_short}  ·  RAG top-{top_k}{device_str}  ·  {access_mode}[/dim]"
+            f"  [dim]{model_short}  ·  {rag}{device_str}  ·  {access_mode}[/dim]"
         )
-        console.print("  [dim]/help for commands  ·  Ctrl+C to exit[/dim]\n")
+        console.print(f"  [dim]{help_line}[/dim]\n")
     else:
-        print(f"  {_ANSI_DIM}{model_short}  ·  RAG top-{top_k}{device_str}  ·  {access_mode}{_ANSI_RESET}")
-        print(f"  {_ANSI_DIM}/help for commands  ·  Ctrl+C to exit{_ANSI_RESET}\n")
+        print(f"  {_ANSI_DIM}{model_short}  ·  {rag}{device_str}  ·  {access_mode}{_ANSI_RESET}")
+        print(f"  {_ANSI_DIM}{help_line}{_ANSI_RESET}\n")
 
 
 def _count(value) -> float:

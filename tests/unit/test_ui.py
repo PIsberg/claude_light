@@ -297,5 +297,21 @@ class TestPerModelPricing(unittest.TestCase):
                 state.session_costs.update(saved_costs)
 
 
+
+class TestBanner(unittest.TestCase):
+
+    def test_banner_before_the_index_exists_says_so(self):
+        print("\n  ▶ TestBanner.test_banner_before_the_index_exists_says_so")
+        # Live, the first query of a cold session printed "RAG top-None".
+        import claude_light.ui as ui
+        out = io.StringIO()
+        with patch.object(ui, "_RICH_AVAILABLE", False), patch("sys.stdout", out):
+            ui.print_banner("claude-sonnet-5-5", None, "Claude CLI")
+        self.assertNotIn("None", out.getvalue())
+        self.assertIn("indexing", out.getvalue())
+        # Ctrl+C cancels the current turn; it no longer exits.
+        self.assertNotIn("Ctrl+C to exit", out.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()
