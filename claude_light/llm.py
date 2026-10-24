@@ -382,8 +382,9 @@ def _summarize_turns(messages: list) -> tuple:
         # No API key in this mode: the summary goes through the CLI too.
         text, usage, _ = _make_cli_subprocess_call(
             instructions, model=SUMMARY_MODEL,
-            extra_flags=["--system-prompt", "You summarize conversations.", "--tools", ""],
+            extra_flags=["--system-prompt", "You summarize conversations."],
             render=False,
+            tools=False,  # the turns may quote repo text; nothing may act on it
         )
         return text.strip(), usage
 
@@ -619,6 +620,11 @@ def _kill_process_tree(proc) -> None:
 # change routinely takes several minutes while streaming events the whole
 # time. Kill it only when it goes silent; the overall cap is a backstop.
 _CLI_IDLE_TIMEOUT_SECS = 300
+# Every built-in CLI tool, denied by name for tool-free calls.
+_ALL_CLI_TOOLS = ",".join([
+    "Bash", "PowerShell", "Edit", "MultiEdit", "Write", "NotebookEdit", "Read", "Glob",
+    "Grep", "LS", "WebFetch", "WebSearch", "Task", "Agent", "TodoWrite",
+])
 _CLI_MAX_SECS = 3600
 
 
@@ -627,6 +633,7 @@ def _make_cli_subprocess_call(
     model: str = "",
     extra_flags: list | None = None,
     render: bool = True,
+    tools: bool = True,
 ) -> tuple[str, any, str | None]:
     """
     Execute the official 'claude' CLI binary as a subprocess for OAUTH mode.
@@ -771,13 +778,24 @@ def _make_cli_subprocess_call(
         # unapproved one is denied (the model gets an error), never left
         # waiting on a prompt. config.ALLOWED_COMMANDS is the user's opt-in
         # list, e.g. the test command, so the agent can check its own edits.
+        if tools:
+            permission_mode = "acceptEdits"
+            # The shell stays off unless the user allowlisted commands.
+            disallowed = "PowerShell" if config.ALLOWED_COMMANDS else "PowerShell,Bash"
+        else:
+            # A hidden call over text that may quote repo content (the
+            # history summary): no tools at all. --tools "" alone is not
+            # relied on, since CLI 2.1.118 ignored it; with the default
+            # mode and -p, any edit is denied rather than auto-accepted.
+            permission_mode = "default"
+            disallowed = _ALL_CLI_TOOLS
         command = [claude_bin]
         command += [
             "-p", cmd_prompt,
             "--output-format", "stream-json",
             "--verbose",
             "--include-partial-messages",
-            "--permission-mode", "acceptEdits",
+            "--permission-mode", permission_mode,
             # Only claude_light's own settings apply. A repo's
             # .claude/settings*.json could add allow rules or hooks (which run
             # commands) and its .mcp.json could add servers. This also stops
@@ -786,10 +804,11 @@ def _make_cli_subprocess_call(
             "--setting-sources", "user",
             "--strict-mcp-config",
             "--settings", settings_path.as_posix(),
-            # The shell stays off unless the user allowlisted commands.
-            "--disallowed-tools", "PowerShell" if config.ALLOWED_COMMANDS else "PowerShell,Bash",
+            "--disallowed-tools", disallowed,
         ]
-        if config.ALLOWED_COMMANDS:
+        if not tools:
+            command += ["--tools", ""]
+        elif config.ALLOWED_COMMANDS:
             command += ["--allowedTools", ",".join(f"Bash({c}:*)" for c in config.ALLOWED_COMMANDS)]
         if model:
             command += ["--model", model]

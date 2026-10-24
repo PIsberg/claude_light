@@ -944,6 +944,36 @@ class TestCliCommandPermissions(unittest.TestCase):
             llm._make_cli_subprocess_call("hi")
         return popen_mock.call_args.args[0]
 
+    def test_tool_free_call_cannot_edit_or_run_commands(self):
+        print("\n  ▶ TestCliCommandPermissions.test_tool_free_call_cannot_edit_or_run_commands")
+        # The history summary runs hidden (render=False) over conversation
+        # text that may quote repo content. Even with an allowlist set, it
+        # must get no tools, no auto-accepted edits and no allowed commands,
+        # whether or not the CLI honours --tools "" (2.1.118 did not).
+        from claude_light import llm, config
+        mock_proc = _fake_popen(['{"type":"result","subtype":"success","result":"","usage":{}}'])
+        with patch.object(config, "ALLOWED_COMMANDS", ["python -m pytest"]), \
+             patch("claude_light.llm.subprocess.Popen", return_value=mock_proc) as popen_mock, \
+             patch("shutil.which", return_value="/fake/bin/claude"), \
+             patch("sys.stdout", io.StringIO()):
+            llm._make_cli_subprocess_call("hi", render=False, tools=False)
+        cmd = popen_mock.call_args.args[0]
+        self.assertEqual(cmd[cmd.index("--tools") + 1], "")
+        self.assertNotIn("--allowedTools", cmd)
+        self.assertNotEqual(cmd[cmd.index("--permission-mode") + 1], "acceptEdits")
+        denied = cmd[cmd.index("--disallowed-tools") + 1].split(",")
+        for tool in ("Bash", "PowerShell", "Edit", "Write", "NotebookEdit", "WebFetch"):
+            self.assertIn(tool, denied)
+
+    def test_summary_call_is_tool_free(self):
+        print("\n  ▶ TestCliCommandPermissions.test_summary_call_is_tool_free")
+        from claude_light import llm
+        usage = MagicMock()
+        with patch.object(llm, "AUTH_MODE", "OAUTH"), \
+             patch.object(llm, "_make_cli_subprocess_call", return_value=("s", usage, None)) as cli:
+            llm._summarize_turns([{"role": "user", "content": "q"}])
+        self.assertIs(cli.call_args.kwargs["tools"], False)
+
     def test_permissions_are_not_skipped(self):
         print("\n  ▶ TestCliCommandPermissions.test_permissions_are_not_skipped")
         cmd = self._cmd_for([])
