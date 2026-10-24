@@ -784,6 +784,31 @@ class TestCliSubprocessStreaming(unittest.TestCase):
         # subprocess would have seen the right shape.
         self.assertTrue(str(claude_md).endswith("CLAUDE.md"))
 
+    def test_user_claude_md_excluded_even_from_ancestor_walk(self):
+        print("\n  ▶ TestCliSubprocessStreaming.test_user_claude_md_excluded_even_from_ancestor_walk")
+        # For a repo under the user's home (~/code/x), the CLI's walk up
+        # parent directories finds ~/.claude/CLAUDE.md as an ancestor's
+        # project memory, so the HOME override alone does not keep it out
+        # (verified live with claude 2.1.310). It must be excluded by path.
+        import json as _json
+        import os as _os
+        from claude_light import llm
+        seen = {}
+
+        def fake_popen(cmd, **kwargs):
+            idx = cmd.index("--settings")
+            with open(cmd[idx + 1], encoding="utf-8") as fh:
+                seen.update(_json.load(fh))
+            return _fake_popen(['{"type":"result","subtype":"success","result":"","usage":{}}'])
+
+        with patch("claude_light.llm.subprocess.Popen", side_effect=fake_popen), \
+             patch("shutil.which", return_value="/fake/bin/claude"), \
+             patch("sys.stdout", io.StringIO()):
+            llm._make_cli_subprocess_call("hi")
+
+        real = (_os.path.expanduser("~").replace("\\", "/") + "/.claude/CLAUDE.md")
+        self.assertIn(real, seen.get("claudeMdExcludes", []))
+
     def test_command_uses_stream_json_flags(self):
         print("\n  ▶ TestCliSubprocessStreaming.test_command_uses_stream_json_flags")
         # Lock in the CLI flags we rely on — if any of these change, the

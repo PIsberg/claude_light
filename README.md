@@ -181,6 +181,7 @@ Without tree-sitter, chunking falls back to whole-file mode. Without `rich`, out
 If you have a **Claude Pro** or **Team** subscription and have authorized the official [Claude CLI](https://github.com/anthropics/claude-code), `claude_light` will automatically use your flat-rate subscription. 
 *   **Cost**: Included in your $20/mo subscription.
 *   **Setup**: Just run `claude auth login` once.
+*   **Instructions it sees**: the repo's own `CLAUDE.md` files are loaded; your personal `~/.claude/CLAUDE.md` is not, even when the repo lives under your home directory, so instructions written for your own Claude Code setup do not leak into claude_light's agent.
 *   **Long tasks**: each turn runs the CLI's own agent loop (it can read and edit files itself), so a multi-file change can take several minutes. Each file it reads, searches or edits is shown as it happens (`⏺ Read claude_light/llm.py`). The turn is cancelled only if the CLI produces no output for 5 minutes, or after 1 hour in total. On the very first run the index is still being built (several minutes on a CPU); you can ask questions immediately and they go to the agent without retrieved context until the index is ready.
 
 #### Option B: Anthropic API Key

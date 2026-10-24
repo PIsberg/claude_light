@@ -645,6 +645,18 @@ def _make_cli_subprocess_call(
         env["HOME"] = isolated_home
         env["USERPROFILE"] = isolated_home
 
+        # The HOME override does not cover a repo that lives under the
+        # user's home (~/code/x): the CLI walks up parent directories for
+        # project memory and finds ~/.claude/CLAUDE.md as an ancestor's
+        # .claude/CLAUDE.md. Exclude it by its real path as well.
+        real_user_md = (
+            os.path.expanduser("~").replace("\\", "/") + "/.claude/CLAUDE.md"
+        )
+        settings_path = Path(isolated_home) / "claude_light_settings.json"
+        settings_path.write_text(
+            json.dumps({"claudeMdExcludes": [real_user_md]}), encoding="utf-8"
+        )
+
         # On Windows, ensure critical path variables are present for the Bun-based CLI to find its profile
         if current_os == 'nt':
             # Note: USERPROFILE was just overridden above to isolated_home.
@@ -716,6 +728,7 @@ def _make_cli_subprocess_call(
             "--include-partial-messages",
             "--dangerously-skip-permissions",
             "--disallowed-tools", "Bash,PowerShell",
+            "--settings", settings_path.as_posix(),
         ]
         if model:
             command += ["--model", model]
