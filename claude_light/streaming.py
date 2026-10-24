@@ -220,6 +220,12 @@ def stream_chat_response(client, **create_kwargs) -> Tuple[str, Dict[str, int]]:
     handler = StreamingResponseHandler()
     with client.messages.stream(**create_kwargs) as stream:
         response_text, usage = handler.process_stream(stream)
+        # The complete message (stop_reason, tool_use blocks, exact usage) for
+        # the tool loop in llm.py. Streams without it (mocks) simply omit it.
+        try:
+            usage["message"] = stream.get_final_message()
+        except Exception:
+            pass
     return response_text, usage
 
 

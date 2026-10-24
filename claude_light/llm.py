@@ -1123,15 +1123,7 @@ def _make_streaming_api_call(**create_kwargs):
     # API Key mode — use the anthropic client directly
     if ENABLE_STREAMING and hasattr(client.messages, 'stream'):
         try:
-            reply_text, usage_dict = stream_chat_response(client, **create_kwargs)
-            class UsageObj:
-                pass
-            usage = UsageObj()
-            usage.input_tokens = usage_dict.get('input_tokens', 0)
-            usage.output_tokens = usage_dict.get('output_tokens', 0)
-            usage.cache_creation_input_tokens = usage_dict.get('cache_creation_tokens', 0)
-            usage.cache_read_input_tokens = usage_dict.get('cache_read_tokens', 0)
-            return reply_text, usage, True  # already streamed to stdout
+            return _api_tool_loop(create_kwargs)  # already streamed to stdout
         except (AttributeError, NotImplementedError):
             @retry_with_backoff
             def _call_api():
@@ -1145,6 +1137,94 @@ def _make_streaming_api_call(**create_kwargs):
         response = _call_api()
         return _extract_text(response.content), response.usage, False
 
+# Most rounds of tool calls in one API-key turn before the model must answer.
+_API_TOOL_STEPS = 8
+
+
+class _TurnUsage:
+    """Token usage summed over the API calls of one tool-loop turn."""
+
+    def __init__(self):
+        self.input_tokens = 0
+        self.output_tokens = 0
+        self.cache_creation_input_tokens = 0
+        self.cache_read_input_tokens = 0
+        self.cache_creation = {"ephemeral_1h_input_tokens": 0}
+        self.cost_usd = None
+
+    def add(self, usage):
+        from claude_light.ui import _count, _one_hour_writes
+        if isinstance(usage, dict):  # a stream that gave no final message
+            self.input_tokens += _count(usage.get("input_tokens", 0))
+            self.output_tokens += _count(usage.get("output_tokens", 0))
+            self.cache_creation_input_tokens += _count(usage.get("cache_creation_tokens", 0))
+            self.cache_read_input_tokens += _count(usage.get("cache_read_tokens", 0))
+            return
+        self.input_tokens += _count(getattr(usage, "input_tokens", 0))
+        self.output_tokens += _count(getattr(usage, "output_tokens", 0))
+        self.cache_creation_input_tokens += _count(getattr(usage, "cache_creation_input_tokens", 0))
+        self.cache_read_input_tokens += _count(getattr(usage, "cache_read_input_tokens", 0))
+        self.cache_creation["ephemeral_1h_input_tokens"] += _one_hour_writes(usage)
+
+
+def _api_tool_loop(create_kwargs):
+    """One API-key turn with read-only tools (read_file, grep, list_files).
+
+    Without tools the model only saw the retrieved chunks and could not open
+    a file retrieval missed. Edits still come back as SEARCH/REPLACE blocks in
+    the reply text. Returns (reply_text, usage, streamed=True).
+    """
+    from claude_light import tools
+    kwargs = dict(create_kwargs, tools=tools.TOOLS)
+    messages = list(create_kwargs["messages"])
+    usage = _TurnUsage()
+    texts = []
+    for step in range(_API_TOOL_STEPS + 1):
+        kwargs["messages"] = messages
+        try:
+            text, usage_dict = stream_chat_response(client, **kwargs)
+        except ValueError:
+            # Tool input the SDK could not parse (eager input streaming).
+            # Retry the request once; a second failure is a real error.
+            text, usage_dict = stream_chat_response(client, **kwargs)
+        message = usage_dict.get("message")
+        usage.add(message.usage if message is not None else usage_dict)
+        if text and text.strip():
+            texts.append(text.strip())
+        # Only a completed tool_use turn runs tools: never on max_tokens (the
+        # input may be cut off) or refusal.
+        if message is None or getattr(message, "stop_reason", None) != "tool_use":
+            break
+        if step == _API_TOOL_STEPS:
+            print(f"  {_T_ERR}  stopped after {_API_TOOL_STEPS} rounds of tool calls", flush=True)
+            break
+        results = []
+        for block in message.content:
+            if getattr(block, "type", None) != "tool_use":
+                continue
+            print(f"  {_ANSI_DIM}{_SYM_TOOL} {_describe_tool_call(block.name, block.input)}{_ANSI_RESET}",
+                  flush=True)
+            output, is_error = tools.run_tool(block.name, block.input)
+            result = {"type": "tool_result", "tool_use_id": block.id, "content": output}
+            if is_error:
+                result["is_error"] = True
+            results.append(result)
+        # One moving cache breakpoint on the newest results keeps the request
+        # within the 4-breakpoint limit while each round reads the last one.
+        for m in messages:
+            if m.get("role") == "user" and isinstance(m.get("content"), list):
+                for b in m["content"]:
+                    if isinstance(b, dict) and b.get("type") == "tool_result":
+                        b.pop("cache_control", None)
+        if results:
+            results[-1]["cache_control"] = {"type": "ephemeral"}
+        messages = messages + [
+            {"role": "assistant", "content": message.content},  # thinking blocks included, unchanged
+            {"role": "user", "content": results},
+        ]
+    return "\n\n".join(texts), usage, True
+
+
 def _apply_skeleton(new_skeleton):
     with state.lock:
         state.skeleton_context = new_skeleton
@@ -1156,6 +1236,7 @@ def _update_skeleton():
 def warm_cache(quiet=False):
     if AUTH_MODE == "OAUTH":
         return
+    from claude_light import tools as _tools
     with state.lock:
         skeleton = state.skeleton_context
     try:
@@ -1163,6 +1244,9 @@ def warm_cache(quiet=False):
             model=MODEL,
             # 0 = prefill only: writes the cache, bills no output tokens.
             max_tokens=0,
+            # Tools render before the system prompt in the cache prefix; warm
+            # with the same list the turns send, or this warms nothing they use.
+            tools=_tools.TOOLS,
             system=_build_system_blocks(skeleton),
             messages=[{"role": "user", "content": "ok"}],
             extra_headers=_EXTENDED_CACHE_HEADERS,

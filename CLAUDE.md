@@ -142,6 +142,7 @@ The `claude_light/` package is organized by responsibility:
 | `executor.py` | Loads `SentenceTransformer` model, runs `auto_tune()`, executes `/run <cmd>` |
 | `streaming.py` | Real-time token streaming, thinking-block handling, usage accumulation |
 | `retry.py` | Exponential backoff (2s→4s→8s, max 3 attempts) for transient API errors |
+| `tools.py` | Read-only workspace tools for API-key mode (`read_file`, `grep`, `list_files`), confined to the project root with output caps. `llm._api_tool_loop()` runs them in a manual tool loop (max `_API_TOOL_STEPS` = 8 rounds); edits still use SEARCH/REPLACE |
 | `compressor.py` | Optional LLMLingua-2 prompt compression of the retrieved RAG context. Lazy singleton, never raises into the hot path |
 | `session_manager.py` | Persists conversation history to `.claude_light_cache/session.json` |
 | `ui.py` | ANSI colour, rich markdown rendering, diff display, cost formatting |
