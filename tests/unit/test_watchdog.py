@@ -178,7 +178,7 @@ class TestWatchdogResourceManagement:
         assert mock_observer.stopped
 
     def test_signal_handler_stops_session(self):
-        """Test that signal handler properly sets stop event."""
+        """Handlers register without error (behaviour: TestCtrlC in test_claude_light.py)."""
         from claude_light.main import _setup_signal_handlers
         
         # Setup handlers

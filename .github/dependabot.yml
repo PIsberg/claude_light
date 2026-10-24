@@ -13,10 +13,18 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # requirements.txt and pyproject.toml only declare lower bounds (">=").
+    # With the default strategy Dependabot treats a ">=" range that the latest
+    # release already satisfies as up to date, so it ran weekly from June to
+    # August 2026 without opening a single PR. "increase" raises the floor.
+    versioning-strategy: increase
     groups:
-      python-dependencies:
-        patterns:
-          - "*"
+      # Majors get their own PR: anthropic 2.x (httpx -> httpx2) broke tests,
+      # and one breaking bump should not hold back every minor update.
+      python-minor-and-patch:
+        update-types:
+          - minor
+          - patch
     commit-message:
       prefix: "deps"
     labels:

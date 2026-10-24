@@ -12,14 +12,13 @@ from claude_light.config import (
     API_KEY, AUTH_MODE, API_KEY_SOURCE, ECONOMY_MODE, MODEL, MODEL_HAIKU, MODEL_SONNET, MODEL_OPUS, SUMMARY_MODEL,
     MAX_HISTORY_TURNS, SUMMARIZE_BATCH, _RETRIEVAL_BUDGET, SYSTEM_PROMPT,
     ENABLE_STREAMING,
-    PRICE_INPUT, PRICE_OUTPUT,
     ROUTER_SEMANTIC_WEIGHT, ROUTER_SEMANTIC_FLOOR, ROUTER_COST_CEILING,
     ROUTER_ESCALATE_MARGIN, ROUTER_FIXED_INPUT_TOKENS, ROUTER_PROTOTYPES,
 )
 from claude_light.ui import (
     _T_ROUTE, _T_SYS, _T_ERR, _T_RAG, _T_CACHE, _T_EDIT,
     _ANSI_GREEN, _ANSI_CYAN, _ANSI_YELLOW, _ANSI_MAGENTA, _ANSI_BOLD, _ANSI_DIM, _ANSI_RESET, _ANSI_RED,
-    _SYM_RESP, print_stats, _Spinner, calculate_cost, _print_reply
+    _SYM_RESP, _SYM_TOOL, print_stats, _Spinner, calculate_cost, _print_reply
 )
 import claude_light.state as state
 from claude_light.skeleton import build_skeleton, _refresh_tree_only, _assemble_skeleton, _refresh_single_md
@@ -84,6 +83,22 @@ _PROTO_CACHE = {"model": None, "mat": None}
 _last_route_info: dict = {}
 
 
+def _encode_if_free(texts):
+    """Encode with the shared embedder unless it is busy; None if it is.
+
+    The index build holds embedder_lock for its whole embedding pass, which
+    is minutes on a cold start. Routing must not wait for that: it falls back
+    to lexical scores instead.
+    """
+    import numpy as np
+    if not state.embedder_lock.acquire(timeout=0.5):
+        return None
+    try:
+        return np.asarray(state.embedder.encode(texts, normalize_embeddings=True))
+    finally:
+        state.embedder_lock.release()
+
+
 def _get_prototype_embeddings():
     """Return {dim: ndarray (P,D)} for the current embedder, or None.
 
@@ -100,10 +115,9 @@ def _get_prototype_embeddings():
         prefix = _QUERY_PREFIX.get(state.EMBED_MODEL, "")
         dims = list(ROUTER_PROTOTYPES.keys())
         all_phrases = [prefix + p for d in dims for p in ROUTER_PROTOTYPES[d]]
-        with state.embedder_lock:
-            all_vecs = np.asarray(
-                state.embedder.encode(all_phrases, normalize_embeddings=True)
-            )
+        all_vecs = _encode_if_free(all_phrases)
+        if all_vecs is None:
+            return None
         mat = {}
         idx = 0
         for d in dims:
@@ -140,13 +154,9 @@ def _semantic_dimension_scores(query: str):
         from claude_light.config import _QUERY_PREFIX
         import numpy as np
         prefix = _QUERY_PREFIX.get(state.EMBED_MODEL, "")
-        with state.embedder_lock:
-            q_emb = np.asarray(
-                state.embedder.encode(
-                    prefix + query,
-                    normalize_embeddings=True,
-                )
-            )
+        q_emb = _encode_if_free(prefix + query)
+        if q_emb is None:
+            return zeros, False
         scores = {}
         for dim, proto_mat in protos.items():
             sim = float(np.max(proto_mat @ q_emb))
@@ -160,11 +170,13 @@ def _semantic_dimension_scores(query: str):
         return zeros, False
 
 
-def _estimate_query_cost(max_tokens: int, retrieval_budget: int) -> float:
+def _estimate_query_cost(max_tokens: int, retrieval_budget: int, model=None) -> float:
     """Rough per-query cost estimate used only for tier gating."""
+    from claude_light.config import model_prices
+    p = model_prices(model)
     expected_input  = retrieval_budget + ROUTER_FIXED_INPUT_TOKENS
     expected_output = max_tokens * 0.5
-    return expected_input / 1e6 * PRICE_INPUT + expected_output / 1e6 * PRICE_OUTPUT
+    return expected_input / 1e6 * p["input"] + expected_output / 1e6 * p["output"]
 
 
 def route_query(query: str) -> tuple[str, str, int]:
@@ -224,7 +236,7 @@ def route_query(query: str) -> tuple[str, str, int]:
         _last_route_info.update(
             arch=arch, logic=logic, infra=infra,
             semantic_used=sem_used,
-            est_cost=_estimate_query_cost(max_tokens, _RETRIEVAL_BUDGET[effort]),
+            est_cost=_estimate_query_cost(max_tokens, _RETRIEVAL_BUDGET[effort], model),
         )
         return _route_result(effort, model, max_tokens)
 
@@ -245,7 +257,7 @@ def route_query(query: str) -> tuple[str, str, int]:
         "low":    (MODEL_HAIKU,    2_048),
     }
     while True:
-        cand_cost = _estimate_query_cost(max_tokens, _RETRIEVAL_BUDGET[effort])
+        cand_cost = _estimate_query_cost(max_tokens, _RETRIEVAL_BUDGET[effort], model)
         required_score = _tier_threshold[effort] * (1.0 + ROUTER_ESCALATE_MARGIN)
         if cand_cost <= ROUTER_COST_CEILING or score >= required_score:
             break
@@ -277,19 +289,28 @@ def _extract_text(content_blocks) -> str:
         b.text for b in content_blocks if getattr(b, "type", None) == "text"
     )
 
-def _accumulate_usage(usage):
-    from claude_light.config import PRICE_INPUT, PRICE_READ
+def _accumulate_usage(usage, model=None):
+    from claude_light.config import model_prices
+    from claude_light.ui import cost_breakdown
+    p = model_prices(model)
     input_tokens = usage.input_tokens
     cache_read = getattr(usage, "cache_read_input_tokens", 0)
     cache_write = getattr(usage, "cache_creation_input_tokens", 0)
     output_tokens = usage.output_tokens
+    costs = cost_breakdown(usage, model)
 
     with state.lock:
         state.session_tokens["input"]       += input_tokens
         state.session_tokens["cache_write"] += cache_write
         state.session_tokens["cache_read"]  += cache_read
         state.session_tokens["output"]      += output_tokens
-        
+        for category, dollars in costs.items():
+            state.session_costs[category] += dollars
+        state.session_costs["without_cache"] += (
+            (input_tokens + cache_write + cache_read) / 1e6 * p["input"]
+            + output_tokens / 1e6 * p["output"]
+        )
+
         # Update Global Stats
         # Saved tokens = everything that hit the cache (read)
         # Full tokens = everything that didn't hit the cache (input + write)
@@ -297,27 +318,27 @@ def _accumulate_usage(usage):
         state.global_stats["total_tokens_saved"] += cache_read
         
         # Dollars saved = tokens * (Full Price - Cache Read Price)
-        dollars_saved = (cache_read / 1_000_000.0) * (PRICE_INPUT - PRICE_READ)
+        dollars_saved = (cache_read / 1_000_000.0) * (p["input"] - p["read"])
         state.global_stats["total_dollars_saved"] += dollars_saved
     
     # Persist after every interaction
     state.save_global_stats()
 
-def _accumulate_compression_stats(info: dict) -> None:
+def _accumulate_compression_stats(info: dict, model=None) -> None:
     """Record tokens saved by LLMLingua-2 in global_stats.
 
-    Priced at PRICE_WRITE: the retrieved-context block is new on nearly every
-    query (unique top-K chunks), so its first trip through the API is a cache
-    write. Pricing at PRICE_INPUT would overstate savings; PRICE_READ would
-    understate them. PRICE_WRITE is the honest middle path.
+    Priced at the model's 5-minute cache-write rate: the retrieved-context
+    block is new on nearly every query (unique top-K chunks), so its first
+    trip through the API is a cache write. The input rate would overstate
+    savings; the read rate would understate them.
     """
     if not info or info.get("skipped"):
         return
-    from claude_light.config import PRICE_WRITE
+    from claude_light.config import model_prices
     delta = max(0, info["tokens_before"] - info["tokens_after"])
     if delta == 0:
         return
-    dollars = (delta / 1_000_000.0) * PRICE_WRITE
+    dollars = (delta / 1_000_000.0) * model_prices(model)["write"]
     with state.lock:
         state.global_stats["total_tokens_pre_compress"]    += info["tokens_before"]
         state.global_stats["total_tokens_post_compress"]   += info["tokens_after"]
@@ -340,7 +361,9 @@ def _summarize_turns(messages: list) -> tuple:
     def _call_api():
         return client.messages.create(
             model=SUMMARY_MODEL,
-            max_tokens=400,
+            # Thinking is always on and shares this cap with the summary.
+            max_tokens=4_000,
+            output_config={"effort": "low"},
             messages=[{
                 "role": "user",
                 "content": (
@@ -365,9 +388,9 @@ def _maybe_compress_history():
     try:
         print(f"  {_T_SYS}  Compressing history…", end="", flush=True)
         summary_text, usage = _summarize_turns(to_summarize)
-        _accumulate_usage(usage)
+        _accumulate_usage(usage, SUMMARY_MODEL)
         with state.lock:
-            state.session_cost += calculate_cost(usage)
+            state.session_cost += calculate_cost(usage, SUMMARY_MODEL)
         summary_pair = [
             {"role": "user",      "content": f"[Summary of earlier conversation]\n{summary_text}"},
             {"role": "assistant", "content": "Understood, I have context from our earlier discussion."},
@@ -381,6 +404,17 @@ def _maybe_compress_history():
 # The 1h cache TTL used in _build_system_blocks() requires this beta header;
 # without it the API silently drops the cache_control block (no caching at all).
 _EXTENDED_CACHE_HEADERS = {"anthropic-beta": "extended-cache-ttl-2025-04-11"}
+
+# The 5.5 models always think adaptively; depth is set by output_config.effort
+# and a thinking budget is rejected with a 400. Thinking tokens count against
+# max_tokens, so the router's caps (sized for the answer alone) would truncate
+# replies. Requests stream, so a larger cap costs nothing unless it is used.
+_MIN_MAX_TOKENS = {"low": 8_000, "medium": 16_000, "high": 32_000, "max": 64_000}
+
+
+def _apply_effort(create_kwargs: dict, effort: str) -> None:
+    create_kwargs["output_config"] = {"effort": effort}
+    create_kwargs["max_tokens"] = max(create_kwargs["max_tokens"], _MIN_MAX_TOKENS[effort])
 
 
 def _build_system_blocks(skeleton):
@@ -530,6 +564,84 @@ class _Heartbeat:
             )
 
 
+def _display_path(path: str) -> str:
+    """Project-relative, forward-slash path; absolute only if outside cwd."""
+    try:
+        rel = os.path.relpath(path)
+    except ValueError:  # different drive on Windows
+        return path.replace("\\", "/")
+    return (path if rel.startswith("..") else rel).replace("\\", "/")
+
+
+def _describe_tool_call(name: str, tool_input) -> str:
+    """One-line label for a CLI agent tool call, e.g. 'Read claude_light/llm.py'."""
+    inp = tool_input if isinstance(tool_input, dict) else {}
+    for key in ("file_path", "notebook_path", "pattern", "command", "url", "query", "path"):
+        val = inp.get(key)
+        if isinstance(val, str) and val.strip():
+            if key in ("file_path", "notebook_path", "path"):
+                val = _display_path(val)
+            val = " ".join(val.split())
+            if len(val) > 80:
+                val = val[:77] + "..."
+            return f"{name} {val}"
+    return name
+
+
+def _report_denied_commands(denials) -> None:
+    """Tell the user which commands the agent was not allowed to run, and how
+    to allow them (the agent itself only sees an error)."""
+    commands = []
+    for d in denials or []:
+        cmd = ((d or {}).get("tool_input") or {}).get("command")
+        if isinstance(cmd, str) and cmd.strip() and cmd not in commands:
+            commands.append(" ".join(cmd.split()))
+    if not commands:
+        return
+    print(f"\n  {_ANSI_DIM}{_SYM_TOOL} not allowed to run:{_ANSI_RESET}")
+    for cmd in commands[:3]:
+        print(f"    {_ANSI_DIM}{cmd[:100]}{_ANSI_RESET}")
+    print(f"  {_ANSI_DIM}  allow a command prefix with --allow-command \"<prefix>\""
+          f" or CLAUDE_LIGHT_ALLOW_COMMANDS{_ANSI_RESET}", flush=True)
+
+
+def _kill_process_tree(proc) -> None:
+    """Stop the CLI and everything it started.
+
+    On Windows the CLI runs via cmd.exe (shell=True), so proc.kill() only
+    ends the shell: claude.exe keeps running, keeps editing files, and keeps
+    the stdout pipe open so the read loop never finishes.
+    """
+    import subprocess
+    if proc.poll() is not None:
+        return
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                capture_output=True, stdin=subprocess.DEVNULL,
+            )
+        else:
+            proc.kill()
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+    # Reap it, so it does not linger as a zombie on POSIX.
+    try:
+        proc.wait(timeout=5)
+    except Exception:
+        pass
+
+
+# The CLI runs a full agent loop (read files, edit, re-read), so a multi-file
+# change routinely takes several minutes while streaming events the whole
+# time. Kill it only when it goes silent; the overall cap is a backstop.
+_CLI_IDLE_TIMEOUT_SECS = 300
+_CLI_MAX_SECS = 3600
+
+
 def _make_cli_subprocess_call(
     prompt: str,
     model: str = "",
@@ -576,8 +688,8 @@ def _make_cli_subprocess_call(
         # Isolate HOME/USERPROFILE so the Claude CLI's CLAUDE.md auto-discovery
         # cannot pull in the user's personal ~/.claude/CLAUDE.md. Without this,
         # instructions like "always prefer ctx_read/ctx_shell MCP tools" leak
-        # into the model's context and it hallucinates <tool_call> blocks we
-        # cannot honor (we pass --tools "" so no real tool exists). The `--bare`
+        # into the model's context and it tries tools it does not have here.
+        # The `--bare`
         # CLI flag would also disable this, but `--bare` forbids OAuth reads
         # even when CLAUDE_CODE_OAUTH_TOKEN is set, so it breaks subscription
         # users. This HOME-override sidesteps that: we keep OAuth auth via the
@@ -601,6 +713,18 @@ def _make_cli_subprocess_call(
         env["HOME"] = isolated_home
         env["USERPROFILE"] = isolated_home
 
+        # The HOME override does not cover a repo that lives under the
+        # user's home (~/code/x): the CLI walks up parent directories for
+        # project memory and finds ~/.claude/CLAUDE.md as an ancestor's
+        # .claude/CLAUDE.md. Exclude it by its real path as well.
+        real_user_md = (
+            os.path.expanduser("~").replace("\\", "/") + "/.claude/CLAUDE.md"
+        )
+        settings_path = Path(isolated_home) / "claude_light_settings.json"
+        settings_path.write_text(
+            json.dumps({"claudeMdExcludes": [real_user_md]}), encoding="utf-8"
+        )
+
         # On Windows, ensure critical path variables are present for the Bun-based CLI to find its profile
         if current_os == 'nt':
             # Note: USERPROFILE was just overridden above to isolated_home.
@@ -614,7 +738,8 @@ def _make_cli_subprocess_call(
 
         # Windows cmd.exe command line limit is 8,191 characters total (all args combined).
         # On Windows, ALWAYS use temp files for both prompt and system prompt.
-        # The @file syntax is supported by the Claude CLI and bypasses cmd.exe limits.
+        # The prompt is an @-mention of its file (expanded by the CLI); the
+        # system prompt goes through --system-prompt-file.
         cmd_prompt = prompt
         processed_extra_flags = list(extra_flags) if extra_flags else []
 
@@ -640,39 +765,51 @@ def _make_cli_subprocess_call(
                     with os.fdopen(fd, 'w', encoding='utf-8') as f:
                         f.write(system_prompt_text)
                     safe_sys_path = Path(temp_system_prompt_file).as_posix()
-                    # Use @file syntax for system prompt
-                    new_flags.append("--system-prompt")
-                    new_flags.append(f"@\\{safe_sys_path}")
+                    # --system-prompt-file, not `--system-prompt @path`: the
+                    # CLI takes the latter literally, so the skeleton never
+                    # reached the model (verified with claude 2.1.310).
+                    new_flags.append("--system-prompt-file")
+                    new_flags.append(safe_sys_path)
                     i += 2
                 else:
                     new_flags.append(flag)
                     i += 1
             processed_extra_flags = new_flags
 
-        # --bare disables the CLI system prompt for a cleaner response.
-        # On Windows it also breaks Credential Manager access, so we omit it there.
+        # No --bare on any OS: it never reads OAuth credentials, so subscription
+        # users get "Not logged in" (verified with claude 2.1.310 even with
+        # CLAUDE_CODE_OAUTH_TOKEN set and .credentials.json present).
         # stream-json + --verbose + --include-partial-messages gives us per-
         # token content_block_delta events so we can echo text as the model
         # generates it, instead of the old blocking subprocess.run() that
         # showed nothing but "Processing…" for up to 3 minutes.
         #
-        # --dangerously-skip-permissions: the CLI runs with stdin=DEVNULL so
-        # any interactive permission prompt would block forever. This flag is
-        # the standard way to run the CLI non-interactively; the user has
-        # already opted in by running claude_light in this directory.
-        # Bash and PowerShell are still blocked separately because they can
-        # execute arbitrary shell commands beyond just file edits.
+        # Permissions: acceptEdits lets the agent edit files without asking.
+        # With Bash enabled the CLI also runs commands it classifies as
+        # read-only; any other command needs an allow rule. With -p and stdin=DEVNULL an
+        # unapproved one is denied (the model gets an error), never left
+        # waiting on a prompt. config.ALLOWED_COMMANDS is the user's opt-in
+        # list, e.g. the test command, so the agent can check its own edits.
         command = [claude_bin]
-        if current_os != 'nt':
-            command.append("--bare")
         command += [
             "-p", cmd_prompt,
             "--output-format", "stream-json",
             "--verbose",
             "--include-partial-messages",
-            "--dangerously-skip-permissions",
-            "--disallowed-tools", "Bash,PowerShell",
+            "--permission-mode", "acceptEdits",
+            # Only claude_light's own settings apply. A repo's
+            # .claude/settings*.json could add allow rules or hooks (which run
+            # commands) and its .mcp.json could add servers. This also stops
+            # the CLI loading the repo's CLAUDE.md, which the skeleton prompt
+            # already carries along with every other .md file.
+            "--setting-sources", "user",
+            "--strict-mcp-config",
+            "--settings", settings_path.as_posix(),
+            # The shell stays off unless the user allowlisted commands.
+            "--disallowed-tools", "PowerShell" if config.ALLOWED_COMMANDS else "PowerShell,Bash",
         ]
+        if config.ALLOWED_COMMANDS:
+            command += ["--allowedTools", ",".join(f"Bash({c}:*)" for c in config.ALLOWED_COMMANDS)]
         if model:
             command += ["--model", model]
         if processed_extra_flags:
@@ -686,7 +823,6 @@ def _make_cli_subprocess_call(
         #   (Popen has no timeout on iteration).
         # - shell=True on Windows ensures the Bun-based CLI finds its shim.
         import threading as _threading
-        _CLI_TIMEOUT_SECS = 180
 
         proc = subprocess.Popen(
             command,
@@ -701,18 +837,24 @@ def _make_cli_subprocess_call(
         )
 
         timed_out = _threading.Event()
+        idle_out = _threading.Event()
         start_time = time.monotonic()
+        last_activity = [start_time]  # list so the stdout loop can update it
 
         def _watchdog():
             while proc.poll() is None:
-                if time.monotonic() - start_time > _CLI_TIMEOUT_SECS:
+                now = time.monotonic()
+                if now - last_activity[0] > _CLI_IDLE_TIMEOUT_SECS:
+                    idle_out.set()
+                elif now - start_time > _CLI_MAX_SECS:
                     timed_out.set()
+                if idle_out.is_set() or timed_out.is_set():
                     try:
-                        proc.kill()
+                        _kill_process_tree(proc)
                     except Exception:
                         pass
                     return
-                time.sleep(0.5)
+                time.sleep(min(0.5, _CLI_IDLE_TIMEOUT_SECS / 4))
 
         _wd = _threading.Thread(target=_watchdog, daemon=True)
         _wd.start()
@@ -730,6 +872,12 @@ def _make_cli_subprocess_call(
         usage_data: dict = {}
         session_id = None
         final_result_text: str | None = None
+        cli_cost_usd = None
+        # The agent narrates in separate text blocks between tool calls.
+        # Without a break they print as one run-on paragraph.
+        new_block = False
+        at_line_start = True
+        shown_tool_ids: set = set()
 
         def _ensure_header():
             nonlocal header_printed
@@ -738,7 +886,36 @@ def _make_cli_subprocess_call(
                 print(f"\n{_ANSI_CYAN}{_ANSI_BOLD}{_SYM_RESP}{_ANSI_RESET} ", end="", flush=True)
                 header_printed = True
 
+        def _emit_text(text):
+            nonlocal new_block, at_line_start
+            heartbeat.stop()
+            _ensure_header()
+            if new_block and reply_parts:
+                print("\n" if at_line_start else "\n\n", end="")
+                reply_parts.append("\n\n")
+            new_block = False
+            print(text, end="", flush=True)
+            reply_parts.append(text)
+            at_line_start = text.endswith("\n")
+
+        def _show_tool_call(block):
+            nonlocal new_block, at_line_start
+            tool_id = block.get("id")
+            if tool_id in shown_tool_ids:
+                return
+            shown_tool_ids.add(tool_id)
+            heartbeat.stop()
+            if not at_line_start:
+                print()
+            label = _describe_tool_call(block.get("name", "tool"), block.get("input"))
+            print(f"  {_ANSI_DIM}{_SYM_TOOL} {label}{_ANSI_RESET}", flush=True)
+            at_line_start = True
+            new_block = True
+            # Keep showing liveness while the tool runs and the model thinks.
+            heartbeat.__enter__()
+
         for raw_line in proc.stdout:
+            last_activity[0] = time.monotonic()
             line = raw_line.strip()
             if not line:
                 continue
@@ -752,31 +929,35 @@ def _make_cli_subprocess_call(
             if ev_type == "stream_event":
                 # Per-token deltas when --include-partial-messages is active.
                 inner = event.get("event", {})
-                if inner.get("type") == "content_block_delta":
+                if inner.get("type") == "content_block_start":
+                    if (inner.get("content_block") or {}).get("type") == "text":
+                        new_block = True
+                elif inner.get("type") == "content_block_delta":
                     delta = inner.get("delta", {})
                     if delta.get("type") == "text_delta":
                         text = delta.get("text", "")
                         if text:
-                            _ensure_header()
-                            print(text, end="", flush=True)
-                            reply_parts.append(text)
+                            _emit_text(text)
                             streamed_via_delta = True
 
             elif ev_type == "assistant":
-                # Complete message; only print if deltas didn't already cover it.
-                if not streamed_via_delta:
-                    msg = event.get("message", {})
-                    for block in msg.get("content", []):
-                        if block.get("type") == "text":
-                            text = block.get("text", "")
-                            if text:
-                                _ensure_header()
-                                print(text, end="", flush=True)
-                                reply_parts.append(text)
+                # The CLI emits one complete block per event. Text is only
+                # printed here if deltas didn't already cover it.
+                msg = event.get("message", {})
+                for block in msg.get("content", []):
+                    if block.get("type") == "tool_use":
+                        _show_tool_call(block)
+                    elif block.get("type") == "text" and not streamed_via_delta:
+                        text = block.get("text", "")
+                        if text:
+                            new_block = True
+                            _emit_text(text)
 
             elif ev_type == "result":
                 final_result_text = event.get("result")
                 usage_data = event.get("usage", {}) or {}
+                cli_cost_usd = event.get("total_cost_usd")
+                _report_denied_commands(event.get("permission_denials"))
                 session_id = event.get("session_id")
 
         returncode = proc.wait()
@@ -787,13 +968,18 @@ def _make_cli_subprocess_call(
             # would land on the same line as the final response text.
             print(flush=True)
 
-        if timed_out.is_set():
+        if timed_out.is_set() or idle_out.is_set():
             try:
                 stderr_tail = (proc.stderr.read() or "")[-2000:]
             except Exception:
                 stderr_tail = ""
+            reason = (
+                f"produced no output for {_CLI_IDLE_TIMEOUT_SECS:g}s"
+                if idle_out.is_set()
+                else f"timed out after {_CLI_MAX_SECS:g}s"
+            )
             raise RuntimeError(
-                f"Claude CLI timed out after {_CLI_TIMEOUT_SECS}s. "
+                f"Claude CLI {reason}. "
                 f"Last stderr: {stderr_tail.strip() or '(empty)'}"
             )
 
@@ -826,10 +1012,21 @@ def _make_cli_subprocess_call(
         usage.output_tokens = usage_data.get("output_tokens", 0)
         usage.cache_creation_input_tokens = usage_data.get("cache_creation_input_tokens", 0)
         usage.cache_read_input_tokens = usage_data.get("cache_read_input_tokens", 0)
+        # The CLI splits writes by TTL and reports the exact cost of the turn
+        # (every model it ran); calculate_cost() prefers that figure.
+        usage.cache_creation = usage_data.get("cache_creation")
+        usage.cost_usd = cli_cost_usd
 
         return response_text.strip(), usage, session_id
 
     finally:
+        # A turn that ends early (Ctrl+C, an error mid-stream) must not leave
+        # the agent running: it edits files with permission prompts off.
+        try:
+            _kill_process_tree(proc)
+        except NameError:
+            pass  # Popen never ran
+
         # Always stop the heartbeat (idempotent) so a raised exception
         # doesn't leave the animated line ticking on screen forever.
         try:
@@ -884,6 +1081,16 @@ def _make_streaming_api_call(**create_kwargs):
         system_text = "\n".join(
             b.get("text", "") for b in system_blocks if b.get("text")
         )
+        if config.ALLOWED_COMMANDS:
+            # The agent may run the tests, so it edits with its own tools and
+            # can check the result (SEARCH/REPLACE lands only after the turn).
+            system_text = system_text.replace(SYSTEM_PROMPT, config.AGENT_SYSTEM_PROMPT, 1)
+            system_text += (
+                "\n\nYou may run these shell commands with the Bash tool to check your"
+                " work, for example the tests after an edit: "
+                + "; ".join(config.ALLOWED_COMMANDS)
+                + ". Other commands, apart from read-only ones, will be refused."
+            )
 
         history_parts = []
         for msg in messages[:-1]:
@@ -954,18 +1161,19 @@ def warm_cache(quiet=False):
     try:
         response = client.messages.create(
             model=MODEL,
-            max_tokens=1,
+            # 0 = prefill only: writes the cache, bills no output tokens.
+            max_tokens=0,
             system=_build_system_blocks(skeleton),
             messages=[{"role": "user", "content": "ok"}],
             extra_headers=_EXTENDED_CACHE_HEADERS,
         )
-        cost = calculate_cost(response.usage)
-        _accumulate_usage(response.usage)
+        cost = calculate_cost(response.usage, MODEL)
+        _accumulate_usage(response.usage, MODEL)
         with state.lock:
             state.session_cost += cost
 
         if not quiet:
-            print_stats(response.usage, label="Cache warm")
+            print_stats(response.usage, label="Cache warm", model=MODEL)
     except Exception as e:
         print(f"{_T_ERR} Cache warm failed: {e}")
 
@@ -1029,13 +1237,19 @@ def _is_followup_clarification(query: str) -> bool:
     return False
 
 
-def chat(query, auto_apply=False):
+def chat(query, auto_apply=False, use_index=True):
     routed_model, effort, max_tok = route_query(query)
     token_budget = _RETRIEVAL_BUDGET[effort]
 
     from claude_light.indexer import _chunk_label
     skipped_reason = None
-    if _is_followup_clarification(query):
+    if not use_index:
+        retrieved_ctx, hits = "", []
+        skipped_reason = "index still building"
+        print(
+            f"  {_T_RAG}  {_ANSI_DIM}index still building — Claude will search the code itself{_ANSI_RESET}"
+        )
+    elif _is_followup_clarification(query):
         retrieved_ctx, hits = "", []
         skipped_reason = "clarification follow-up"
         print(
@@ -1047,7 +1261,7 @@ def chat(query, auto_apply=False):
     compression_info = None
     if retrieved_ctx and config.LLMLINGUA_ENABLED:
         retrieved_ctx, compression_info = compress_context(retrieved_ctx)
-        _accumulate_compression_stats(compression_info)
+        _accumulate_compression_stats(compression_info, routed_model)
         if compression_info and not compression_info.get("skipped"):
             pct = compression_info["ratio"] * 100
             tag = "cached" if compression_info.get("cached") else f"{compression_info['elapsed_ms']:.0f} ms"
@@ -1100,8 +1314,7 @@ def chat(query, auto_apply=False):
         messages=messages,
         extra_headers=_EXTENDED_CACHE_HEADERS,
     )
-    if effort == "max":
-        create_kwargs["thinking"] = {"type": "enabled", "budget_tokens": 10_000}
+    _apply_effort(create_kwargs, effort)
 
     # Snapshot dirty files BEFORE the API call so we can distinguish agent
     # edits (OAUTH mode: the CLI's own Read/Edit/Bash tools aren't actually
@@ -1117,8 +1330,8 @@ def chat(query, auto_apply=False):
             if edits:
                 lint_errs = apply_edits(edits, check_only=True)
                 if lint_errs:
-                    cost = calculate_cost(usage)
-                    _accumulate_usage(usage)
+                    cost = calculate_cost(usage, routed_model)
+                    _accumulate_usage(usage, routed_model)
                     with state.lock:
                         state.session_cost += cost
 
@@ -1147,8 +1360,8 @@ def chat(query, auto_apply=False):
                 clean_reply = reply
             state.conversation_history.append({"role": "assistant", "content": clean_reply})
 
-            cost = calculate_cost(usage)
-            _accumulate_usage(usage)
+            cost = calculate_cost(usage, routed_model)
+            _accumulate_usage(usage, routed_model)
             with state.lock:
                 state.last_interaction = time.time()
                 state.session_cost += cost
@@ -1174,28 +1387,74 @@ def chat(query, auto_apply=False):
                 if agent_edits:
                     _commit_agent_edits(agent_edits, query, auto_apply=auto_apply)
 
-            print_stats(usage, label=f"Turn {turns}")
+            print_stats(usage, label=f"Turn {turns}", model=routed_model)
             break
 
     except KeyboardInterrupt:
-        print("\n[Interrupted]")
+        note = (" The agent was stopped; files it already changed are left"
+                " uncommitted in the working tree.") if AUTH_MODE == "OAUTH" else ""
+        print(f"\n  {_T_ERR}  Interrupted.{note}")
     except ClaudeNotLoggedIn:
         # Re-raise so main.py can handle the interactive login trigger
         raise
     except Exception as e:
         print(f"\n[Error] API call failed: {e}")
 
+# How long a one-shot OAuth run waits for the index before asking without it.
+# A warm cache loads in a few seconds; a cold build takes minutes.
+_ONE_SHOT_INDEX_WAIT_SECS = 20
+
+
 def one_shot(prompt, auto_apply=False):
     print(f"{_T_SYS} Building context...", file=sys.stderr)
     _update_skeleton()
-    index_files()
 
+    if AUTH_MODE != "OAUTH":
+        # API-key turns have no tools: without retrieval the model is blind.
+        index_files()
+        _one_shot_turn(prompt, auto_apply, use_index=True)
+        return
+
+    # The CLI agent can Read/Grep the repo itself, so a cold build (minutes
+    # of CPU embedding) must not hold up the answer. It keeps running and is
+    # joined before exit, so the next run starts from a full cache.
+    import threading as _threading
+    index_error = []
+
+    def _build_index():
+        try:
+            index_files(quiet=True)
+        except Exception as e:  # reported below; the turn goes on without it
+            index_error.append(e)
+
+    index_thread = _threading.Thread(target=_build_index, daemon=True, name="claude-light-index")
+    index_thread.start()
+    index_thread.join(_ONE_SHOT_INDEX_WAIT_SECS)
+    use_index = not index_thread.is_alive() and not index_error
+    if index_thread.is_alive():
+        print(f"  {_T_RAG}  {_ANSI_DIM}index still building — Claude will search the code itself{_ANSI_RESET}",
+              file=sys.stderr)
+    elif index_error:
+        print(f"  {_T_ERR}  Indexing failed ({index_error[0]}); continuing without retrieval", file=sys.stderr)
+    try:
+        _one_shot_turn(prompt, auto_apply, use_index=use_index)
+    finally:
+        if index_thread.is_alive():
+            print(f"  {_T_RAG}  {_ANSI_DIM}finishing the index so the next run can use it…{_ANSI_RESET}",
+                  file=sys.stderr, flush=True)
+            index_thread.join()
+
+
+def _one_shot_turn(prompt, auto_apply, use_index):
     routed_model, effort, max_tok = route_query(prompt)
-    retrieved_ctx, hits = retrieve(prompt, token_budget=_RETRIEVAL_BUDGET[effort], effort=effort)
+    if use_index:
+        retrieved_ctx, hits = retrieve(prompt, token_budget=_RETRIEVAL_BUDGET[effort], effort=effort)
+    else:
+        retrieved_ctx, hits = "", []
 
     if retrieved_ctx and config.LLMLINGUA_ENABLED:
         retrieved_ctx, info = compress_context(retrieved_ctx)
-        _accumulate_compression_stats(info)
+        _accumulate_compression_stats(info, routed_model)
 
     from claude_light.indexer import _chunk_label
     import re
@@ -1216,8 +1475,7 @@ def one_shot(prompt, auto_apply=False):
         messages=[{"role": "user", "content": f"{ctx_prefix}Question:\n{prompt}"}],
         extra_headers=_EXTENDED_CACHE_HEADERS,
     )
-    if effort == "max":
-        create_kwargs["thinking"] = {"type": "enabled", "budget_tokens": 10_000}
+    _apply_effort(create_kwargs, effort)
 
     # See chat() for rationale — snapshot to detect agent edits in OAUTH mode.
     pre_modified = _git_modified_snapshot() if AUTH_MODE == "OAUTH" else set()
@@ -1231,8 +1489,8 @@ def one_shot(prompt, auto_apply=False):
             if edits:
                 lint_errs = apply_edits(edits, check_only=True)
                 if lint_errs:
-                    cost = calculate_cost(usage)
-                    _accumulate_usage(usage)
+                    cost = calculate_cost(usage, routed_model)
+                    _accumulate_usage(usage, routed_model)
                     with state.lock:
                         state.session_cost += cost
 
@@ -1264,11 +1522,11 @@ def one_shot(prompt, auto_apply=False):
                 if agent_edits:
                     _commit_agent_edits(agent_edits, prompt, auto_apply=auto_apply)
 
-            cost = calculate_cost(usage)
-            _accumulate_usage(usage)
+            cost = calculate_cost(usage, routed_model)
+            _accumulate_usage(usage, routed_model)
             with state.lock:
                 state.session_cost += cost
-            print_stats(usage, label="Stats", file=sys.stderr)
+            print_stats(usage, label="Stats", file=sys.stderr, model=routed_model)
             break
 
     except Exception as e:

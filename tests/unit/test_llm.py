@@ -784,6 +784,31 @@ class TestCliSubprocessStreaming(unittest.TestCase):
         # subprocess would have seen the right shape.
         self.assertTrue(str(claude_md).endswith("CLAUDE.md"))
 
+    def test_user_claude_md_excluded_even_from_ancestor_walk(self):
+        print("\n  ▶ TestCliSubprocessStreaming.test_user_claude_md_excluded_even_from_ancestor_walk")
+        # For a repo under the user's home (~/code/x), the CLI's walk up
+        # parent directories finds ~/.claude/CLAUDE.md as an ancestor's
+        # project memory, so the HOME override alone does not keep it out
+        # (verified live with claude 2.1.310). It must be excluded by path.
+        import json as _json
+        import os as _os
+        from claude_light import llm
+        seen = {}
+
+        def fake_popen(cmd, **kwargs):
+            idx = cmd.index("--settings")
+            with open(cmd[idx + 1], encoding="utf-8") as fh:
+                seen.update(_json.load(fh))
+            return _fake_popen(['{"type":"result","subtype":"success","result":"","usage":{}}'])
+
+        with patch("claude_light.llm.subprocess.Popen", side_effect=fake_popen), \
+             patch("shutil.which", return_value="/fake/bin/claude"), \
+             patch("sys.stdout", io.StringIO()):
+            llm._make_cli_subprocess_call("hi")
+
+        real = (_os.path.expanduser("~").replace("\\", "/") + "/.claude/CLAUDE.md")
+        self.assertIn(real, seen.get("claudeMdExcludes", []))
+
     def test_command_uses_stream_json_flags(self):
         print("\n  ▶ TestCliSubprocessStreaming.test_command_uses_stream_json_flags")
         # Lock in the CLI flags we rely on — if any of these change, the
@@ -805,6 +830,531 @@ class TestCliSubprocessStreaming(unittest.TestCase):
         self.assertEqual(cmd[idx + 1], "stream-json")
         self.assertIn("--verbose", cmd)
         self.assertIn("--include-partial-messages", cmd)
+
+
+def _text_block_events(text):
+    """stream-json events for one streamed text block, as the CLI emits them."""
+    return [
+        {"type": "stream_event", "event": {
+            "type": "content_block_start", "content_block": {"type": "text", "text": ""}}},
+        {"type": "stream_event", "event": {
+            "type": "content_block_delta", "delta": {"type": "text_delta", "text": text}}},
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}},
+        {"type": "stream_event", "event": {"type": "content_block_stop"}},
+    ]
+
+
+def _tool_use_event(tool_id, name, tool_input):
+    return {"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": tool_id, "name": name, "input": tool_input}]}}
+
+
+class TestCliCommandPermissions(unittest.TestCase):
+    """The CLI used to run with --dangerously-skip-permissions and Bash banned
+    outright, so the agent could edit code but never run the tests to check
+    it. Now edits are auto-accepted, the CLI's own read-only commands work,
+    and anything else must be on an allowlist the user opts into. Verified
+    live (claude 2.1.310): a command outside the list is denied with an
+    error the model sees, not a prompt that hangs."""
+
+    def _cmd_for(self, allowed):
+        from claude_light import llm, config
+        captured = io.StringIO()
+        mock_proc = _fake_popen(['{"type":"result","subtype":"success","result":"","usage":{}}'])
+        with patch.object(config, "ALLOWED_COMMANDS", allowed), \
+             patch("claude_light.llm.subprocess.Popen", return_value=mock_proc) as popen_mock, \
+             patch("shutil.which", return_value="/fake/bin/claude"), \
+             patch("sys.stdout", captured):
+            llm._make_cli_subprocess_call("hi")
+        return popen_mock.call_args.args[0]
+
+    def test_permissions_are_not_skipped(self):
+        print("\n  ▶ TestCliCommandPermissions.test_permissions_are_not_skipped")
+        cmd = self._cmd_for([])
+        self.assertNotIn("--dangerously-skip-permissions", cmd)
+        self.assertEqual(cmd[cmd.index("--permission-mode") + 1], "acceptEdits")
+        self.assertNotIn("--allowedTools", cmd)
+        # Without an allowlist the shell stays off entirely, as before.
+        self.assertEqual(cmd[cmd.index("--disallowed-tools") + 1], "PowerShell,Bash")
+
+    def test_repo_settings_and_mcp_servers_cannot_widen_permissions(self):
+        print("\n  ▶ TestCliCommandPermissions.test_repo_settings_and_mcp_servers_cannot_widen_permissions")
+        # A repo's .claude/settings*.json can add allow rules and hooks (which
+        # run commands), and its .mcp.json can add servers. Only claude_light's
+        # own isolated user scope and --settings file may apply. The repo's
+        # CLAUDE.md is not lost: the skeleton prompt already carries every .md.
+        cmd = self._cmd_for(["python -m pytest"])
+        self.assertEqual(cmd[cmd.index("--setting-sources") + 1], "user")
+        self.assertIn("--strict-mcp-config", cmd)
+
+    def test_allowlisted_commands_become_bash_rules(self):
+        print("\n  ▶ TestCliCommandPermissions.test_allowlisted_commands_become_bash_rules")
+        cmd = self._cmd_for(["python -m pytest", "npm test"])
+        allowed = cmd[cmd.index("--allowedTools") + 1]
+        self.assertEqual(allowed, "Bash(python -m pytest:*),Bash(npm test:*)")
+        self.assertEqual(cmd[cmd.index("--disallowed-tools") + 1], "PowerShell")
+
+    def test_denied_command_is_reported_with_how_to_allow_it(self):
+        print("\n  ▶ TestCliCommandPermissions.test_denied_command_is_reported_with_how_to_allow_it")
+        import json as _json
+        from claude_light import llm, config
+        result = {"type": "result", "subtype": "success", "result": "done", "usage": {},
+                  "permission_denials": [{"tool_name": "Bash",
+                                          "tool_input": {"command": "npm test -- --watch=false"}}]}
+        out = io.StringIO()
+        with patch.object(config, "ALLOWED_COMMANDS", []), \
+             patch("claude_light.llm.subprocess.Popen", return_value=_fake_popen([_json.dumps(result)])), \
+             patch("shutil.which", return_value="/fake/bin/claude"), \
+             patch("sys.stdout", out):
+            llm._make_cli_subprocess_call("hi")
+        text = out.getvalue()
+        self.assertIn("npm test -- --watch=false", text)
+        self.assertIn("--allow-command", text)
+
+    def test_system_prompt_reaches_the_cli_as_a_file_on_windows(self):
+        print("\n  ▶ TestCliCommandPermissions.test_system_prompt_reaches_the_cli_as_a_file_on_windows")
+        # Windows passed `--system-prompt "@\<path>"`. The CLI takes that
+        # literally: live, a secret in that file was invisible to the model
+        # (NONE) and visible via --system-prompt-file (PERSIMMON). So the
+        # skeleton and instructions never reached the model on Windows.
+        import os as _os
+        from claude_light import llm, config
+        if _os.name != "nt":
+            self.skipTest("the temp-file path is Windows-only")
+        seen = {}
+
+        def fake_popen(cmd, **kwargs):
+            seen["cmd"] = list(cmd)
+            if "--system-prompt-file" in cmd:
+                with open(cmd[cmd.index("--system-prompt-file") + 1], encoding="utf-8") as fh:
+                    seen["text"] = fh.read()
+            return _fake_popen(['{"type":"result","subtype":"success","result":"","usage":{}}'])
+
+        with patch.object(config, "ALLOWED_COMMANDS", []), \
+             patch("claude_light.llm.subprocess.Popen", side_effect=fake_popen), \
+             patch("sys.stdout", io.StringIO()):
+            llm._make_cli_subprocess_call("hi", extra_flags=["--system-prompt", "SECRET SKELETON"])
+        self.assertNotIn("--system-prompt", seen["cmd"])
+        self.assertEqual(seen.get("text"), "SECRET SKELETON")
+
+    def _system_text_sent(self, allowed):
+        """System prompt the OAuth path hands to the CLI for one turn."""
+        from claude_light import llm, config
+        seen = {}
+
+        def fake_cli(prompt, model="", extra_flags=None):
+            flags = list(extra_flags or [])
+            seen["system"] = flags[flags.index("--system-prompt") + 1]
+            usage = MagicMock(input_tokens=1, output_tokens=1, cost_usd=None,
+                              cache_creation_input_tokens=0, cache_read_input_tokens=0)
+            return "ok", usage, None
+
+        with patch.object(config, "AUTH_MODE", "OAUTH"), \
+             patch.object(config, "ALLOWED_COMMANDS", allowed), \
+             patch.object(llm, "_make_cli_subprocess_call", side_effect=fake_cli):
+            llm._make_streaming_api_call(
+                model="m", max_tokens=10,
+                system=llm._build_system_blocks("SKELETON"),
+                messages=[{"role": "user", "content": "hi"}])
+        return seen["system"]
+
+    def test_agent_edits_directly_when_it_may_run_the_tests(self):
+        print("\n  ▶ TestCliCommandPermissions.test_agent_edits_directly_when_it_may_run_the_tests")
+        # SEARCH/REPLACE blocks are applied only after the turn ends, so an
+        # agent told to use them can never run the tests on its own change.
+        system = self._system_text_sent(["python -m pytest"])
+        self.assertNotIn("SEARCH/REPLACE blocks (described below) ARE your write mechanism", system)
+        self.assertIn("Edit", system)
+        self.assertIn("python -m pytest", system)
+        self.assertIn("SKELETON", system)
+
+    def test_search_replace_stays_without_an_allowlist(self):
+        print("\n  ▶ TestCliCommandPermissions.test_search_replace_stays_without_an_allowlist")
+        # Without verification there is no reason to give up the lint check,
+        # diff preview and approval prompt of the SEARCH/REPLACE path.
+        system = self._system_text_sent([])
+        self.assertIn("SEARCH/REPLACE blocks (described below) ARE your write mechanism", system)
+
+    def test_no_bare_flag_on_posix(self):
+        print("\n  ▶ TestCliCommandPermissions.test_no_bare_flag_on_posix")
+        # --bare never reads OAuth credentials: live, with the OAuth token and
+        # .credentials.json both present, `claude --bare -p` said "Not logged
+        # in" while the same call without it answered. It was added on every
+        # non-Windows OS, so subscription mode could not authenticate there.
+        import os as _os
+        import types as _types
+        from claude_light import llm
+        posix_os = _types.SimpleNamespace(**{k: getattr(_os, k) for k in dir(_os) if not k.startswith("__")})
+        posix_os.name = "posix"
+        with patch.object(llm, "os", posix_os):
+            cmd = self._cmd_for([])
+        self.assertNotIn("--bare", cmd)
+
+    def test_allowlist_parsing(self):
+        print("\n  ▶ TestCliCommandPermissions.test_allowlist_parsing")
+        from claude_light.config import parse_allowed_commands
+        self.assertEqual(parse_allowed_commands(" python -m pytest ; npm test;; "),
+                         ["python -m pytest", "npm test"])
+        self.assertEqual(parse_allowed_commands(""), [])
+
+
+class TestCliAgentActivity(unittest.TestCase):
+    """In OAuth mode the CLI agent reads and edits files on its own. The user
+    must see those actions as they happen, and narration from separate
+    agent steps must not run together into one paragraph."""
+
+    _call_with_events = TestCliSubprocessStreaming._call_with_events
+
+    _result = {"type": "result", "subtype": "success", "result": "", "usage": {}}
+
+    def test_tool_calls_are_shown_with_relative_paths(self):
+        print("\n  ▶ TestCliAgentActivity.test_tool_calls_are_shown_with_relative_paths")
+        import os as _os
+        abs_path = _os.path.join(_os.getcwd(), "claude_light", "retry.py")
+        events = (
+            _text_block_events("Let me look.")
+            + [_tool_use_event("t1", "Read", {"file_path": abs_path}),
+               _tool_use_event("t2", "Grep", {"pattern": "MAX_RETRIES", "path": "."})]
+            + _text_block_events("It is 3.")
+            + [self._result]
+        )
+        (reply, _, _), output, _ = self._call_with_events(events)
+        self.assertIn("Read", output)
+        self.assertIn("claude_light/retry.py", output.replace("\\", "/"))
+        self.assertNotIn(_os.getcwd(), output)
+        self.assertIn("Grep", output)
+        self.assertIn("MAX_RETRIES", output)
+        # Tool lines are UI only; they must not leak into the stored reply.
+        self.assertNotIn("Read", reply)
+
+    def test_text_blocks_from_separate_steps_are_separated(self):
+        print("\n  ▶ TestCliAgentActivity.test_text_blocks_from_separate_steps_are_separated")
+        events = (
+            _text_block_events("First step.")
+            + [_tool_use_event("t1", "Read", {"file_path": "a.py"})]
+            + _text_block_events("Second step.")
+            + [self._result]
+        )
+        (reply, _, _), output, _ = self._call_with_events(events)
+        self.assertEqual(reply, "First step.\n\nSecond step.")
+        self.assertNotIn("First step.Second", output)
+
+    def test_repeated_tool_event_is_shown_once(self):
+        print("\n  ▶ TestCliAgentActivity.test_repeated_tool_event_is_shown_once")
+        ev = _tool_use_event("t1", "Edit", {"file_path": "a.py"})
+        (_, _, _), output, _ = self._call_with_events([ev, ev, self._result])
+        self.assertEqual(output.count("Edit"), 1)
+
+
+class TestChatWithoutIndex(unittest.TestCase):
+    """While the first index build runs (minutes on a cold start), OAuth
+    queries go straight to the CLI agent, which can search the code itself."""
+
+    def setUp(self):
+        from claude_light import state
+        self._hist = list(state.conversation_history)
+
+    def tearDown(self):
+        from claude_light import state
+        state.conversation_history[:] = self._hist
+
+    def test_use_index_false_skips_retrieval(self):
+        print("\n  ▶ TestChatWithoutIndex.test_use_index_false_skips_retrieval")
+        from claude_light import llm
+        captured = {}
+
+        def fake_call(**kwargs):
+            captured.update(kwargs)
+            usage = MagicMock(input_tokens=1, output_tokens=1,
+                              cache_creation_input_tokens=0, cache_read_input_tokens=0)
+            return "answer", usage, True
+
+        out = io.StringIO()
+        with patch.object(llm, "retrieve") as retrieve_mock, \
+             patch.object(llm, "_make_streaming_api_call", side_effect=fake_call), \
+             patch.object(llm, "route_query", return_value=("m", "medium", 4096)), \
+             patch.object(llm, "record_retrieval"), \
+             patch.object(llm, "print_stats"), \
+             patch("sys.stdout", out):
+            llm.chat("where is the retry loop?", use_index=False)
+
+        retrieve_mock.assert_not_called()
+        self.assertNotIn("Retrieved Codebase Context", str(captured["messages"]))
+        self.assertIn("index", out.getvalue().lower())
+
+
+class TestRouterDoesNotWaitForIndexing(unittest.TestCase):
+    """The index build holds embedder_lock while it embeds every chunk (5 min
+    on a cold 64-file repo). Live, route_query() blocked on that lock, so a
+    query sent "without waiting for the index" still waited for it."""
+
+    def setUp(self):
+        self._embedder, self._model = _state.embedder, _state.EMBED_MODEL
+        self._ready = _state.embedder_ready.is_set()
+        self._proto = dict(_llm._PROTO_CACHE)
+
+    def tearDown(self):
+        _state.embedder, _state.EMBED_MODEL = self._embedder, self._model
+        (_state.embedder_ready.set if self._ready else _state.embedder_ready.clear)()
+        _llm._PROTO_CACHE.update(self._proto)
+
+    def _route_while_lock_held(self, query):
+        import threading as _threading
+        import time as _time
+        mock = MagicMock()
+        mock.encode.side_effect = lambda texts, **kw: (
+            np.ones((len(texts), 4), dtype=np.float32) if isinstance(texts, list)
+            else np.ones(4, dtype=np.float32))
+        _state.embedder, _state.EMBED_MODEL = mock, "busy-model"
+        _state.embedder_ready.set()
+        _llm._PROTO_CACHE.update(model=None, mat=None)
+        held, release = _threading.Event(), _threading.Event()
+
+        def index_build():
+            with _state.embedder_lock:
+                held.set()
+                release.wait(10)
+
+        t = _threading.Thread(target=index_build, daemon=True)
+        t.start()
+        held.wait(2)
+        try:
+            start = _time.monotonic()
+            result = route_query(query)
+            return result, _time.monotonic() - start
+        finally:
+            release.set()
+            t.join(5)
+
+    def test_route_query_returns_promptly_while_index_embeds(self):
+        print("\n  ▶ TestRouterDoesNotWaitForIndexing.test_route_query_returns_promptly_while_index_embeds")
+        (_, effort, _), elapsed = self._route_while_lock_held("why does the retry decorator fail?")
+        self.assertLess(elapsed, 3.0, "route_query waited for the index build's embedder lock")
+        self.assertIn(effort, ("low", "medium", "high", "max"))
+
+
+class TestOneShotColdIndex(unittest.TestCase):
+    """One-shot runs used to block on index_files() before asking anything:
+    314 s on a cold 64-file repo. In OAuth mode the CLI agent can search the
+    code itself, so the answer must not wait for the build; the build still
+    finishes before exit so the next run has a cache."""
+
+    def _run(self, auth_mode, index_secs, wait_secs=0.3):
+        import threading as _threading
+        import time as _time
+        from claude_light import llm
+        events = []
+        lock = _threading.Lock()
+
+        def note(e):
+            with lock:
+                events.append(e)
+
+        def fake_index(quiet=False):
+            note("index_start")
+            _time.sleep(index_secs)
+            note("index_done")
+
+        def fake_call(**kwargs):
+            note("answer")
+            usage = MagicMock(input_tokens=1, output_tokens=1, cost_usd=None,
+                              cache_creation_input_tokens=0, cache_read_input_tokens=0)
+            return "ok", usage, True
+
+        with patch.object(llm, "AUTH_MODE", auth_mode), \
+             patch.object(llm, "_ONE_SHOT_INDEX_WAIT_SECS", wait_secs), \
+             patch.object(llm, "index_files", side_effect=fake_index), \
+             patch.object(llm, "_update_skeleton"), \
+             patch.object(llm, "retrieve", return_value=("", [])) as retrieve_mock, \
+             patch.object(llm, "_make_streaming_api_call", side_effect=fake_call), \
+             patch.object(llm, "route_query", return_value=("m", "low", 2048)), \
+             patch.object(llm, "_git_modified_snapshot", return_value=set()), \
+             patch.object(llm, "print_stats"), \
+             patch("sys.stdout", io.StringIO()), patch("sys.stderr", io.StringIO()):
+            llm.one_shot("where is the retry loop?")
+        return events, retrieve_mock
+
+    def test_oauth_answers_before_a_slow_index_and_still_finishes_it(self):
+        print("\n  ▶ TestOneShotColdIndex.test_oauth_answers_before_a_slow_index_and_still_finishes_it")
+        events, retrieve_mock = self._run("OAUTH", index_secs=1.5)
+        self.assertEqual(events, ["index_start", "answer", "index_done"])
+        retrieve_mock.assert_not_called()
+
+    def test_oauth_uses_an_index_that_is_ready_in_time(self):
+        print("\n  ▶ TestOneShotColdIndex.test_oauth_uses_an_index_that_is_ready_in_time")
+        events, retrieve_mock = self._run("OAUTH", index_secs=0.0, wait_secs=5.0)
+        self.assertEqual(events, ["index_start", "index_done", "answer"])
+        retrieve_mock.assert_called_once()
+
+    def test_api_key_mode_waits_for_the_index(self):
+        print("\n  ▶ TestOneShotColdIndex.test_api_key_mode_waits_for_the_index")
+        events, retrieve_mock = self._run("API_KEY", index_secs=0.5)
+        self.assertEqual(events, ["index_start", "index_done", "answer"])
+        retrieve_mock.assert_called_once()
+
+
+class _PacedProc:
+    """Popen stand-in whose stdout emits lines on a schedule.
+
+    ``schedule`` is a list of (delay_secs, line). A delay of None means "go
+    silent until killed" (a hung CLI). kill() ends the stream immediately.
+    """
+
+    def __init__(self, schedule):
+        import threading as _threading
+        self._schedule = schedule
+        self._killed = _threading.Event()
+        self._done = False
+        self.stderr = io.StringIO("")
+        self.returncode = 0
+
+    @property
+    def stdout(self):
+        for delay, line in self._schedule:
+            # Hung CLI: block until killed, with a safety cap so a broken
+            # implementation fails the test instead of hanging the suite.
+            if self._killed.wait(5.0 if delay is None else delay):
+                break
+            yield line + "\n"
+        self._done = True
+
+    def poll(self):
+        return -9 if self._killed.is_set() else (0 if self._done else None)
+
+    def wait(self):
+        return -9 if self._killed.is_set() else 0
+
+    def kill(self):
+        self._killed.set()
+
+
+class TestCliSubprocessTimeouts(unittest.TestCase):
+    """The CLI runs a full agent loop (read, edit, re-read), so a long task is
+    normal. Only a CLI that stops producing events should be killed."""
+
+    def _run(self, schedule, idle=0.6, cap=30.0):
+        from claude_light import llm
+        proc = _PacedProc(schedule)
+        with patch("claude_light.llm.subprocess.Popen", return_value=proc), \
+             patch("shutil.which", return_value="/fake/bin/claude"), \
+             patch.object(llm, "_CLI_IDLE_TIMEOUT_SECS", idle), \
+             patch.object(llm, "_CLI_MAX_SECS", cap), \
+             patch("sys.stdout", io.StringIO()):
+            return llm._make_cli_subprocess_call("hi")
+
+    def test_long_but_active_run_is_not_killed(self):
+        print("\n  ▶ TestCliSubprocessTimeouts.test_long_but_active_run_is_not_killed")
+        delta = '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"x"}}}'
+        # 8 events 0.25 s apart: 2 s total, well past the 0.6 s idle limit,
+        # but never silent for longer than 0.25 s.
+        schedule = [(0.25, delta)] * 8 + [
+            (0.0, '{"type":"result","subtype":"success","result":"xxxxxxxx","usage":{}}')]
+        reply, _, _ = self._run(schedule)
+        self.assertEqual(reply, "xxxxxxxx")
+
+    def test_silent_cli_is_killed_with_idle_message(self):
+        print("\n  ▶ TestCliSubprocessTimeouts.test_silent_cli_is_killed_with_idle_message")
+        schedule = [
+            (0.0, '{"type":"system","subtype":"init"}'),
+            (None, ""),  # hangs
+        ]
+        with self.assertRaises(RuntimeError) as ctx:
+            self._run(schedule)
+        self.assertIn("no output", str(ctx.exception))
+
+    def test_total_cap_still_applies(self):
+        print("\n  ▶ TestCliSubprocessTimeouts.test_total_cap_still_applies")
+        delta = '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"x"}}}'
+        schedule = [(0.2, delta)] * 40  # 8 s of steady output
+        with self.assertRaises(RuntimeError) as ctx:
+            self._run(schedule, idle=5.0, cap=1.0)
+        self.assertIn("timed out", str(ctx.exception))
+
+
+def _pid_alive(pid):
+    import os as _os
+    import subprocess as _sp
+    if _os.name == "nt":
+        out = _sp.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                      capture_output=True, text=True).stdout
+        return str(pid) in out
+    try:
+        _os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+class TestCliProcessIsStopped(unittest.TestCase):
+    """The CLI agent edits files with permission prompts disabled, so when a
+    turn ends early (Ctrl+C, idle timeout) the agent process itself must be
+    dead, not just the shell wrapper around it (on Windows the command runs
+    via cmd.exe, so killing the Popen handle alone leaves claude.exe alive)."""
+
+    _SCRIPT = (
+        "import os, sys, time, json\n"
+        "open(sys.argv[1], 'w').write(str(os.getpid()))\n"
+        "print(json.dumps({'type': 'system', 'subtype': 'init'}), flush=True)\n"
+        "for _ in range(600):\n"
+        "    if sys.argv[2] == 'chatty':\n"
+        "        print(json.dumps({'type': 'system', 'subtype': 'status'}), flush=True)\n"
+        "    time.sleep(0.1)\n"
+    )
+
+    def _run(self, mode, interrupt_after=None, idle=30.0):
+        import subprocess as _sp
+        import sys as _sys
+        import tempfile as _tf
+        import threading as _threading
+        import _thread
+        import time as _time
+        from claude_light import llm
+
+        import shutil as _shutil
+        work = _tf.mkdtemp(prefix="cl_agent_")
+        self.addCleanup(_shutil.rmtree, work, True)
+        pid_file = os.path.join(work, "agent.pid")
+        script = os.path.join(work, "agent.py")
+        with open(script, "w") as fh:
+            fh.write(self._SCRIPT)
+        real_popen = _sp.Popen
+
+        def fake_popen(cmd, **kwargs):
+            if isinstance(cmd, list) and cmd and cmd[0] == "taskkill":
+                return real_popen(cmd, **kwargs)
+            # Same shell/env/pipes as the real call, but a stand-in agent.
+            return real_popen([_sys.executable, script, pid_file, mode], **kwargs)
+
+        if interrupt_after is not None:
+            _threading.Timer(interrupt_after, _thread.interrupt_main).start()
+        start = _time.monotonic()
+        error = None
+        with patch("claude_light.llm.subprocess.Popen", side_effect=fake_popen), \
+             patch("shutil.which", return_value=_sys.executable), \
+             patch.object(llm, "_CLI_IDLE_TIMEOUT_SECS", idle), \
+             patch("sys.stdout", io.StringIO()):
+            try:
+                llm._make_cli_subprocess_call("hi")
+            except (KeyboardInterrupt, RuntimeError) as e:
+                error = e
+        elapsed = _time.monotonic() - start
+        with open(pid_file) as fh:
+            agent_pid = int(fh.read())
+        _time.sleep(0.5)
+        return error, elapsed, agent_pid
+
+    def test_ctrl_c_kills_the_agent_process(self):
+        print("\n  ▶ TestCliProcessIsStopped.test_ctrl_c_kills_the_agent_process")
+        error, _, agent_pid = self._run("chatty", interrupt_after=1.5)
+        self.assertIsInstance(error, KeyboardInterrupt)
+        self.assertFalse(_pid_alive(agent_pid), "agent process survived Ctrl+C")
+
+    def test_idle_timeout_kills_the_agent_process_promptly(self):
+        print("\n  ▶ TestCliProcessIsStopped.test_idle_timeout_kills_the_agent_process_promptly")
+        error, elapsed, agent_pid = self._run("silent", idle=1.0)
+        self.assertIsInstance(error, RuntimeError)
+        self.assertLess(elapsed, 15, "turn did not end until the agent exited on its own")
+        self.assertFalse(_pid_alive(agent_pid), "agent process survived the idle timeout")
 
 
 class TestAgentEditDetection(unittest.TestCase):

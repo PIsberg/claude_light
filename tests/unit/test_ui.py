@@ -33,22 +33,22 @@ class TestCalculateCost(unittest.TestCase):
     def test_output_only(self):
         print("\n  ▶ TestCalculateCost.test_output_only")
         usage = self._make_usage(output_tokens=1_000_000)
-        self.assertAlmostEqual(calculate_cost(usage), 15.0, places=4)
+        self.assertAlmostEqual(calculate_cost(usage), 10.0, places=4)
 
     def test_input_only(self):
         print("\n  ▶ TestCalculateCost.test_input_only")
         usage = self._make_usage(input_tokens=1_000_000)
-        self.assertAlmostEqual(calculate_cost(usage), 3.0, places=4)
+        self.assertAlmostEqual(calculate_cost(usage), 2.0, places=4)
 
     def test_cache_write(self):
         print("\n  ▶ TestCalculateCost.test_cache_write")
         usage = self._make_usage(cache_creation=1_000_000)
-        self.assertAlmostEqual(calculate_cost(usage), 3.75, places=4)
+        self.assertAlmostEqual(calculate_cost(usage), 2.5, places=4)
 
     def test_cache_read(self):
         print("\n  ▶ TestCalculateCost.test_cache_read")
         usage = self._make_usage(cache_read=1_000_000)
-        self.assertAlmostEqual(calculate_cost(usage), 0.30, places=4)
+        self.assertAlmostEqual(calculate_cost(usage), 0.10, places=4)
 
     def test_combined(self):
         print("\n  ▶ TestCalculateCost.test_combined")
@@ -58,7 +58,7 @@ class TestCalculateCost(unittest.TestCase):
             cache_creation=100_000,
             cache_read=100_000,
         )
-        expected = (100_000/1_000_000)*3.0 + (100_000/1_000_000)*15.0 + (100_000/1_000_000)*3.75 + (100_000/1_000_000)*0.30
+        expected = (100_000/1_000_000)*2.0 + (100_000/1_000_000)*10.0 + (100_000/1_000_000)*2.5 + (100_000/1_000_000)*0.10
         self.assertAlmostEqual(calculate_cost(usage), expected, places=6)
 
     def test_no_cache_attrs(self):
@@ -67,7 +67,7 @@ class TestCalculateCost(unittest.TestCase):
         usage.input_tokens = 500_000
         usage.output_tokens = 500_000
         cost = calculate_cost(usage)
-        self.assertAlmostEqual(cost, 1.5 + 7.5, places=4)
+        self.assertAlmostEqual(cost, 1.0 + 5.0, places=4)
 
 
 class TestPrintStats(unittest.TestCase):
@@ -215,6 +215,86 @@ class TestSpinner(unittest.TestCase):
         with patch("builtins.print"), patch("time.sleep"):
             with _Spinner("Working"):
                 pass
+
+
+
+class TestPerModelPricing(unittest.TestCase):
+    """Costs are priced at the model that ran. Rates from
+    platform.claude.com/docs/en/about-claude/pricing (checked 2026-10-24).
+    One Sonnet 4.6 rate for every model overstated a Haiku 5.5 turn 30x."""
+
+    def _usage(self, inp=0, out=0, cw=0, cr=0, cw_1h=None, cost_usd=None):
+        usage = MagicMock(spec=["input_tokens", "output_tokens",
+                                "cache_creation_input_tokens", "cache_read_input_tokens",
+                                "cache_creation", "cost_usd"])
+        usage.input_tokens = inp
+        usage.output_tokens = out
+        usage.cache_creation_input_tokens = cw
+        usage.cache_read_input_tokens = cr
+        usage.cache_creation = (None if cw_1h is None
+                                else {"ephemeral_1h_input_tokens": cw_1h,
+                                      "ephemeral_5m_input_tokens": cw - cw_1h})
+        usage.cost_usd = cost_usd
+        return usage
+
+    def test_each_model_has_its_own_rates(self):
+        print("\n  ▶ TestPerModelPricing.test_each_model_has_its_own_rates")
+        from claude_light.config import MODEL_HAIKU, MODEL_SONNET, MODEL_OPUS
+        m = 1_000_000
+        self.assertAlmostEqual(calculate_cost(self._usage(inp=m), MODEL_HAIKU), 0.10)
+        self.assertAlmostEqual(calculate_cost(self._usage(out=m), MODEL_HAIKU), 0.50)
+        self.assertAlmostEqual(calculate_cost(self._usage(inp=m), MODEL_SONNET), 2.00)
+        self.assertAlmostEqual(calculate_cost(self._usage(cr=m), MODEL_SONNET), 0.10)
+        self.assertAlmostEqual(calculate_cost(self._usage(out=m), MODEL_OPUS), 20.00)
+        self.assertAlmostEqual(calculate_cost(self._usage(cr=m), MODEL_OPUS), 0.20)
+
+    def test_one_hour_cache_writes_cost_double_input(self):
+        print("\n  ▶ TestPerModelPricing.test_one_hour_cache_writes_cost_double_input")
+        from claude_light.config import MODEL_SONNET
+        m = 1_000_000
+        # The skeleton is cached with ttl=1h: those writes cost 2x input, not 1.25x.
+        self.assertAlmostEqual(calculate_cost(self._usage(cw=m, cw_1h=m), MODEL_SONNET), 4.00)
+        self.assertAlmostEqual(calculate_cost(self._usage(cw=m, cw_1h=0), MODEL_SONNET), 2.50)
+        self.assertAlmostEqual(calculate_cost(self._usage(cw=m), MODEL_SONNET), 2.50)
+
+    def test_cost_reported_by_the_cli_wins(self):
+        print("\n  ▶ TestPerModelPricing.test_cost_reported_by_the_cli_wins")
+        from claude_light.config import MODEL_SONNET
+        # The CLI may run several models in one turn and reports the exact total.
+        usage = self._usage(inp=1000, out=1000, cost_usd=0.0723477)
+        self.assertAlmostEqual(calculate_cost(usage, MODEL_SONNET), 0.0723477)
+
+    def test_unknown_model_falls_back_to_default_rates(self):
+        print("\n  ▶ TestPerModelPricing.test_unknown_model_falls_back_to_default_rates")
+        from claude_light.config import MODEL
+        u = self._usage(inp=1_000_000)
+        self.assertAlmostEqual(calculate_cost(u, "claude-something-new"), calculate_cost(u, MODEL))
+
+    def test_session_summary_adds_turns_at_their_own_rates(self):
+        print("\n  ▶ TestPerModelPricing.test_session_summary_adds_turns_at_their_own_rates")
+        import re
+        import claude_light.state as state
+        from claude_light import llm
+        from claude_light.config import MODEL_HAIKU, MODEL_OPUS
+        saved_tokens = dict(state.session_tokens)
+        saved_costs = dict(getattr(state, "session_costs", {}))
+        try:
+            for k in state.session_tokens:
+                state.session_tokens[k] = 0
+            for k in getattr(state, "session_costs", {}):
+                state.session_costs[k] = 0.0
+            with patch.object(state, "save_global_stats"):
+                llm._accumulate_usage(self._usage(out=1_000_000), MODEL_HAIKU)   # $0.50
+                llm._accumulate_usage(self._usage(out=1_000_000), MODEL_OPUS)    # $20.00
+            out = io.StringIO()
+            with patch("sys.stdout", out):
+                print_session_summary()
+            total_line = next(l for l in out.getvalue().splitlines() if "TOTAL" in l)
+            self.assertIn("$20.5000", total_line)
+        finally:
+            state.session_tokens.update(saved_tokens)
+            if hasattr(state, "session_costs"):
+                state.session_costs.update(saved_costs)
 
 
 if __name__ == "__main__":

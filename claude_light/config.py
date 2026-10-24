@@ -82,16 +82,21 @@ def _resolve_api_key() -> tuple[str, str, str, str]:
 API_KEY, AUTH_MODE, API_KEY_SOURCE, AUTH_TOKEN = _resolve_api_key()
 ECONOMY_MODE = "USD" if AUTH_MODE == "API_KEY" else "TOKENS"
 
-MODEL_HAIKU             = "claude-haiku-4-5-20251001"
-MODEL_SONNET            = "claude-sonnet-4-6"
-MODEL_OPUS              = "claude-opus-4-6"
+MODEL_HAIKU             = "claude-haiku-5-5"
+MODEL_SONNET            = "claude-sonnet-5-5"
+MODEL_OPUS              = "claude-opus-5-5"
 MODEL                   = MODEL_SONNET              # default; overridden per-turn by router
 SUMMARY_MODEL           = MODEL_HAIKU               # cheap model for history compression
 HEARTBEAT_SECS          = 30
 CACHE_TTL_SECS          = 240
 ENABLE_STREAMING        = True         # enable real-time token streaming
 TARGET_RETRIEVED_TOKENS = 6_000   # desired context size per query in tokens
-MIN_SCORE               = 0.45    # discard retrieved files below this similarity (absolute floor)
+# Absolute similarity floor. Natural questions score lower against code than
+# keyword queries (all-mpnet-base-v2: 0.38 for "In which file and function is
+# the exponential backoff implemented?" on the right chunk). On 19 questions
+# about this repo, 0.45 left 13 with no context at all; 0.35 kept 13, with the
+# right file in the top 6 for 11 of them. Lower floors mostly admitted noise.
+MIN_SCORE               = 0.35
 RELATIVE_SCORE_FLOOR    = 0.60    # drop chunks below this fraction of the top chunk's score
 # Per-effort retrieval token budgets (scaled from TARGET_RETRIEVED_TOKENS)
 _RETRIEVAL_BUDGET = {"low": 1_500, "medium": 3_000, "high": 6_000, "max": 9_000}
@@ -118,6 +123,18 @@ LLMLINGUA_FORCE_TOKENS = ["\n", "```", "::", "//"]
 # default and only line-noise comments are removed. Set CLAUDE_LIGHT_STRIP_DOCS=1
 # to also strip docstrings/Javadoc when you need to squeeze the context further.
 STRIP_DOCSTRINGS = os.environ.get("CLAUDE_LIGHT_STRIP_DOCS", "0") == "1"
+
+def parse_allowed_commands(spec: str) -> list:
+    """Split a ';'-separated list of command prefixes, dropping blanks."""
+    return [c.strip() for c in (spec or "").split(";") if c.strip()]
+
+
+# Shell commands the OAuth CLI agent may run unattended (e.g. the test suite),
+# as prefixes: "python -m pytest" allows "python -m pytest tests/ -q". Each
+# becomes a Bash(<prefix>:*) rule. Anything else is denied, apart from the
+# read-only commands the CLI approves by itself. Set with --allow-command
+# (repeatable) or CLAUDE_LIGHT_ALLOW_COMMANDS="python -m pytest; npm test".
+ALLOWED_COMMANDS = parse_allowed_commands(os.environ.get("CLAUDE_LIGHT_ALLOW_COMMANDS", ""))
 
 SKIP_DIRS      = {
     ".git", "target", "build", "node_modules",
@@ -271,11 +288,40 @@ Rules:
 5. After all blocks, write a short plain-English summary of what changed.
 """
 
-# 2026 PRICING (USD per 1 Million Tokens)
-PRICE_INPUT  = 3.00
-PRICE_WRITE  = PRICE_INPUT * 1.25   # $3.75
-PRICE_READ   = PRICE_INPUT * 0.10   # $0.30
-PRICE_OUTPUT = 15.00
+# Used instead of SYSTEM_PROMPT in OAuth mode when the user allowlisted
+# commands (ALLOWED_COMMANDS). SEARCH/REPLACE blocks are applied only after
+# the turn ends, so an agent writing them could never run the tests on its
+# own change; editing with the CLI's tools lets it check its work. claude_light
+# still shows a diff of the agent's edits and commits them for /undo.
+AGENT_SYSTEM_PROMPT = """You are an expert code assistant working in the user's repository. Answer questions about the codebase provided below. Be concise and precise.
+
+You can edit and create files with your Edit and Write tools; the changes are applied directly and committed for the user afterwards, so never ask for confirmation and never ask the user to paste content. Do not write files with shell commands or scripts.
+
+After changing code, run the allowed commands listed at the end of this prompt (for example the tests) to check your work, and fix what fails before you finish. End with a short plain-English summary of what changed and how you checked it.
+"""
+
+# PRICING (USD per million tokens), Claude API list prices from
+# platform.claude.com/docs/en/about-claude/pricing, checked 2026-10-24.
+# "write" is a 5-minute cache write (1.25x input); "write_1h" a 1-hour write
+# (2x input), which is what the skeleton block uses. Haiku 5.5 rates are for
+# prompts up to 100K tokens; claude_light prompts stay well below that.
+MODEL_PRICES = {
+    MODEL_HAIKU:  {"input": 0.10, "write": 0.125, "write_1h": 0.20, "read": 0.01, "output": 0.50},
+    MODEL_SONNET: {"input": 2.00, "write": 2.50,  "write_1h": 4.00, "read": 0.10, "output": 10.00},
+    MODEL_OPUS:   {"input": 4.00, "write": 5.00,  "write_1h": 8.00, "read": 0.20, "output": 20.00},
+}
+
+
+def model_prices(model=None) -> dict:
+    """Rates for `model`; the default model's rates for anything unlisted."""
+    return MODEL_PRICES.get(model or MODEL, MODEL_PRICES[MODEL])
+
+
+# Default-model rates, for code that prices tokens without knowing the model.
+PRICE_INPUT  = MODEL_PRICES[MODEL]["input"]
+PRICE_WRITE  = MODEL_PRICES[MODEL]["write"]
+PRICE_READ   = MODEL_PRICES[MODEL]["read"]
+PRICE_OUTPUT = MODEL_PRICES[MODEL]["output"]
 
 # --- Dynamic router: hybrid (keyword+embedding) + cost-aware tuning ---
 ROUTER_SEMANTIC_WEIGHT    = 6.0    # max points a fully-on-prototype dimension adds

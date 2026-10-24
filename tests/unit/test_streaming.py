@@ -35,7 +35,10 @@ class TestStreamingResponseHandler:
     def setup_method(self):
         """Reset state before each test."""
         state.session_cost = 0.0
-        state.session_tokens = {"input": 0, "cache_write": 0, "cache_read": 0, "output": 0}
+        # Reset in place: other modules hold references to this dict, and
+        # replacing it broke later tests that read it through claude_light.
+        for key in state.session_tokens:
+            state.session_tokens[key] = 0
 
     def test_handler_initialization(self):
         """Test that handler initializes correctly."""
@@ -145,25 +148,25 @@ class TestCalculateUsageCost:
     def test_calculate_cost_basic(self):
         """Test basic cost calculation."""
         usage = {
-            "input_tokens": 1_000_000,  # $3.00
-            "output_tokens": 1_000_000,  # $15.00
+            "input_tokens": 1_000_000,  # $2.00
+            "output_tokens": 1_000_000,  # $10.00
             "cache_creation_tokens": 0,
             "cache_read_tokens": 0,
         }
         cost = calculate_usage_cost(usage)
-        assert abs(cost - 18.0) < 0.01  # $3 + $15
+        assert abs(cost - 12.0) < 0.01  # $2 + $10 (Sonnet 5.5, the default model)
 
     def test_calculate_cost_with_cache(self):
         """Test cost calculation with cache hits."""
         usage = {
-            "input_tokens": 1_000_000,  # $3.00
-            "output_tokens": 1_000_000,  # $15.00
-            "cache_creation_tokens": 1_000_000,  # $3.75
-            "cache_read_tokens": 1_000_000,  # $0.30
+            "input_tokens": 1_000_000,  # $2.00
+            "output_tokens": 1_000_000,  # $10.00
+            "cache_creation_tokens": 1_000_000,  # $2.50
+            "cache_read_tokens": 1_000_000,  # $0.10
         }
         cost = calculate_usage_cost(usage)
-        # $3.00 + $15.00 + $3.75 + $0.30 = $22.05
-        assert abs(cost - 22.05) < 0.01
+        # $2.00 + $10.00 + $2.50 + $0.10 = $14.60
+        assert abs(cost - 14.60) < 0.01
 
     def test_calculate_cost_empty_usage(self):
         """Test that empty usage dict returns zero cost."""
@@ -183,7 +186,7 @@ class TestCalculateUsageCost:
         }
         # Should not raise; missing keys default to 0
         cost = calculate_usage_cost(usage)
-        assert abs(cost - 3.00) < 0.01  # Just the input cost
+        assert abs(cost - 2.00) < 0.01  # Just the input cost
 
 
 class TestAccumulateUsageFromDict:
@@ -192,7 +195,10 @@ class TestAccumulateUsageFromDict:
     def setup_method(self):
         """Reset state before each test."""
         state.session_cost = 0.0
-        state.session_tokens = {"input": 0, "cache_write": 0, "cache_read": 0, "output": 0}
+        # Reset in place: other modules hold references to this dict, and
+        # replacing it broke later tests that read it through claude_light.
+        for key in state.session_tokens:
+            state.session_tokens[key] = 0
 
     def test_accumulate_basic_usage(self):
         """Test accumulating basic usage."""

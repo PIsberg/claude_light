@@ -71,7 +71,9 @@ retrieved_k  = min(retrieved_k, total_chunks)
 ```
 
 Pricing constants:  `PRICE_INPUT=3.00`, `PRICE_WRITE=3.75`, `PRICE_READ=0.30`,
-`PRICE_OUTPUT=15.00` (per million tokens).
+`PRICE_OUTPUT=15.00` (per million tokens). These are a fixed reference rate (Sonnet 4.6)
+defined in the benchmark scripts themselves, so results stay comparable with the committed
+baselines. claude_light prices real calls per model (`MODEL_PRICES` in `config.py`).
 
 A 10-turn session model `[low×3, medium×3, high×3, max×1]` is used to compute
 realistic session costs (turn 1 = cold, turns 2–10 = warm).
@@ -253,7 +255,7 @@ Results: dev split  23 instances  K=[5,10,15]
   (they don't exist at the base commit). Deleted files are also excluded.
 - The issue text is used directly as the query; `claude_light.py` would let
   Claude rephrase or disambiguate first, which could improve recall.
-- `MIN_SCORE` (0.45) cosine threshold is **not applied** in this benchmark so
+- `MIN_SCORE` (0.35) cosine threshold is **not applied** in this benchmark so
   that recall at all K values is measurable. In production, low-scoring chunks
   are dropped, which improves precision at the cost of recall.
 - Some SWE-bench instances touch only configuration files or test files that are

@@ -153,24 +153,38 @@ def _commit_one_root(root: Optional[Path], files: List[str], explanation: str) -
     if code == 0:
         return True # No changes is technically a success (nothing to do)
 
-    # Generate commit message
-    files_summary = ""
-    if files and len(files) <= 3:
-        files_summary = f": {', '.join(Path(f).name for f in files)}"
-    elif files:
-        files_summary = f": {len(files)} files"
-    
-    explanation_clean = explanation.strip().split("\n")[0][:60]
-    commit_msg = f"Claude: {explanation_clean or 'Applied AI-generated changes'}{files_summary}"
-    
+    subject = _commit_subject(explanation)
+    commit_msg = subject
+    if files:
+        commit_msg += "\n\n" + "\n".join(
+            f"- {os.path.relpath(f, root) if root else f}" for f in files
+        )
+
     # Create commit
     _, code = _run_git(*(cmd_prefix + ["commit", "-m", commit_msg]))
     if code != 0:
         print(f"{_T_ERR} Failed to create commit in {root or 'CWD'}")
         return False
-    
-    print(f"{_T_EDIT} {_ANSI_GREEN}Committed{_ANSI_RESET} ({os.path.basename(root) if root else 'root'}): {commit_msg}")
+
+    n = f" ({len(files)} file{'s' if len(files) != 1 else ''})" if files else ""
+    print(f"{_T_EDIT} {_ANSI_GREEN}Committed{_ANSI_RESET} ({os.path.basename(root) if root else 'root'}): {subject}{n}")
     return True
+
+
+COMMIT_PREFIX = "Claude: "
+_SUBJECT_MAX = 72
+
+
+def _commit_subject(explanation: str) -> str:
+    """First line of the explanation, cut at a word boundary to fit 72 chars."""
+    first = " ".join((explanation or "").strip().split("\n")[0].split())
+    first = first or "Applied AI-generated changes"
+    room = _SUBJECT_MAX - len(COMMIT_PREFIX)
+    if len(first) > room:
+        head = first[:room - 1]
+        cut = head.rsplit(" ", 1)[0] if " " in head else head
+        first = cut.rstrip(" ,.;:") + "…"
+    return COMMIT_PREFIX + first
 
 
 def undo_last_commit() -> bool:
@@ -185,18 +199,23 @@ def undo_last_commit() -> bool:
         return False
     
     last_msg = get_last_commit_message()
-    
+    if not last_msg or not last_msg.startswith(COMMIT_PREFIX):
+        # Never rewind a commit the user made on top of Claude's.
+        print(f"{_T_ERR} Last commit was not made by Claude; nothing undone")
+        return False
+
     # Get commit hash before reset
     stdout, code = _run_git("rev-parse", "HEAD")
     if code != 0:
         print(f"{_T_ERR} Failed to get commit hash")
         return False
     commit_hash = stdout[:7] if stdout else "??????"
-    
-    # Reset to previous commit
-    _, code = _run_git("reset", "--hard", "HEAD~1")
+
+    # --keep (not --hard) leaves the user's uncommitted work alone, and
+    # refuses outright if a file Claude changed has since been edited.
+    _, code = _run_git("reset", "--keep", "HEAD~1")
     if code != 0:
-        print(f"{_T_ERR} Failed to undo commit")
+        print(f"{_T_ERR} Failed to undo: files in that commit have uncommitted edits")
         return False
     
     msg_display = f" ({last_msg})" if last_msg else ""

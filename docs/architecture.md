@@ -187,7 +187,7 @@ This sequence diagram illustrates the complete flow from user query to response,
 | `/compact` or `/clear` | Reset conversation history |
 | `/cost` | Show session spend and global lifetime savings |
 | `/run <cmd>` | Run shell command and feed output to Claude |
-| `/undo` | Undo the last git commit (revert AI changes) |
+| `/undo` | Undo the last `Claude:` commit. Keeps uncommitted work; refuses if the last commit is yours or its files have local edits |
 | `/help` | Display help menu |
 | `exit` / `quit` | Quit the application |
 
@@ -322,12 +322,13 @@ Claude Light uses Anthropic's ephemeral caching with three strategic breakpoints
 
 ### Pricing (USD per 1M tokens)
 
-| Type | Price |
-|------|-------|
-| Full Input | $3.00 |
-| Cache Read | $0.30 (90% off) |
-| Cache Write | $3.75 |
-| Output | $15.00 |
+Every call is priced at the model that ran it (`MODEL_PRICES` in `config.py`, list prices checked 2026-10-24). The skeleton block uses the 1-hour cache TTL, so its writes cost the 1 h rate; in OAuth mode the cost the Claude CLI reports for the turn is used as is.
+
+| Model | Input | Cache write (5 m) | Cache write (1 h) | Cache read | Output |
+|-------|-------|-------------------|-------------------|------------|--------|
+| Haiku 5.5 | $0.10 | $0.125 | $0.20 | $0.01 | $0.50 |
+| Sonnet 5.5 | $2.00 | $2.50 | $4.00 | $0.10 | $10.00 |
+| Opus 5.5 | $4.00 | $5.00 | $8.00 | $0.20 | $20.00 |
 
 <details>
 <summary>View PlantUML Source</summary>
@@ -364,8 +365,8 @@ note right of Chunks
   Stable for same-code questions
 end note
 
-rectangle "Full: $3.00" as FullPrice
-rectangle "Cache Read: $0.30" as CacheRead
+rectangle "Full: $2.00 (Sonnet 5.5)" as FullPrice
+rectangle "Cache Read: $0.10" as CacheRead
 
 FullPrice ..> SystemPrompt
 FullPrice ..> Query
@@ -390,19 +391,21 @@ The Retrieval-Augmented Generation pipeline finds and injects only relevant code
 
 1. **Hybrid Query Routing** - Keyword signals fused with embedding-based semantic scores against intent prototypes; cost-aware tier gating prevents over-spending on simple queries
 2. **Effort-Based Budget** - Low effort = 1.5K tokens, Max effort = 9K tokens
-3. **Two-Stage Filtering** - Absolute floor (0.45) + Relative floor (60% of top score)
+3. **Two-Stage Filtering** - Absolute floor (0.35) + Relative floor (60% of top score)
 4. **Deduplication** - Shared preamble emitted once for multi-method results
 5. **Code Block Stripping** - Edit blocks removed from history to prevent bloat
 6. **LLMLingua-2 Compression** *(on by default, no-op if `llmlingua` not installed)* - Post-retrieval token pruning of the retrieved-context block (see below)
 
 ### Effort Levels
 
-| Effort | Model | Max Tokens | Retrieval Budget | Thinking |
-|--------|-------|------------|------------------|----------|
-| low | Haiku | 2,048 | 1,500 | off |
-| medium | Sonnet | 4,096 | 3,000 | off |
-| high | Sonnet | 8,192 | 6,000 | off |
-| max | Opus | 16,000 | 9,000 | on |
+| Effort | Model | Router Max Tokens | Sent Max Tokens | Retrieval Budget |
+|--------|-------|-------------------|-----------------|------------------|
+| low | Haiku 5.5 | 2,048 | 8,000 | 1,500 |
+| medium | Sonnet 5.5 | 4,096 | 16,000 | 3,000 |
+| high | Sonnet 5.5 | 8,192 | 32,000 | 6,000 |
+| max | Opus 5.5 | 16,000 | 64,000 | 9,000 |
+
+The 5.5 models always think adaptively. The tier's effort is sent as `output_config.effort` (a thinking budget is rejected with a 400), and because thinking tokens count against `max_tokens`, `_apply_effort()` raises the cap to the "Sent" column. The router's own figure is still what the cost gate below estimates with. In OAuth mode only the model is passed to the CLI.
 
 ### Hybrid Router (`route_query`)
 
@@ -437,9 +440,9 @@ score = arch + logic + infra
 **Cost-aware adjustments** (applied after tier selection):
 
 1. *Lookup downgrade*: if `infra > (arch + logic)` and `(arch + logic) < 1.0`, the query is lookup-dominant and forced to `low/Haiku/2048` regardless of score or word count.
-2. *Escalation gate*: for any tier whose estimated cost exceeds `ROUTER_COST_CEILING = $0.12`, the router requires `score ≥ tier_threshold × (1 + ROUTER_ESCALATE_MARGIN)` (default margin 0.15). At the defaults this gate only fires for the `max/Opus` tier (~$0.15 per query); `high` (~$0.08) and below are never demoted by cost. A clearly architectural query (score ≫ 13.8) clears the bar and keeps Opus; a borderline one is demoted to `high`.
+2. *Escalation gate*: for any tier whose estimated cost exceeds `ROUTER_COST_CEILING = $0.12`, the router requires `score ≥ tier_threshold × (1 + ROUTER_ESCALATE_MARGIN)` (default margin 0.15). At the defaults this gate only fires for the `max/Opus` tier (~$0.20 per query); `high` (~$0.06) and below are never demoted by cost. A clearly architectural query (score ≫ 13.8) clears the bar and keeps Opus; a borderline one is demoted to `high`.
 
-Cost is estimated as: `(retrieval_budget + 1500) / 1M × $3.00 + max_tokens × 0.5 / 1M × $15.00`.
+Cost is estimated at the tier model's rates: `(retrieval_budget + 1500) / 1M × input + max_tokens × 0.5 / 1M × output`.
 
 **`/why` output** includes a `Routing:` line showing per-dimension scores, whether semantic scoring was active, and the estimated cost.
 
@@ -479,7 +482,7 @@ partition "2. Chunk Retrieval" {
   :Compute similarity scores\nscores = embeddings @ query_emb;
   
   fork
-    :Filter 1: MIN_SCORE >= 0.45\n(absolute floor);
+    :Filter 1: MIN_SCORE >= 0.35\n(absolute floor);
   fork again
     :Filter 2: score >= top_score * 0.60\n(relative floor);
   end fork
@@ -498,9 +501,7 @@ partition "3. Context Assembly" {
 }
 
 partition "4. API Call" {
-  if (effort == max) then (yes)
-    :Enable thinking mode\nbudget_tokens = 10,000;
-  endif
+  :Send output_config.effort = tier\nraise max_tokens for thinking;
   :Call Anthropic API\nwith streaming;
   :Stream response to terminal;
 }
@@ -577,8 +578,8 @@ Skeleton is **not** compressed (already cached across many queries, so per-query
 
 | Path | Billed price | Effect of 2× compression |
 |---|---|---|
-| Cache miss / first query (cache write) | $3.75/M | Halves the write cost on the retrieved block |
-| Cache hit (cache read) | $0.30/M | Halves the (already-cheap) read cost |
+| Cache miss / first query (cache write) | $2.50/M on Sonnet 5.5 | Halves the write cost on the retrieved block |
+| Cache hit (cache read) | $0.10/M on Sonnet 5.5 | Halves the (already-cheap) read cost |
 | Skeleton | unchanged | Not touched |
 
 On a session with frequent distinct queries (cache miss on retrieved block), LLMLingua adds **~50% extra savings on top of caching** for the retrieved-context portion. On a session dominated by repeat queries over the same chunks, the extra saving is small in absolute dollars because caching is already doing most of the work — the projection table in `tests/benchmarks/benchmark.py` (`LLMLINGUA-2 PROJECTION` section) shows this clearly.

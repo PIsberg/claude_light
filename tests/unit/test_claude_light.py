@@ -373,22 +373,22 @@ class TestCalculateCost(unittest.TestCase):
     def test_output_only(self):
         usage = self._make_usage(output_tokens=1_000_000)
         cost = calculate_cost(usage)
-        self.assertAlmostEqual(cost, 15.0, places=4)
+        self.assertAlmostEqual(cost, 10.0, places=4)
 
     def test_input_only(self):
         usage = self._make_usage(input_tokens=1_000_000)
         cost = calculate_cost(usage)
-        self.assertAlmostEqual(cost, 3.0, places=4)
+        self.assertAlmostEqual(cost, 2.0, places=4)
 
     def test_cache_write(self):
         usage = self._make_usage(cache_creation=1_000_000)
         cost = calculate_cost(usage)
-        self.assertAlmostEqual(cost, 3.75, places=4)
+        self.assertAlmostEqual(cost, 2.5, places=4)
 
     def test_cache_read(self):
         usage = self._make_usage(cache_read=1_000_000)
         cost = calculate_cost(usage)
-        self.assertAlmostEqual(cost, 0.30, places=4)
+        self.assertAlmostEqual(cost, 0.10, places=4)
 
     def test_combined(self):
         usage = self._make_usage(
@@ -398,7 +398,7 @@ class TestCalculateCost(unittest.TestCase):
             cache_read=100_000,
         )
         cost = calculate_cost(usage)
-        expected = (100_000/1_000_000)*3.0 + (100_000/1_000_000)*15.0 + (100_000/1_000_000)*3.75 + (100_000/1_000_000)*0.30
+        expected = (100_000/1_000_000)*2.0 + (100_000/1_000_000)*10.0 + (100_000/1_000_000)*2.5 + (100_000/1_000_000)*0.10
         self.assertAlmostEqual(cost, expected, places=6)
 
     def test_no_cache_attrs(self):
@@ -407,7 +407,7 @@ class TestCalculateCost(unittest.TestCase):
         usage.input_tokens = 500_000
         usage.output_tokens = 500_000
         cost = calculate_cost(usage)
-        self.assertAlmostEqual(cost, 1.5 + 7.5, places=4)
+        self.assertAlmostEqual(cost, 1.0 + 5.0, places=4)
 
 
 # ---------------------------------------------------------------------------
@@ -2668,7 +2668,8 @@ class TestChatAutoCorrection(unittest.TestCase):
         self.assertEqual(len(cl.conversation_history), 4)
 
     def test_chat_max_effort_adds_thinking(self):
-        """When effort=max, should add thinking param."""
+        """effort=max is sent as output_config.effort. The 5.5 models reject a
+        thinking budget with a 400, so none may be sent."""
         import claude_light as cl
         resp = self._make_response("Deep analysis result.")
         streaming_response = self._make_streaming_response("Deep analysis result.")
@@ -2685,7 +2686,8 @@ class TestChatAutoCorrection(unittest.TestCase):
              patch("claude_light.print_stats"), \
              patch("claude_light.route_query", return_value=("model", "max", 16000)):
             cl.chat("evaluate architecture deeply")
-        self.assertIn("thinking", captured_kwargs)
+        self.assertEqual(captured_kwargs.get("output_config"), {"effort": "max"})
+        self.assertNotIn("budget_tokens", str(captured_kwargs.get("thinking")))
 
 
 # ---------------------------------------------------------------------------
@@ -4040,6 +4042,10 @@ class TestOneShotWithHits(unittest.TestCase):
         mock_emb = MagicMock()
         mock_emb.encode.return_value = np.array([1.0, 0.0])
         cl.embedder = mock_emb
+        # retrieve() waits for this event; without it the test only passed
+        # when an earlier test happened to leave it set.
+        import claude_light.state as _st
+        _st.embedder_ready.set()
 
         resp = MagicMock()
         block = MagicMock()
@@ -4708,7 +4714,10 @@ class TestOneShotMaxEffort(unittest.TestCase):
              patch("sys.stderr", io.StringIO()):
             cl.one_shot("evaluate the architecture deeply")
 
-        self.assertIn("thinking", captured_kwargs)
+        self.assertEqual(captured_kwargs.get("output_config"), {"effort": "max"})
+        self.assertNotIn("budget_tokens", str(captured_kwargs.get("thinking")))
+        # Thinking shares max_tokens with the answer; the cap must leave room.
+        self.assertGreaterEqual(captured_kwargs["max_tokens"], 32_000)
         cl.chunk_store.clear()
         cl.chunk_store.update(orig_store)
 
@@ -6268,6 +6277,19 @@ class TestModuleEntrypoint(unittest.TestCase):
 
 class TestMainRouting(unittest.TestCase):
 
+    def test_allow_command_flags_extend_the_allowlist(self):
+        import claude_light.main as main_mod
+        import claude_light.config as config
+        with patch.object(config, "ALLOWED_COMMANDS", ["npm test"]), \
+             patch.object(main_mod.sys, "argv", ["claude_light", "--allow-command", "python -m pytest",
+                                                 "--allow-command", "ruff check", "fix the bug"]), \
+             patch.object(main_mod, "one_shot") as mock_one_shot, \
+             patch.object(main_mod, "start_chat"):
+            main_mod.main()
+            allowed = list(config.ALLOWED_COMMANDS)
+        self.assertEqual(allowed, ["npm test", "python -m pytest", "ruff check"])
+        mock_one_shot.assert_called_once_with("fix the bug", auto_apply=False)
+
     def test_main_non_tty_stdin_routes_to_one_shot(self):
         import claude_light.main as main_mod
 
@@ -6609,6 +6631,68 @@ class TestGitManager(unittest.TestCase):
         # File should be gone (working directory reverted)
         self.assertFalse(Path("file.py").exists())
 
+    def test_undo_keeps_uncommitted_work_in_other_files(self):
+        from claude_light import git_manager
+        Path("file.py").write_text("x = 1\n", encoding="utf-8")
+        captured = io.StringIO()
+        with patch("sys.stdout", captured):
+            git_manager.auto_commit(["file.py"], "Add file")
+        # The user keeps working while Claude's change sits on top.
+        Path("README.md").write_text("# Test\nmy notes\n", encoding="utf-8")
+        Path("scratch.txt").write_text("untracked\n", encoding="utf-8")
+
+        with patch("sys.stdout", captured):
+            self.assertTrue(git_manager.undo_last_commit())
+
+        self.assertFalse(Path("file.py").exists())
+        self.assertEqual(Path("README.md").read_text(encoding="utf-8"), "# Test\nmy notes\n")
+        self.assertTrue(Path("scratch.txt").exists())
+
+    def test_undo_refuses_a_commit_claude_did_not_make(self):
+        from claude_light import git_manager
+        Path("mine.py").write_text("y = 2\n", encoding="utf-8")
+        subprocess.run(["git", "add", "mine.py"], capture_output=True)
+        subprocess.run(["git", "commit", "-m", "My own work"], capture_output=True)
+
+        captured = io.StringIO()
+        with patch("sys.stdout", captured):
+            self.assertFalse(git_manager.undo_last_commit())
+        self.assertIn("My own work", git_manager.get_last_commit_message())
+        self.assertTrue(Path("mine.py").exists())
+
+    def test_undo_refuses_when_claude_files_have_local_edits(self):
+        from claude_light import git_manager
+        Path("file.py").write_text("x = 1\n", encoding="utf-8")
+        captured = io.StringIO()
+        with patch("sys.stdout", captured):
+            git_manager.auto_commit(["file.py"], "Add file")
+        Path("file.py").write_text("x = 1\nmy tweak\n", encoding="utf-8")
+
+        with patch("sys.stdout", captured):
+            self.assertFalse(git_manager.undo_last_commit())
+        self.assertEqual(Path("file.py").read_text(encoding="utf-8"), "x = 1\nmy tweak\n")
+
+    def test_commit_subject_is_not_cut_mid_word(self):
+        from claude_light import git_manager
+        for name in ("a.py", "b.py", "c.py", "d.py"):
+            Path(name).write_text("x = 1\n", encoding="utf-8")
+        explanation = ("Add a /version interactive command that prints the installed "
+                       "claude_light version")
+        captured = io.StringIO()
+        with patch("sys.stdout", captured):
+            git_manager.auto_commit(["a.py", "b.py", "c.py", "d.py"], explanation)
+
+        msg = git_manager.get_last_commit_message()
+        subject, _, body = msg.partition("\n")
+        words = explanation.split()
+        shown = subject[len("Claude: "):].rstrip("…").split()
+        self.assertTrue(subject.startswith("Claude: "))
+        self.assertLessEqual(len(subject), 72)
+        self.assertEqual(shown, words[:len(shown)], f"subject cut mid-word: {subject!r}")
+        # The edited files are listed in the body, not glued onto the subject.
+        for name in ("a.py", "b.py", "c.py", "d.py"):
+            self.assertIn(name, body)
+
     def test_undo_last_commit_fails_without_commits(self):
         from claude_light import git_manager
         # Clear git repo and reinit
@@ -6652,6 +6736,77 @@ class TestGitManager(unittest.TestCase):
         msg = git_manager.get_last_commit_message()
         self.assertIn("Batch update", msg)
 
+
+class TestIndexGate(unittest.TestCase):
+    """A cold index build took 314 s on a 64-file repo. OAuth turns must not
+    wait for it (the CLI agent searches the code itself); API-key turns have
+    no tools, so they still wait for retrieval."""
+
+    def setUp(self):
+        import claude_light.state as state
+        self._was_set = state.indexing_done.is_set()
+        state.indexing_done.clear()
+
+    def tearDown(self):
+        import claude_light.state as state
+        if self._was_set:
+            state.indexing_done.set()
+        else:
+            state.indexing_done.clear()
+
+    def test_oauth_query_does_not_wait_for_index(self):
+        import time as _time
+        from claude_light import main
+        with patch.object(main, "AUTH_MODE", "OAUTH"), patch("builtins.print"):
+            start = _time.monotonic()
+            ready = main._index_ready_for_query()
+        self.assertFalse(ready)
+        self.assertLess(_time.monotonic() - start, 1.0)
+
+    def test_api_key_query_waits_for_index(self):
+        import threading as _threading
+        import claude_light.state as state
+        from claude_light import main
+        _threading.Timer(0.3, state.indexing_done.set).start()
+        with patch.object(main, "AUTH_MODE", "API_KEY"), patch("builtins.print"):
+            ready = main._index_ready_for_query()
+        self.assertTrue(ready)
+        self.assertTrue(state.indexing_done.is_set())
+
+    def test_ready_index_is_used(self):
+        import claude_light.state as state
+        from claude_light import main
+        state.indexing_done.set()
+        with patch.object(main, "AUTH_MODE", "OAUTH"), patch("builtins.print"):
+            self.assertTrue(main._index_ready_for_query())
+
+class TestCtrlC(unittest.TestCase):
+    """Ctrl+C during a turn must interrupt that turn (chat() catches the
+    KeyboardInterrupt and returns to the prompt). It used to only set
+    stop_event: the turn kept running, and the heartbeat thread exited for
+    the rest of the session."""
+
+    def setUp(self):
+        import signal as _signal
+        self._int = _signal.getsignal(_signal.SIGINT)
+        self._term = _signal.getsignal(_signal.SIGTERM)
+
+    def tearDown(self):
+        import signal as _signal
+        import claude_light.state as state
+        _signal.signal(_signal.SIGINT, self._int)
+        _signal.signal(_signal.SIGTERM, self._term)
+        state.stop_event.clear()
+
+    def test_sigint_raises_keyboard_interrupt_and_keeps_session_alive(self):
+        import signal as _signal
+        import claude_light.state as state
+        from claude_light import main
+        state.stop_event.clear()
+        main._setup_signal_handlers()
+        with self.assertRaises(KeyboardInterrupt):
+            _signal.raise_signal(_signal.SIGINT)
+        self.assertFalse(state.stop_event.is_set())
 
 if __name__ == "__main__":
     unittest.main()

@@ -35,6 +35,9 @@ python3 claude_light.py "What does OrderService do?"
 echo "List all REST endpoints" | python3 claude_light.py
 
 # Simulation / test mode (no API key or costs required)
+# Let the OAuth agent run your tests (command prefixes, repeatable)
+python3 claude_light.py --allow-command "python -m pytest"
+
 python3 claude_light.py --test-mode small        # 5 files, 10 methods each
 python3 claude_light.py --test-mode extra-large  # 1000 files, 20 methods each
 ```
@@ -158,7 +161,7 @@ The `claude_light/` package is organized by responsibility:
 
 **Three concurrent threads:**
 
-1. **Main thread** — input loop; retrieves relevant chunks per query via `retrieve()`, injects them as a second cached system block, stores only the clean query in `conversation_history`
+1. **Main thread** — input loop; retrieves relevant chunks per query via `retrieve()`, injects them as a second cached system block, stores only the clean query in `conversation_history`. The first index build runs in a background thread; until it finishes, OAuth-mode queries skip retrieval (the CLI agent searches the code itself) and API-key queries wait (`_index_ready_for_query()` in `main.py`). One-shot OAuth runs build the index in a thread, wait up to `_ONE_SHOT_INDEX_WAIT_SECS` (20 s), answer without it if needed, and join the build before exit. The router never waits for the embedder while the index build holds `embedder_lock` (`_encode_if_free()`); it falls back to lexical scores
 2. **Watchdog** (`SourceHandler`) — source file change → `reindex_file()` (re-chunks + re-embeds that file, cancels any pending timer first via 1.5 s debounce); `.md` change → `refresh_md_file()`
 3. **Heartbeat daemon** — checks every 30 s; if idle > 4 min (`CACHE_TTL_SECS`), calls `warm_cache()` to keep the ephemeral cache alive
 
@@ -176,10 +179,10 @@ The `claude_light/` package is organized by responsibility:
 | 50–199 | `all-mpnet-base-v2` (420 MB) |
 | 200+ | `nomic-ai/nomic-embed-text-v1.5` (requires `einops`) |
 
-**Scoring**: `retrieve()` uses a single matrix multiply (`embs @ q_emb`) over all chunk embeddings — no per-chunk loop. Two filters: `MIN_SCORE` (0.45, absolute floor) and `RELATIVE_SCORE_FLOOR` (0.60, fraction of the top chunk's score). Per-effort token budgets in `_RETRIEVAL_BUDGET` scale the context window from 1 500 (low) to 9 000 (max) tokens.
+**Scoring**: `retrieve()` uses a single matrix multiply (`embs @ q_emb`) over all chunk embeddings — no per-chunk loop. Two filters: `MIN_SCORE` (0.35, absolute floor) and `RELATIVE_SCORE_FLOOR` (0.60, fraction of the top chunk's score). Per-effort token budgets in `_RETRIEVAL_BUDGET` scale the context window from 1 500 (low) to 9 000 (max) tokens.
 
 **Token optimisations:**
-- Skeleton cached; retrieved chunks also cached (second `cache_control` block) — repeated queries over the same code pay $0.30/M instead of $3.00/M
+- Skeleton cached; retrieved chunks also cached (second `cache_control` block) — repeated queries over the same code pay the cache-read rate ($0.10/M on Sonnet 5.5) instead of full input ($2.00/M)
 - Conversation history capped at `MAX_HISTORY_TURNS` (6) via sliding window; old turns are summarised in batches of `SUMMARIZE_BATCH` (3) using the cheap Haiku model
 - `build_skeleton()` renders the directory tree with two compressions: (1) single-child directory chains collapsed (`main/java/com/example/`), (2) sibling files sharing an extension grouped with brace notation (`{OrderService,UserService}.java`). Typical savings: 30–50% of skeleton tokens.
 - **LLMLingua-2** *(on by default when `pip install llmlingua` is present; silent no-op otherwise)* — post-retrieval BERT-based token pruning of the retrieved-context block. Closes the gap left by caching: the retrieved block changes per query and rarely hits the cross-query cache, so halving it halves the cache-write cost on that block. Skeleton, history, and the user query are **not** compressed. See `compressor.py` and the architecture doc's [LLMLingua-2 section](docs/architecture.md#llmlingua-2-prompt-compression-optional) for the full rationale.
@@ -192,7 +195,7 @@ The `claude_light/` package is organized by responsibility:
 
 **Interactive commands**: `/clear`, `/compact`, `/cost`, `/help`, `/run <cmd>`, `/undo`, `exit`/`quit`, `Ctrl+C`.
 
-**Auto-commit safety net**: When Claude makes file changes, the tool automatically commits them to git (`Claude: [summary]`). `/undo` reverts the last commit. Gracefully skipped if not in a git repo.
+**Auto-commit safety net**: When Claude makes file changes, the tool automatically commits them to git (`Claude: [summary]`, edited files listed in the body). `/undo` reverts that commit with `git reset --keep`, so uncommitted work elsewhere survives; it refuses if the last commit is not a `Claude:` commit or if a file in it has been edited since. Gracefully skipped if not in a git repo.
 
 For a deeper dive, see [docs/architecture.md](docs/architecture.md).
 
@@ -204,14 +207,14 @@ For a deeper dive, see [docs/architecture.md](docs/architecture.md).
 
 **Streaming** (`streaming.py`): real-time token streaming; thinking blocks shown as a progress indicator; accurate token tracking from streaming events.
 
-**Watchdog Lifecycle** (`main.py`): observer stopped and joined on exit (5 s timeout); SIGINT/SIGTERM handlers set `stop_event`; startup failures handled gracefully.
+**Watchdog Lifecycle** (`main.py`): observer stopped and joined on exit (5 s timeout); Ctrl+C (default SIGINT, `KeyboardInterrupt`) cancels the current turn and kills the CLI agent's whole process tree (`_kill_process_tree` in `llm.py`; `taskkill /T` on Windows, where the CLI runs under `cmd.exe`), then returns to the prompt; at the prompt it exits. SIGTERM exits; `start_chat()`'s `finally` sets `stop_event`. Startup failures handled gracefully.
 
 ## Key Config (`claude_light/config.py`)
 
 | Variable | Purpose |
 |---|---|
 | `TARGET_RETRIEVED_TOKENS` | Token budget for retrieved context per query (default 6 000) |
-| `MIN_SCORE` | Absolute cosine similarity floor to include a chunk (default 0.45) |
+| `MIN_SCORE` | Absolute cosine similarity floor to include a chunk (default 0.35; 0.45 dropped most natural-language questions) |
 | `RELATIVE_SCORE_FLOOR` | Drop chunks below this fraction of the top chunk's score (default 0.60) |
 | `_RETRIEVAL_BUDGET` | Per-effort token budgets: low=1500, medium=3000, high=6000, max=9000 |
 | `MAX_HISTORY_TURNS` | Compress+cap when stored turns exceed this (default 6) |
@@ -221,13 +224,15 @@ For a deeper dive, see [docs/architecture.md](docs/architecture.md).
 | `CACHE_TTL_SECS` | Idle seconds before heartbeat warms the cache (default 240) |
 | `MODEL_HAIKU` / `MODEL_SONNET` / `MODEL_OPUS` | Model ID constants used by the router |
 | `SUMMARY_MODEL` | Model used for history compression (set to `MODEL_HAIKU`) |
-| `PRICE_INPUT` / `PRICE_WRITE` / `PRICE_READ` / `PRICE_OUTPUT` | Token pricing ($3.00 / $3.75 / $0.30 / $15.00 per M) |
+| `MODEL_PRICES` / `model_prices()` | Per-model USD per M tokens (input, 5 m and 1 h cache write, read, output); every call is priced at the model that ran it. `PRICE_INPUT/WRITE/READ/OUTPUT` are the default model's rates (Sonnet 5.5: $2.00 / $2.50 / $0.10 / $10.00) |
 | `SKIP_DIRS` | Directory names excluded from indexing |
 | `EMBED_MODEL`, `TOP_K` | Set at runtime by `auto_tune()` — do not set manually |
 | `LLMLINGUA_ENABLED` | **On** by default (silent no-op if `llmlingua` isn't installed). Opt out via `CLAUDE_LIGHT_LLMLINGUA=0` |
 | `LLMLINGUA_MODEL` | Default `microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank` (~280 MB). Override with `CLAUDE_LIGHT_LLMLINGUA_MODEL` |
 | `LLMLINGUA_TARGET_RATE` | Fraction of tokens to **keep** (default 0.5 = halve). Override with `CLAUDE_LIGHT_LLMLINGUA_RATE` |
 | `LLMLINGUA_MIN_TOKENS` | Skip compression below this size — overhead > savings (default 800) |
+| `AGENT_SYSTEM_PROMPT` | Replaces `SYSTEM_PROMPT` in OAuth mode when `ALLOWED_COMMANDS` is non-empty: the agent edits with its Edit/Write tools and runs the allowed commands to check its work (SEARCH/REPLACE blocks only land after the turn, too late to test) |
+| `ALLOWED_COMMANDS` | Shell command prefixes the OAuth CLI agent may run (each becomes `Bash(<prefix>:*)`). From `--allow-command` or `CLAUDE_LIGHT_ALLOW_COMMANDS` (`;`-separated). The CLI runs with `--permission-mode acceptEdits`, `--setting-sources user` and `--strict-mcp-config`, so the target repo's `.claude/settings*.json` (allow rules, hooks) and `.mcp.json` never apply. Bash is disallowed unless the list is non-empty; PowerShell always. Refused commands are listed after the turn |
 | `LLMLINGUA_FORCE_TOKENS` | Tokens preserved verbatim (default `["\n", "```", "::", "//"]` so chunk structure survives) |
 
 ## SBOM

@@ -7,6 +7,9 @@ chunk_store = {}
 conversation_history = []
 session_cost = 0.0
 session_tokens = {"input": 0, "cache_write": 0, "cache_read": 0, "output": 0, "compress_pre": 0, "compress_post": 0}
+# USD per token category, each call priced at the model that ran it
+session_costs = {"input": 0.0, "cache_write": 0.0, "cache_read": 0.0, "output": 0.0,
+                 "without_cache": 0.0}  # what the same calls would cost with no caching
 
 # Global statistics accumulated across all sessions
 global_stats = {

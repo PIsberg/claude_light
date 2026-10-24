@@ -49,18 +49,39 @@ def heartbeat():
 
 
 def _setup_signal_handlers():
-    """Setup signal handlers for graceful shutdown."""
-    def signal_handler(signum, frame):
-        # Signal to stop everything gracefully
-        state.stop_event.set()
-    
-    # Handle SIGINT (Ctrl+C) and SIGTERM
+    """Ctrl+C interrupts the current turn; SIGTERM exits.
+
+    SIGINT keeps Python's default (KeyboardInterrupt) so chat() can abandon
+    the turn, kill the CLI agent and return to the prompt; at the prompt it
+    exits the loop. start_chat()'s finally block sets stop_event on the way
+    out, so neither signal needs to touch it.
+    """
+    def _terminate(signum, frame):
+        raise SystemExit(128 + signum)
+
     try:
-        signal.signal(signal.SIGINT, signal_handler)
-        signal.signal(signal.SIGTERM, signal_handler)
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+        signal.signal(signal.SIGTERM, _terminate)
     except Exception:
         # Signal handling might not be available on all platforms
         pass
+
+
+def _index_ready_for_query() -> bool:
+    """Decide whether this query can use the RAG index, waiting if it must.
+
+    A cold index build embeds every chunk on CPU (314 s for a 64-file repo
+    in testing). In OAuth mode the Claude CLI agent can Read/Grep the code
+    itself, so the query goes ahead without retrieval. In API-key mode the
+    model has no tools and would answer blind, so the query waits.
+    """
+    if state.indexing_done.is_set():
+        return True
+    if AUTH_MODE == "OAUTH":
+        return False
+    print(f"  {_T_SYS}  Indexing…", flush=True)
+    state.indexing_done.wait()
+    return True
 
 
 def start_chat(auto_apply=False):
@@ -161,12 +182,7 @@ def start_chat(auto_apply=False):
             if not query:
                 continue
 
-            # Wait for background indexing to finish before any query.
-            # On cache-hit runs this is nearly instant; on first run the user
-            # simply sees a brief pause rather than a blocking startup.
-            if not state.indexing_done.is_set():
-                print(f"  {_T_SYS}  Indexing…", flush=True)
-                state.indexing_done.wait()
+            use_index = _index_ready_for_query()
 
             if not _banner_shown:
                 _banner_shown = True
@@ -225,7 +241,7 @@ def start_chat(auto_apply=False):
                     continue
                 from claude_light.executor import _run_command
                 transcript = _run_command(cmd)
-                chat(f"I ran the following command and got this output. Please help me understand or fix any issues:\n\n```\n{transcript}\n```", auto_apply=auto_apply)
+                chat(f"I ran the following command and got this output. Please help me understand or fix any issues:\n\n```\n{transcript}\n```", auto_apply=auto_apply, use_index=use_index)
                 continue
             if query == "/undo":
                 from claude_light import git_manager
@@ -257,7 +273,7 @@ def start_chat(auto_apply=False):
 
             # Standard Chat Query
             try:
-                chat(query, auto_apply=auto_apply)
+                chat(query, auto_apply=auto_apply, use_index=use_index)
             except ClaudeNotLoggedIn:
                 print(f"\n  {_T_ERR}  Claude CLI is not logged in.")
                 print(f"  {_T_SYS}  Set up a long-lived Automation Token? [{_ANSI_GREEN}y{_ANSI_RESET}/{_ANSI_RED}n{_ANSI_RESET}] ", end="", flush=True)
@@ -285,7 +301,7 @@ def start_chat(auto_apply=False):
                                 from claude_light import config
                                 config.API_KEY, config.AUTH_MODE, config.API_KEY_SOURCE, config.AUTH_TOKEN = config._resolve_api_key()
                                 full_refresh()
-                                chat(query, auto_apply=auto_apply)
+                                chat(query, auto_apply=auto_apply, use_index=use_index)
                             else:
                                 print(f"  {_T_ERR}  Token must start with 'sk-ant-oat01'.")
                         except (KeyboardInterrupt, EOFError):
@@ -313,8 +329,17 @@ def main():
     parser.add_argument("--test-mode", choices=["small", "medium", "large", "extra-large"],
                         help="Run in test mode with a synthetic codebase and mocked API.")
     parser.add_argument("-y", "--yes", action="store_true", help="Automatically apply changes without asking.")
+    parser.add_argument("--allow-command", action="append", default=[], metavar="PREFIX",
+                        help="Let the Claude CLI agent (subscription mode) run shell commands starting "
+                             "with PREFIX, e.g. \"python -m pytest\". Repeatable. Also "
+                             "CLAUDE_LIGHT_ALLOW_COMMANDS=\"a; b\".")
     parser.add_argument("query", nargs="*", help="Optional query for one-shot mode.")
     args, unknown = parser.parse_known_args()
+
+    import claude_light.config as _config
+    for prefix in args.allow_command:
+        if prefix.strip() and prefix.strip() not in _config.ALLOWED_COMMANDS:
+            _config.ALLOWED_COMMANDS.append(prefix.strip())
 
     if args.test_mode:
         from tests.utilities.test_mocks import MockManager
@@ -327,12 +352,14 @@ def main():
     _start_llmlingua_load()
 
     query_str = " ".join(args.query).strip()
-    if query_str:
-        one_shot(query_str, auto_apply=args.yes)
-    elif not sys.stdin.isatty():
-        one_shot(sys.stdin.read().strip(), auto_apply=args.yes)
-    else:
+    if not query_str and sys.stdin.isatty():
         start_chat(auto_apply=args.yes)
+        return
+    try:
+        one_shot(query_str or sys.stdin.read().strip(), auto_apply=args.yes)
+    except KeyboardInterrupt:
+        print(f"\n  {_T_ERR}  Interrupted.", file=sys.stderr)
+        raise SystemExit(130)
 
 if __name__ == "__main__":
     main()

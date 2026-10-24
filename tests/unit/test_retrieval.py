@@ -147,6 +147,52 @@ class TestDedupRetrievedContext(unittest.TestCase):
             self.assertIn(name, result)
 
 
+class TestDefaultScoreFloor(unittest.TestCase):
+    """With all-mpnet-base-v2, a natural question scores lower against code
+    than a keyword query: live, "In which file and function is the
+    exponential backoff implemented?" peaked at 0.38 on retry.py, while
+    "exponential backoff retry" scored 0.70. The old 0.45 floor dropped it,
+    and 13 of 19 natural questions about this repo got no context at all."""
+
+    def setUp(self):
+        import claude_light as cl
+        import claude_light.config as config
+        import claude_light.state as _st
+        self._saved = (dict(cl.chunk_store), cl.TOP_K, cl.EMBED_MODEL, cl.embedder,
+                       cl.MIN_SCORE, cl.RELATIVE_SCORE_FLOOR)
+        cl.MIN_SCORE = config.MIN_SCORE              # the shipped defaults
+        cl.RELATIVE_SCORE_FLOOR = config.RELATIVE_SCORE_FLOOR
+        cl.TOP_K = 5
+        cl.EMBED_MODEL = "all-mpnet-base-v2"
+        self._was_ready = _st.embedder_ready.is_set()
+        _st.embedder_ready.set()
+
+    def tearDown(self):
+        import claude_light as cl
+        import claude_light.state as _st
+        store, cl.TOP_K, cl.EMBED_MODEL, cl.embedder, cl.MIN_SCORE, cl.RELATIVE_SCORE_FLOOR = self._saved
+        cl.chunk_store.clear()
+        cl.chunk_store.update(store)
+        (_st.embedder_ready.set if self._was_ready else _st.embedder_ready.clear)()
+
+    def test_question_scoring_038_on_the_right_chunk_is_retrieved(self):
+        print("\n  ▶ TestDefaultScoreFloor.test_question_scoring_038_on_the_right_chunk_is_retrieved")
+        import math
+        import claude_light as cl
+        import numpy as np
+        right = np.array([0.38, math.sqrt(1 - 0.38 ** 2), 0.0])
+        wrong = np.array([0.10, 0.0, math.sqrt(1 - 0.10 ** 2)])
+        cl.chunk_store.clear()
+        cl.chunk_store.update({
+            "claude_light/retry.py::retry_with_backoff": {"text": "def retry_with_backoff(): pass", "emb": right},
+            "claude_light/ui.py::print_stats": {"text": "def print_stats(): pass", "emb": wrong},
+        })
+        cl.embedder = MagicMock()
+        cl.embedder.encode.return_value = np.array([1.0, 0.0, 0.0])
+        _, hits = cl.retrieve("In which file and function is the exponential backoff implemented?")
+        self.assertEqual([h[0] for h in hits], ["claude_light/retry.py::retry_with_backoff"])
+
+
 class TestRetrieve(unittest.TestCase):
 
     def setUp(self):
