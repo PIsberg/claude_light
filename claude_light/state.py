@@ -83,6 +83,11 @@ embedder_ready = threading.Event()
 # The prompt loop starts before this — any query submitted before it's set will
 # wait briefly rather than blocking startup.
 indexing_done = threading.Event()
+# Hybrid retrieval (config.HYBRID_RETRIEVAL): the static model, loaded with the
+# first index pass, and an event set once every chunk also has its dense vector.
+fast_embedder = None
+dense_ready = threading.Event()
+last_retrieval_mode = ""   # for /why: which vectors the last retrieval used
 embedder_load_error: Exception | None = None
 
 # Serializes calls into state.embedder.encode(). Several watchdog debounce

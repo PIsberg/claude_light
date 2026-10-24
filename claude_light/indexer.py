@@ -6,6 +6,7 @@ import concurrent.futures
 from pathlib import Path
 from watchdog.events import FileSystemEventHandler
 
+import claude_light.config as config
 from claude_light.config import (
     CACHE_DIR, CACHE_INDEX, CACHE_MANIFEST, INDEXABLE_EXTENSIONS, _DOC_PREFIX
 )
@@ -14,7 +15,9 @@ import claude_light.state as state
 
 from claude_light.skeleton import _file_hash, _file_hash_parallel, _get_cached_paths, _invalidate_path_cache, _stat_tuple
 from claude_light.parsing import chunk_file
-from claude_light.executor import auto_tune, start_embedder_background_load
+from claude_light.executor import (
+    auto_tune, start_embedder_background_load, set_top_k, _load_embedding_model,
+)
 
 def _is_skipped(p):
     from claude_light.skeleton import _is_skipped
@@ -101,6 +104,7 @@ def _save_cache(embed_model: str) -> None:
             CACHE_DIR.mkdir(exist_ok=True)
             manifest = {
                 "embed_model": embed_model,
+                "fast_model": config.FAST_EMBED_MODEL if config.HYBRID_RETRIEVAL else None,
                 "files": dict(state._file_hashes),
                 "file_stats": dict(state._file_stats),
             }
@@ -111,7 +115,14 @@ def _save_cache(embed_model: str) -> None:
         except Exception as e:
             print(f"[Cache] Failed to save: {e}")
 
-def index_files(quiet=False):
+def index_files(quiet=False, dense="background"):
+    """Build or refresh the index. With config.HYBRID_RETRIEVAL it returns as
+    soon as the static index is ready; `dense` says what happens to the dense
+    vectors: "background" (a thread fills them in), "skip" (only those already
+    cached are used: one-shot runs, which exit before a pass would finish), or
+    "sync" (wait for them)."""
+    if config.HYBRID_RETRIEVAL:
+        return _index_files_hybrid(quiet, dense)
     if not quiet:
         print(f"{_T_RAG} Scanning project files...", flush=True)
 
@@ -220,32 +231,189 @@ def index_files(quiet=False):
         )
 
 
+# ---------------------------------------------------------------------------
+# Hybrid index (#61): static vectors first ("emb_fast"), dense ones ("emb")
+# filled in afterwards. See config.HYBRID_RETRIEVAL.
+# ---------------------------------------------------------------------------
+
+_DENSE_BATCH = 64  # chunks per locked encode: queries wait at most one batch
+
+
+def _scan_sources(quiet):
+    all_paths = _get_cached_paths()
+    source_files = [p for p in all_paths if p.is_file() and p.suffix.lower() in INDEXABLE_EXTENSIONS]
+    state._source_files = source_files
+    try:
+        prev = json.loads(CACHE_MANIFEST.read_text(encoding="utf-8"))
+    except Exception:
+        prev = {}
+    if source_files:
+        state._file_hashes, state._file_stats = _file_hash_parallel(
+            source_files, prev.get("files", {}), prev.get("file_stats", {}))
+    else:
+        state._file_hashes, state._file_stats = {}, {}
+    return source_files
+
+
+def _load_hybrid_cache(source_files, quiet):
+    """(cached entries for unchanged files, stale files). Vectors from a model
+    that is no longer configured are dropped, not the whole entry: a new
+    dense model re-embeds in the background without re-chunking anything."""
+    try:
+        manifest = json.loads(CACHE_MANIFEST.read_text(encoding="utf-8"))
+        # TODO(this branch): pickle from a project directory runs code a
+        # cloned repo could ship; the cache format moves to npz + JSON.
+        cached_index = pickle.loads(CACHE_INDEX.read_bytes())
+        old_hashes = manifest["files"]
+    except Exception:
+        return {}, list(source_files)
+    keep_fast = manifest.get("fast_model") == config.FAST_EMBED_MODEL
+    keep_dense = manifest.get("embed_model") == config.DENSE_EMBED_MODEL
+    by_file: dict = {}
+    for cid, entry in cached_index.items():
+        by_file.setdefault(cid.split("::", 1)[0], []).append((cid, entry))
+    cached, stale = {}, []
+    for f in source_files:
+        key = str(f)
+        if (state._file_hashes.get(key) or _file_hash(f)) != old_hashes.get(key) or key not in by_file:
+            stale.append(f)
+            continue
+        for cid, entry in by_file[key]:
+            entry = {"text": entry["text"],
+                     **({"emb_fast": entry["emb_fast"]} if keep_fast and "emb_fast" in entry else {}),
+                     **({"emb": entry["emb"]} if keep_dense and "emb" in entry else {})}
+            cached[cid] = entry
+    if not quiet:
+        print(f"{_T_CACHE} {_ANSI_GREEN}{len(source_files) - len(stale)}{_ANSI_RESET} files hit, "
+              f"{_ANSI_YELLOW}{len(stale)}{_ANSI_RESET} stale/new.")
+    return cached, stale
+
+
+def _ensure_fast_embedder(quiet):
+    if state.fast_embedder is None:
+        state.fast_embedder = _load_embedding_model(config.FAST_EMBED_MODEL, quiet=quiet)
+    return state.fast_embedder
+
+
+def _index_files_hybrid(quiet, dense):
+    if not quiet:
+        print(f"{_T_RAG} Scanning project files...", flush=True)
+    source_files = _scan_sources(quiet)
+    if not source_files:
+        if not quiet:
+            print(f"{_T_RAG} No supported source files found.")
+        return
+    state.EMBED_MODEL = config.DENSE_EMBED_MODEL
+    store, stale = _load_hybrid_cache(source_files, quiet)
+
+    def _chunks(f):
+        try:
+            return chunk_file(str(f), f.read_text(encoding="utf-8", errors="ignore"))
+        except OSError:
+            return []
+
+    with concurrent.futures.ThreadPoolExecutor() as pool:
+        for chunks in pool.map(_chunks, stale):
+            for c in chunks:
+                store[c["id"]] = {"text": c["text"]}
+
+    missing = [cid for cid, e in store.items() if "emb_fast" not in e]
+    fast = _ensure_fast_embedder(quiet)
+    if missing:
+        vecs = fast.encode([store[cid]["text"] for cid in missing], normalize_embeddings=True, batch_size=256)
+        for cid, v in zip(missing, vecs):
+            store[cid]["emb_fast"] = v
+
+    set_top_k(sum(len(e["text"]) for e in store.values()), len(store))
+    with state.lock:
+        state.chunk_store.clear()
+        state.chunk_store.update(store)
+    if missing or stale:
+        _save_cache(state.EMBED_MODEL)
+
+    need_dense = sum(1 for e in store.values() if "emb" not in e)
+    if not quiet:
+        print(f"{_T_RAG} {_ANSI_GREEN}Index ready{_ANSI_RESET} — {_ANSI_BOLD}{len(source_files)}{_ANSI_RESET} "
+              f"files → {_ANSI_BOLD}{len(store)}{_ANSI_RESET} chunks ({len(missing)} embedded with the "
+              f"static model; {need_dense} still need dense vectors)")
+
+    state.dense_ready.clear()
+    if need_dense == 0:
+        start_embedder_background_load(quiet=True)  # only query encoding needs it
+        state.dense_ready.set()
+    elif dense == "sync":
+        _complete_dense_index()
+    elif dense == "background":
+        threading.Thread(target=_complete_dense_index, daemon=True, name="claude-light-dense").start()
+
+
+def _complete_dense_index():
+    """Give every chunk its dense vector, a batch at a time, then set
+    state.dense_ready. Runs in the background; retrieval uses the static
+    vectors alone until it finishes."""
+    try:
+        if state.embedder is None or not state.embedder_ready.is_set():
+            state.embedder = _load_embedding_model(state.EMBED_MODEL, quiet=True)
+            state.embedder_ready.set()
+        prefix = _DOC_PREFIX.get(state.EMBED_MODEL, "")
+        while not state.stop_event.is_set():
+            with state.lock:
+                todo = [(cid, e["text"]) for cid, e in state.chunk_store.items() if "emb" not in e][:_DENSE_BATCH]
+            if not todo:
+                break
+            with state.embedder_lock:
+                vecs = state.embedder.encode([prefix + t for _, t in todo], normalize_embeddings=True)
+            with state.lock:
+                for (cid, text), v in zip(todo, vecs):
+                    entry = state.chunk_store.get(cid)
+                    if entry is not None and entry["text"] == text:  # not re-chunked meanwhile
+                        entry["emb"] = v
+        else:
+            return  # shutting down: the next run finishes from the cache
+        _save_cache(state.EMBED_MODEL)
+        state.dense_ready.set()
+        notify("dense index ready")
+    except Exception as e:
+        notify(f"dense index failed ({e}); using the static model only", error=True)
+
+
 def _chunks_for_file(filepath):
     prefix = filepath + "::"
     return [k for k in state.chunk_store if k == filepath or k.startswith(prefix)]
 
 def reindex_file(path):
-    if state.embedder is None:
+    hybrid = config.HYBRID_RETRIEVAL and state.fast_embedder is not None
+    if state.embedder is None and not hybrid:
         return
     path = _project_path(path)
     try:
         p      = Path(path)
         text   = p.read_text(encoding="utf-8", errors="ignore")
         chunks = chunk_file(path, text)
+        entries = [{"text": c["text"]} for c in chunks]
 
-        doc_prefix = _DOC_PREFIX.get(state.EMBED_MODEL, "")
-        with state.embedder_lock:
-            embeddings = state.embedder.encode(
-                [doc_prefix + c["text"] for c in chunks],
-                normalize_embeddings=True,
-                batch_size=256,
-            )
+        if hybrid:
+            fast = state.fast_embedder.encode([c["text"] for c in chunks], normalize_embeddings=True)
+            for entry, v in zip(entries, fast):
+                entry["emb_fast"] = v
+        # In hybrid mode the dense model may still be loading; the background
+        # pass then fills these chunks in with the rest.
+        if state.embedder is not None and (not hybrid or state.embedder_ready.is_set()):
+            doc_prefix = _DOC_PREFIX.get(state.EMBED_MODEL, "")
+            with state.embedder_lock:
+                embeddings = state.embedder.encode(
+                    [doc_prefix + c["text"] for c in chunks],
+                    normalize_embeddings=True,
+                    batch_size=256,
+                )
+            for entry, emb in zip(entries, embeddings):
+                entry["emb"] = emb
 
         with state.lock:
             for k in _chunks_for_file(path):
                 del state.chunk_store[k]
-            for chunk, emb in zip(chunks, embeddings):
-                state.chunk_store[chunk["id"]] = {"text": chunk["text"], "emb": emb}
+            for chunk, entry in zip(chunks, entries):
+                state.chunk_store[chunk["id"]] = entry
 
         state._file_hashes[path] = _file_hash(p)
         stat = _stat_tuple(p)

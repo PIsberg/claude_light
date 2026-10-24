@@ -56,6 +56,7 @@ _MODEL_SIZES = {
     "all-MiniLM-L6-v2": 22,
     "all-mpnet-base-v2": 420,
     "nomic-ai/nomic-embed-text-v1.5": 550,
+    "sentence-transformers/static-retrieval-mrl-en-v1": 121,
 }
 
 
@@ -250,8 +251,7 @@ def auto_tune(source_files, chunks=None, quiet=False, load_model=True):
         n_units     = n
         total_chars = sum(f.stat().st_size for f in source_files if f.exists())
 
-    avg_tokens = max(1, (total_chars // n_units) // 4) if n_units else 1
-    state.TOP_K = max(2, min(15, round(TARGET_RETRIEVED_TOKENS / avg_tokens)))
+    avg_tokens = set_top_k(total_chars, n_units)
 
     unit_label = f"{n_units} chunks" if chunks else f"{n} files"
     if not quiet:
@@ -259,6 +259,14 @@ def auto_tune(source_files, chunks=None, quiet=False, load_model=True):
             f"{_T_RAG} Auto-tune → {_ANSI_BOLD}{n} files{_ANSI_RESET} → {unit_label} | "
             f"~{avg_tokens} tok/chunk | TOP_K={_ANSI_BOLD}{state.TOP_K}{_ANSI_RESET} | model={state.EMBED_MODEL}"
         )
+
+
+def set_top_k(total_chars: int, n_units: int) -> int:
+    """Set state.TOP_K so TOP_K chunks fill TARGET_RETRIEVED_TOKENS; returns
+    the average chunk size in tokens."""
+    avg_tokens = max(1, (total_chars // n_units) // 4) if n_units else 1
+    state.TOP_K = max(2, min(15, round(TARGET_RETRIEVED_TOKENS / avg_tokens)))
+    return avg_tokens
 
 
 def start_embedder_background_load(quiet: bool = False) -> threading.Thread:

@@ -1379,7 +1379,9 @@ class TestOneShotColdIndex(unittest.TestCase):
             with lock:
                 events.append(e)
 
-        def fake_index(quiet=False):
+        def fake_index(quiet=False, dense="background"):
+            # One-shot exits before a background dense pass could finish.
+            self.assertEqual(dense, "skip")
             note("index_start")
             _time.sleep(index_secs)
             note("index_done")
