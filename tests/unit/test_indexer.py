@@ -227,6 +227,73 @@ class TestReindexFile(unittest.TestCase):
             reindex_file("nonexistent.py")
 
 
+class TestWatcherPaths(unittest.TestCase):
+    """Watchdog reports './a.py' (Windows: '.\\\\a.py'); the index keys files as
+    'a.py'. Live, a re-index after an edit left the old chunks in place under
+    'a.py::f' and added new ones under '.\\\\a.py::f', so retrieval could return
+    the stale code, and an edited .md file was added to the skeleton twice."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.orig = os.getcwd()
+        os.chdir(self.tmpdir)
+        import claude_light.state as st
+        self._store = dict(st.chunk_store)
+        self._embedder = st.embedder
+        self._hashes = dict(st._file_hashes)
+        st.chunk_store.clear()
+
+    def tearDown(self):
+        os.chdir(self.orig)
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+        import claude_light.state as st
+        st.chunk_store.clear()
+        st.chunk_store.update(self._store)
+        st.embedder = self._embedder
+        st._file_hashes.clear()
+        st._file_hashes.update(self._hashes)
+
+    def test_reindex_through_a_dot_path_replaces_the_old_chunks(self):
+        print("\n  ▶ TestWatcherPaths.test_reindex_through_a_dot_path_replaces_the_old_chunks")
+        import numpy as np
+        import claude_light.state as st
+        from claude_light.indexer import reindex_file
+        Path("calc.py").write_text("def divide(a, b):\n    return a / b\n", encoding="utf-8")
+        st.chunk_store["calc.py::divide"] = {"text": "old", "emb": np.zeros(3)}
+        st.embedder = MagicMock()
+        st.embedder.encode.return_value = np.array([[0.1, 0.2, 0.3]])
+        with patch("claude_light.indexer._save_cache"):
+            reindex_file(os.path.join(".", "calc.py"))
+        self.assertEqual(sorted(st.chunk_store), ["calc.py::divide"])
+        self.assertNotEqual(st.chunk_store["calc.py::divide"]["text"], "old")
+
+    def test_handler_passes_project_relative_paths(self):
+        print("\n  ▶ TestWatcherPaths.test_handler_passes_project_relative_paths")
+        from claude_light import indexer
+        seen = []
+        event = MagicMock(is_directory=False, src_path=os.path.join(".", "pkg", "mod.py"))
+        with patch.object(indexer, "_debounce", side_effect=lambda src, fn: seen.append(src)):
+            indexer.SourceHandler().on_modified(event)
+        self.assertEqual(seen, [os.path.join("pkg", "mod.py")])
+
+    def test_handler_ignores_skipped_directories(self):
+        print("\n  ▶ TestWatcherPaths.test_handler_ignores_skipped_directories")
+        # A pip install into .venv or a build under node_modules re-embedded
+        # those files into the project index.
+        from claude_light import indexer
+        seen = []
+        with patch.object(indexer, "_debounce", side_effect=lambda src, fn: seen.append(src)), \
+             patch.object(indexer, "_remove_file_from_index") as removed:
+            for parts in ((".venv", "lib", "x.py"), ("node_modules", "a", "b.js"),
+                          (".claude_light_cache", "y.py"), (".git", "z.py")):
+                ev = MagicMock(is_directory=False, src_path=os.path.join(".", *parts))
+                indexer.SourceHandler().on_modified(ev)
+                indexer.SourceHandler().on_deleted(ev)
+        self.assertEqual(seen, [])
+        removed.assert_not_called()
+
+
 class TestIndexFilesLight(unittest.TestCase):
 
     def test_no_source_files_no_crash(self):
