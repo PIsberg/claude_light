@@ -132,7 +132,7 @@ LLMLINGUA_MODEL        = os.environ.get(
     "microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank",
 )
 LLMLINGUA_TARGET_RATE  = float(os.environ.get("CLAUDE_LIGHT_LLMLINGUA_RATE", "0.5"))
-LLMLINGUA_MIN_TOKENS   = 800      # below this, skip — compression overhead > savings
+LLMLINGUA_MIN_TOKENS   = int(os.environ.get("CLAUDE_LIGHT_LLMLINGUA_MIN_TOKENS", "800"))  # below this, skip: overhead > savings
 LLMLINGUA_FORCE_TOKENS = ["\n", "```", "::", "//"]
 
 # Comment stripping of retrieved context (see parsing._strip_comments).
@@ -142,16 +142,34 @@ LLMLINGUA_FORCE_TOKENS = ["\n", "```", "::", "//"]
 # to also strip docstrings/Javadoc when you need to squeeze the context further.
 STRIP_DOCSTRINGS = os.environ.get("CLAUDE_LIGHT_STRIP_DOCS", "0") == "1"
 
+# Shell names that may lead an allowlist entry, as "bash: npm test" or
+# "powershell: Get-ChildItem". Anything else before a colon is part of the command.
+_SHELL_TAGS = {"bash": "Bash", "powershell": "PowerShell", "pwsh": "PowerShell"}
+
+
+def command_rule(entry: str) -> tuple:
+    """Return (CLI tool, command prefix) for one allowlist entry. An untagged
+    entry is a Bash prefix, as it was before PowerShell was supported."""
+    head, sep, rest = entry.partition(":")
+    tool = _SHELL_TAGS.get(head.strip().lower()) if sep else None
+    if tool:
+        return tool, rest.strip()
+    return "Bash", entry.strip()
+
+
 def parse_allowed_commands(spec: str) -> list:
-    """Split a ';'-separated list of command prefixes, dropping blanks."""
-    return [c.strip() for c in (spec or "").split(";") if c.strip()]
+    """Split a ';'-separated list of command prefixes, dropping blanks and
+    entries that name a shell but no command ("bash:")."""
+    entries = [c.strip() for c in (spec or "").split(";") if c.strip()]
+    return [c for c in entries if command_rule(c)[1]]
 
 
 # Shell commands the OAuth CLI agent may run unattended (e.g. the test suite),
-# as prefixes: "python -m pytest" allows "python -m pytest tests/ -q". Each
-# becomes a Bash(<prefix>:*) rule. Anything else is denied, apart from the
+# as prefixes: "python -m pytest" allows "python -m pytest tests/ -q". An entry
+# becomes a Bash(<prefix>:*) rule, or a PowerShell(<prefix>:*) rule when it is
+# written "powershell: <prefix>". Anything else is denied, apart from the
 # read-only commands the CLI approves by itself. Set with --allow-command
-# (repeatable) or CLAUDE_LIGHT_ALLOW_COMMANDS="python -m pytest; npm test".
+# (repeatable) or CLAUDE_LIGHT_ALLOW_COMMANDS="python -m pytest; powershell: Invoke-Pester".
 ALLOWED_COMMANDS = parse_allowed_commands(os.environ.get("CLAUDE_LIGHT_ALLOW_COMMANDS", ""))
 
 SKIP_DIRS      = {

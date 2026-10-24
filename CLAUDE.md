@@ -68,25 +68,11 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 ## Dependencies
 
-**Required:**
-```bash
-pip install "sentence-transformers>=5.3.0" "numpy>=2.4.3" "watchdog>=6.0.0" "anthropic>=0.86.0"
-# Note: sentence-transformers pulls in PyTorch (~1.5 GB on first install)
-```
+Python 3.12 or newer. The installers and the SBOM job read [`requirements.txt`](requirements.txt), which is the one list of versions; `pyproject.toml` carries the same floors. The CI test job (`.github/workflows/test.yml`) installs its own package list, so it must be kept in step by hand.
 
-**Optional (strongly recommended):**
 ```bash
-pip install \
-    "tree-sitter>=0.25.2" \
-    "tree-sitter-java>=0.23.5" \
-    "tree-sitter-python>=0.25.0" \
-    "tree-sitter-go>=0.25.0" \
-    "tree-sitter-rust>=0.24.1" \
-    "tree-sitter-javascript>=0.25.0" \
-    "tree-sitter-typescript>=0.23.2" \
-    "rich>=14.3.3" \
-    "prompt_toolkit>=3.0.52" \
-    "einops>=0.8.2"
+pip install -r requirements.txt
+# Note: sentence-transformers pulls in PyTorch (~1.5 GB on first install)
 ```
 
 Without tree-sitter, chunking falls back to whole-file mode. Without rich/prompt_toolkit, the tool degrades gracefully to plain text output and basic `input()`.
@@ -240,9 +226,9 @@ For a deeper dive, see [docs/architecture.md](docs/architecture.md).
 | `LLMLINGUA_ENABLED` | **On** by default (silent no-op if `llmlingua` isn't installed). Opt out via `CLAUDE_LIGHT_LLMLINGUA=0` |
 | `LLMLINGUA_MODEL` | Default `microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank` (~280 MB). Override with `CLAUDE_LIGHT_LLMLINGUA_MODEL` |
 | `LLMLINGUA_TARGET_RATE` | Fraction of tokens to **keep** (default 0.5 = halve). Override with `CLAUDE_LIGHT_LLMLINGUA_RATE` |
-| `LLMLINGUA_MIN_TOKENS` | Skip compression below this size — overhead > savings (default 800) |
+| `LLMLINGUA_MIN_TOKENS` | Skip compression below this size — overhead > savings (default 800). Override with `CLAUDE_LIGHT_LLMLINGUA_MIN_TOKENS`; the retrieval budgets (1 500–9 000) are all above it |
 | `AGENT_SYSTEM_PROMPT` | Replaces `SYSTEM_PROMPT` in OAuth mode when `ALLOWED_COMMANDS` is non-empty: the agent edits with its Edit/Write tools and runs the allowed commands to check its work (SEARCH/REPLACE blocks only land after the turn, too late to test) |
-| `ALLOWED_COMMANDS` | Shell command prefixes the OAuth CLI agent may run (each becomes `Bash(<prefix>:*)`). From `--allow-command` or `CLAUDE_LIGHT_ALLOW_COMMANDS` (`;`-separated). The CLI runs with `--permission-mode acceptEdits`, `--setting-sources user` and `--strict-mcp-config`, so the target repo's `.claude/settings*.json` (allow rules, hooks) and `.mcp.json` never apply. Bash is disallowed unless the list is non-empty; PowerShell always. Refused commands are listed after the turn |
+| `ALLOWED_COMMANDS` | Shell command prefixes the OAuth CLI agent may run (each becomes `Bash(<prefix>:*)`, or `PowerShell(<prefix>:*)` for a `powershell:` or `pwsh:` entry). From `--allow-command` or `CLAUDE_LIGHT_ALLOW_COMMANDS` (`;`-separated). The CLI runs with `--permission-mode acceptEdits`, `--setting-sources user` and `--strict-mcp-config`, so the target repo's `.claude/settings*.json` (allow rules, hooks) and `.mcp.json` never apply. A shell stays disallowed unless an entry names it: Bash for untagged or `bash:` entries, PowerShell for `powershell:` or `pwsh:`. Refused commands are listed after the turn |
 | `LLMLINGUA_FORCE_TOKENS` | Tokens preserved verbatim (default `["\n", "```", "::", "//"]` so chunk structure survives) |
 
 ## SBOM

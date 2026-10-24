@@ -789,8 +789,9 @@ def _make_cli_subprocess_call(
         # list, e.g. the test command, so the agent can check its own edits.
         if tools:
             permission_mode = "acceptEdits"
-            # The shell stays off unless the user allowlisted commands.
-            disallowed = "PowerShell" if config.ALLOWED_COMMANDS else "PowerShell,Bash"
+            # A shell stays off unless the user allowlisted a command for it.
+            shells = {config.command_rule(c)[0] for c in config.ALLOWED_COMMANDS}
+            disallowed = ",".join(t for t in ("PowerShell", "Bash") if t not in shells)
         else:
             # A hidden call over text that may quote repo content (the
             # history summary): no tools at all. --tools "" alone is not
@@ -813,12 +814,13 @@ def _make_cli_subprocess_call(
             "--setting-sources", "user",
             "--strict-mcp-config",
             "--settings", settings_path.as_posix(),
-            "--disallowed-tools", disallowed,
+            *(["--disallowed-tools", disallowed] if disallowed else []),
         ]
         if not tools:
             command += ["--tools", ""]
         elif config.ALLOWED_COMMANDS:
-            command += ["--allowedTools", ",".join(f"Bash({c}:*)" for c in config.ALLOWED_COMMANDS)]
+            rules = [config.command_rule(c) for c in config.ALLOWED_COMMANDS]
+            command += ["--allowedTools", ",".join(f"{tool}({prefix}:*)" for tool, prefix in rules)]
         if model:
             command += ["--model", model]
         if processed_extra_flags:
@@ -1072,10 +1074,17 @@ def _make_streaming_api_call(**create_kwargs):
             # The agent may run the tests, so it edits with its own tools and
             # can check the result (SEARCH/REPLACE lands only after the turn).
             system_text = system_text.replace(SYSTEM_PROMPT, config.AGENT_SYSTEM_PROMPT, 1)
+            # Name the tool for each command, so the agent calls Bash or
+            # PowerShell to match the shell the command is written for.
+            by_tool = {}
+            for c in config.ALLOWED_COMMANDS:
+                tool, prefix = config.command_rule(c)
+                by_tool.setdefault(tool, []).append(prefix)
             system_text += (
-                "\n\nYou may run these shell commands with the Bash tool to check your"
-                " work, for example the tests after an edit: "
-                + "; ".join(config.ALLOWED_COMMANDS)
+                "\n\nYou may run these shell commands to check your work, for example"
+                " the tests after an edit: "
+                + "; ".join(f"With the {tool} tool: {'; '.join(prefixes)}"
+                            for tool, prefixes in by_tool.items())
                 + ". Other commands, apart from read-only ones, will be refused."
             )
 

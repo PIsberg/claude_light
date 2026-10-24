@@ -87,6 +87,8 @@ Optional extras:
 pipx install "git+https://github.com/PIsberg/claude_light.git#egg=claude-light[llmlingua]"
 ```
 
+LLMLingua compresses retrieved context only when it is at least `CLAUDE_LIGHT_LLMLINGUA_MIN_TOKENS` tokens long (default `800`). The retrieval budgets are 1 500 to 9 000 tokens, so a full retrieval always qualifies; lower the value only if small retrievals should be compressed too. The first compression loads a model (about 280 MB) on CPU, which takes around 10 seconds.
+
 A PyPI release (so the `git+...` URL becomes plain `pipx install claude-light`) is planned — the existing methods below remain fully supported in the meantime.
 
 ### Quick Start
@@ -109,12 +111,12 @@ A PyPI release (so the `git+...` URL becomes plain `pipx install claude-light`) 
 
 ```bash
 # Clone or download the repo, then:
-bash install_macos.sh
+bash installers/install_macos.sh
 ```
 
 The macOS installer handles the details specific to macOS:
 - Detects Apple Silicon (`/opt/homebrew`) vs Intel (`/usr/local`) Homebrew paths
-- Installs Python via Homebrew if no 3.9+ interpreter is found
+- Installs Python 3.12 via Homebrew if no 3.12+ interpreter is found
 - Creates a `.venv` virtual environment to avoid the PEP 668 "externally managed" error on macOS 13+
 - Generates a `run.sh` wrapper so you don't need to activate the venv manually
 - Reminds you to add the key to `~/.zshrc` (macOS default shell)
@@ -132,37 +134,27 @@ cd /path/to/your/project
 
 ```bash
 # Clone or download the repo, then:
-bash install.sh
+bash installers/install.sh
 export ANTHROPIC_API_KEY=sk-ant-your-key-here
 ```
 
-The script detects your Python 3.9+ interpreter and installs all required and optional packages via `pip`.
+The script finds a Python 3.12+ interpreter and installs everything in [requirements.txt](requirements.txt) via `pip`.
 
 ### Windows (PowerShell)
 
 ```powershell
 # Allow scripts for this session, then run the installer:
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass;
-.\install.ps1
+.\installers\install.ps1
 [System.Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY","sk-ant-your-key-here","User")
 ```
 
-### Manual installation (Verified Versions)
+### Manual installation
 
-If you prefer to install packages yourself, use the [requirements.txt](requirements.txt) file which contains verified, secure versions:
+Python 3.12 or newer. Install everything in [requirements.txt](requirements.txt):
 
 ```bash
 pip install -r requirements.txt
-```
-
-Alternatively, you can install the core packages manually:
-
-```bash
-# Required
-pip install "sentence-transformers>=5.3.0" "numpy>=2.4.3" "watchdog>=6.0.0" "anthropic>=0.86.0" "prompt_toolkit>=3.0.52"
-
-# Optional — strongly recommended
-pip install "tree-sitter>=0.25.2" "rich>=14.3.3" "einops>=0.8.2"
 ```
 
 Without tree-sitter, chunking falls back to whole-file mode. Without `rich`, output degrades gracefully to plain text formatting.
@@ -182,7 +174,7 @@ If you have a **Claude Pro** or **Team** subscription and have authorized the of
 *   **Cost**: Included in your $20/mo subscription.
 *   **Setup**: Just run `claude auth login` once.
 *   **Instructions it sees**: the repo's own `CLAUDE.md` files are loaded; your personal `~/.claude/CLAUDE.md` is not, even when the repo lives under your home directory, so instructions written for your own Claude Code setup do not leak into claude_light's agent.
-*   **Running commands**: the agent edits files without asking but runs no shell commands by default. To let it run some, such as your tests so it can check its own changes, allow command prefixes (read-only commands like `git status` then work too): `claude_light.py --allow-command "python -m pytest"` (repeatable) or `CLAUDE_LIGHT_ALLOW_COMMANDS="python -m pytest; npm test"`. With an allowlist the agent edits files with its own tools so it can run the tests on its change before it finishes; claude_light then shows the diff and commits it (`/undo` reverts). Without one, edits come back as SEARCH/REPLACE blocks that claude_light lint-checks, previews and applies. Anything else is refused, and claude_light lists the refused commands after the turn. Permission rules, hooks and MCP servers configured inside the repo you are working on are ignored, so a cloned repo cannot grant itself commands.
+*   **Running commands**: the agent edits files without asking but runs no shell commands by default. To let it run some, such as your tests so it can check its own changes, allow command prefixes (read-only commands like `git status` then work too): `claude_light.py --allow-command "python -m pytest"` (repeatable) or `CLAUDE_LIGHT_ALLOW_COMMANDS="python -m pytest; npm test"`. A PowerShell command takes a `powershell:` tag, e.g. `--allow-command "powershell: Invoke-Pester"`, and runs under the PowerShell tool; untagged entries (and `bash:`) run under Bash. An entry allows any command that starts with it, and a chained command such as `Get-ChildItem; Remove-Item x` can run the rest too, so allow only prefixes you trust. With an allowlist the agent edits files with its own tools so it can run the tests on its change before it finishes; claude_light then shows the diff and commits it (`/undo` reverts). Without one, edits come back as SEARCH/REPLACE blocks that claude_light lint-checks, previews and applies. Anything else is refused, and claude_light lists the refused commands after the turn. Permission rules, hooks and MCP servers configured inside the repo you are working on are ignored, so a cloned repo cannot grant itself commands.
 *   **Long tasks**: each turn runs the CLI's own agent loop (it can read and edit files itself), so a multi-file change can take several minutes. Each file it reads, searches or edits is shown as it happens (`⏺ Read claude_light/llm.py`). Press Ctrl+C to cancel a turn: the agent process is stopped and you are back at the prompt (files it already changed stay in the working tree, uncommitted). The turn is also cancelled if the CLI produces no output for 5 minutes, or after 1 hour in total. On the very first run the index is still being built (several minutes on a CPU); you can ask questions immediately and they go to the agent without retrieved context until the index is ready. One-shot runs (`claude_light.py "question"`) do the same: the answer comes first, then the index finishes building before the process exits, so the next run has it.
 
 #### Option B: Anthropic API Key
@@ -243,7 +235,7 @@ Once both are ready, each chunk's similarity to the question is z-scored per mod
 
 To ensure supply chain transparency and prevent dependency confusion, `claude_light` uses:
 
-*   **Pinned Versions:** All dependencies in `requirements.txt` and the installer scripts are pinned to verified, secure minimum versions.
+*   **Version floors:** `requirements.txt` and `pyproject.toml` set each dependency's minimum to the newest release that installs on Python 3.12. The installers read `requirements.txt`, so there is one list to keep current.
 *   **SBOM (Software Bill of Materials):** The project maintains an industry-standard SBOM in [CycloneDX](https://cyclonedx.org/) format.
 
 #### Continuous Inventory
@@ -285,7 +277,7 @@ python -m claude_light --test-mode extra-large
 
 ### CI Regression Checks
 
-The GitHub Actions workflow currently runs three checks:
+The GitHub Actions workflow (`.github/workflows/test.yml`, Python 3.12) runs three steps:
 
 1. Unit tests
 
@@ -296,19 +288,19 @@ python -m pytest -q
 2. Analytical token-cost regression
 
 ```bash
-python tests/benchmark.py --json > tests/baseline_token_stats_new.json
-python tests/check_regression.py tokens tests/baseline_token_stats.json tests/baseline_token_stats_new.json
+python tests/benchmarks/benchmark.py --json > tests/baseline_token_stats_new.json
+python tests/linting/check_regression.py tokens tests/fixtures/baseline_token_stats.json tests/baseline_token_stats_new.json
 ```
 
 3. Offline retrieval regression on the committed local fixture
 
 ```bash
-python tests/benchmark_retrieval.py --fixture tests/fixtures/retrieval_cases.json --output tests/baseline_retrieval_stats_new.json
-python tests/check_regression.py retrieval tests/baseline_retrieval_stats.json tests/baseline_retrieval_stats_new.json
+python tests/benchmarks/benchmark_retrieval.py --fixture tests/fixtures/retrieval_cases.json --output tests/baseline_retrieval_stats_new.json
+python tests/linting/check_regression.py retrieval tests/fixtures/baseline_retrieval_stats.json tests/baseline_retrieval_stats_new.json
 ```
 
 If retrieval behavior changes intentionally, refresh the baseline with the same fixture command so CI remains deterministic:
 
 ```bash
-python tests/benchmark_retrieval.py --fixture tests/fixtures/retrieval_cases.json --output tests/baseline_retrieval_stats.json
+python tests/benchmarks/benchmark_retrieval.py --fixture tests/fixtures/retrieval_cases.json --output tests/fixtures/baseline_retrieval_stats.json
 ```

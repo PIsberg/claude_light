@@ -420,7 +420,7 @@ GitHub Actions runs the full test suite on every push and pull request.
 
 | Stage | Command | Purpose |
 |-------|---------|---------|
-| Setup | `actions/setup-python@v5` | Set up Python 3.11 |
+| Setup | `actions/setup-python@v5` | Set up Python 3.12 |
 | Install | `pip install ...` | Install all dependencies |
 | Unit Tests | `pytest -q` | Run 200+ unit/integration tests |
 | Token Regression | `benchmark.py` + `check_regression.py` | Validate token costs |
@@ -458,7 +458,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.11"]
+        python-version: ["3.12"]
 
     steps:
     - uses: actions/checkout@v4
@@ -494,7 +494,7 @@ start
 
 :GitHub Event push or PR;
 :GitHub Actions starts runner;
-:Set up Python 3.11;
+:Set up Python 3.12;
 :Install dependencies;
 
 note right
