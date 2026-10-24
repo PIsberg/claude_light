@@ -87,6 +87,8 @@ Optional extras:
 pipx install "git+https://github.com/PIsberg/claude_light.git#egg=claude-light[llmlingua]"
 ```
 
+LLMLingua compresses retrieved context only when it is at least `CLAUDE_LIGHT_LLMLINGUA_MIN_TOKENS` tokens long (default `800`). The retrieval budgets are 1 500 to 9 000 tokens, so a full retrieval always qualifies; lower the value only if small retrievals should be compressed too. The first compression loads a model (about 280 MB) on CPU, which takes around 10 seconds.
+
 A PyPI release (so the `git+...` URL becomes plain `pipx install claude-light`) is planned — the existing methods below remain fully supported in the meantime.
 
 ### Quick Start

@@ -132,7 +132,7 @@ LLMLINGUA_MODEL        = os.environ.get(
     "microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank",
 )
 LLMLINGUA_TARGET_RATE  = float(os.environ.get("CLAUDE_LIGHT_LLMLINGUA_RATE", "0.5"))
-LLMLINGUA_MIN_TOKENS   = 800      # below this, skip — compression overhead > savings
+LLMLINGUA_MIN_TOKENS   = int(os.environ.get("CLAUDE_LIGHT_LLMLINGUA_MIN_TOKENS", "800"))  # below this, skip: overhead > savings
 LLMLINGUA_FORCE_TOKENS = ["\n", "```", "::", "//"]
 
 # Comment stripping of retrieved context (see parsing._strip_comments).

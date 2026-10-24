@@ -7,7 +7,7 @@ Work the levers in order. Change one at a time and measure before and after.
 
 - [ ] **1. Keep the prompt cache warm.** Avoid switching models between consecutive turns, since a switch may pay a fresh cache write. Check whether a stronger model is worth that write on the next turn.
   - Open question: is Anthropic's prompt cache scoped per model? Not verified against the API docs.
-- [ ] **2. Confirm LLMLingua is running.** It is a silent no-op until `pip install llmlingua`. Check that `LLMLINGUA_MIN_TOKENS` (default 800) is low enough to trigger on typical retrieval sizes.
+- [x] **2. Confirm LLMLingua is running.** Done: the CPU-only torch build could not load the model (llmlingua defaults to CUDA), so nothing compressed. Fixed; a 2,537-token sample compressed to 1,324. It is a silent no-op until `pip install llmlingua`. Check that `LLMLINGUA_MIN_TOKENS` (default 800) is low enough to trigger on typical retrieval sizes.
 - [ ] **3. Lower the retrieval budget where answers are short.** `_RETRIEVAL_BUDGET` is set by effort (low 1500, medium 3000, high 6000, max 9000). Check whether the default effort is higher than narrow questions need.
 - [ ] **4. Tighten escalation.** Check how often `ROUTER_ESCALATE_MARGIN` sends a query to a bigger model. Raise the threshold if cheaper answers are good enough.
 - [ ] **5. Route large file reads to a cheaper model (Spotify-style).** Only after measuring how many tokens go to agent or tool reads. Targets: API mode `tools.py` `read_file`; subscription mode needs a settings-file hook. Files needed for a SEARCH/REPLACE edit must stay exact.
@@ -26,4 +26,4 @@ Work the levers in order. Change one at a time and measure before and after.
 
 ## Decisions
 
-- (none yet)
+- `LLMLINGUA_MIN_TOKENS` stays at 800 (now settable with `CLAUDE_LIGHT_LLMLINGUA_MIN_TOKENS`). Every retrieval budget is 1 500 or more, so a full retrieval always qualifies.
