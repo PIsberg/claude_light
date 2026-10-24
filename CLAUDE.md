@@ -176,7 +176,7 @@ The `claude_light/` package is organized by responsibility:
 | 50–199 | `all-mpnet-base-v2` (420 MB) |
 | 200+ | `nomic-ai/nomic-embed-text-v1.5` (requires `einops`) |
 
-**Scoring**: `retrieve()` uses a single matrix multiply (`embs @ q_emb`) over all chunk embeddings — no per-chunk loop. Two filters: `MIN_SCORE` (0.45, absolute floor) and `RELATIVE_SCORE_FLOOR` (0.60, fraction of the top chunk's score). Per-effort token budgets in `_RETRIEVAL_BUDGET` scale the context window from 1 500 (low) to 9 000 (max) tokens.
+**Scoring**: `retrieve()` uses a single matrix multiply (`embs @ q_emb`) over all chunk embeddings — no per-chunk loop. Two filters: `MIN_SCORE` (0.35, absolute floor) and `RELATIVE_SCORE_FLOOR` (0.60, fraction of the top chunk's score). Per-effort token budgets in `_RETRIEVAL_BUDGET` scale the context window from 1 500 (low) to 9 000 (max) tokens.
 
 **Token optimisations:**
 - Skeleton cached; retrieved chunks also cached (second `cache_control` block) — repeated queries over the same code pay the cache-read rate ($0.10/M on Sonnet 5.5) instead of full input ($2.00/M)
@@ -211,7 +211,7 @@ For a deeper dive, see [docs/architecture.md](docs/architecture.md).
 | Variable | Purpose |
 |---|---|
 | `TARGET_RETRIEVED_TOKENS` | Token budget for retrieved context per query (default 6 000) |
-| `MIN_SCORE` | Absolute cosine similarity floor to include a chunk (default 0.45) |
+| `MIN_SCORE` | Absolute cosine similarity floor to include a chunk (default 0.35; 0.45 dropped most natural-language questions) |
 | `RELATIVE_SCORE_FLOOR` | Drop chunks below this fraction of the top chunk's score (default 0.60) |
 | `_RETRIEVAL_BUDGET` | Per-effort token budgets: low=1500, medium=3000, high=6000, max=9000 |
 | `MAX_HISTORY_TURNS` | Compress+cap when stored turns exceed this (default 6) |

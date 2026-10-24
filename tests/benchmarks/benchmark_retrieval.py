@@ -54,7 +54,7 @@ ASSUMPTIONS AND LIMITATIONS
   These match when indexing is run from the repo root, which we enforce.
 - Truncation: problem statements up to 6 700 chars; we pass them as-is to the
   embedder, which truncates at its own max token limit (typically 256-512 tok).
-- MIN_SCORE filter: claude_light drops chunks below cosine similarity 0.45 in
+- MIN_SCORE filter: claude_light drops chunks below cosine similarity 0.35 in
   production. We skip this filter here to get unbiased Hit@K and Recall@K
   curves. Real production recall may be lower for noisy queries.
 - Language coverage: SWE-bench Lite is Python-only, so the .py grammar carries

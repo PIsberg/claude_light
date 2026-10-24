@@ -91,7 +91,12 @@ HEARTBEAT_SECS          = 30
 CACHE_TTL_SECS          = 240
 ENABLE_STREAMING        = True         # enable real-time token streaming
 TARGET_RETRIEVED_TOKENS = 6_000   # desired context size per query in tokens
-MIN_SCORE               = 0.45    # discard retrieved files below this similarity (absolute floor)
+# Absolute similarity floor. Natural questions score lower against code than
+# keyword queries (all-mpnet-base-v2: 0.38 for "In which file and function is
+# the exponential backoff implemented?" on the right chunk). On 19 questions
+# about this repo, 0.45 left 13 with no context at all; 0.35 kept 13, with the
+# right file in the top 6 for 11 of them. Lower floors mostly admitted noise.
+MIN_SCORE               = 0.35
 RELATIVE_SCORE_FLOOR    = 0.60    # drop chunks below this fraction of the top chunk's score
 # Per-effort retrieval token budgets (scaled from TARGET_RETRIEVED_TOKENS)
 _RETRIEVAL_BUDGET = {"low": 1_500, "medium": 3_000, "high": 6_000, "max": 9_000}

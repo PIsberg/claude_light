@@ -391,7 +391,7 @@ The Retrieval-Augmented Generation pipeline finds and injects only relevant code
 
 1. **Hybrid Query Routing** - Keyword signals fused with embedding-based semantic scores against intent prototypes; cost-aware tier gating prevents over-spending on simple queries
 2. **Effort-Based Budget** - Low effort = 1.5K tokens, Max effort = 9K tokens
-3. **Two-Stage Filtering** - Absolute floor (0.45) + Relative floor (60% of top score)
+3. **Two-Stage Filtering** - Absolute floor (0.35) + Relative floor (60% of top score)
 4. **Deduplication** - Shared preamble emitted once for multi-method results
 5. **Code Block Stripping** - Edit blocks removed from history to prevent bloat
 6. **LLMLingua-2 Compression** *(on by default, no-op if `llmlingua` not installed)* - Post-retrieval token pruning of the retrieved-context block (see below)
@@ -482,7 +482,7 @@ partition "2. Chunk Retrieval" {
   :Compute similarity scores\nscores = embeddings @ query_emb;
   
   fork
-    :Filter 1: MIN_SCORE >= 0.45\n(absolute floor);
+    :Filter 1: MIN_SCORE >= 0.35\n(absolute floor);
   fork again
     :Filter 2: score >= top_score * 0.60\n(relative floor);
   end fork

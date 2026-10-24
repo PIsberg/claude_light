@@ -255,7 +255,7 @@ Results: dev split  23 instances  K=[5,10,15]
   (they don't exist at the base commit). Deleted files are also excluded.
 - The issue text is used directly as the query; `claude_light.py` would let
   Claude rephrase or disambiguate first, which could improve recall.
-- `MIN_SCORE` (0.45) cosine threshold is **not applied** in this benchmark so
+- `MIN_SCORE` (0.35) cosine threshold is **not applied** in this benchmark so
   that recall at all K values is measurable. In production, low-scoring chunks
   are dropped, which improves precision at the cost of recall.
 - Some SWE-bench instances touch only configuration files or test files that are
