@@ -30,6 +30,7 @@ A lever ships only when its measurement shows a gain.
 | 3. budget sweep | none | not measured offline | not measured offline | n/a | Answering file reached the context: low 13/23 identifier and 8/12 paraphrase, medium 14/23 and 9/12, high 16/23 and 9/12. Median tokens sent: low 1,141, medium 1,901, high 1,997. Kept the budgets. |
 | 4. router replay | none | not measured offline | not measured offline | n/a | 41 repo questions: 32 low, 2 medium, 7 high, 0 max. Zero scores in the band at margins 0.15, 0.30 and 0.50. Kept the margin. |
 | retrieval: symbol-only embed text | reverted | not measured offline | not measured offline | n/a | Identifier recall 14/23 to 17/23, but off-topic questions got context (6/6 to 2/6) and median tokens at medium rose 1,901 to 2,571. Not a gain, so reverted. See docs/BENCHMARKS.md. |
+| retrieval: exclude test directories for package questions | shipped | not measured offline | not measured offline | n/a | Same run, 43 questions, medium budget: identifier 15/25 to 20/25, paraphrase 8/12 to 11/12, off-topic 6/6 both, median tokens 1,901 to 1,570. Lower or equal tokens and higher recall at every budget. Questions that mention tests keep them. See docs/BENCHMARKS.md. |
 
 ## Decisions
 

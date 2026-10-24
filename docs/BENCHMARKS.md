@@ -342,6 +342,42 @@ The Opus cost gate only changes a query's tier when its score is between 12.0
 and 12.0 × (1 + margin). No query falls there, so the escalation margin has no
 effect on this set. The replay measures routing only; it does not score answers.
 
+### Test-file exclusion (2026-10-24, `--test-policy`, shipped)
+
+The index includes the test suite, and the test and benchmark files reuse a
+question's words (model, effort, budget). For a question about the package,
+chunks under a test directory were crowding out the answer. Shipped rule: for a
+question that does not mention tests, chunks under `tests/` (or any directory
+named `test`, `__tests__`, `spec` or `specs`) get no fused score, so the
+selector never picks them. A question that mentions tests keeps them all.
+
+The fixture has 43 questions now (two were added on this date, both about
+tests, and both answered in `tests/unit/`). The keep and exclude rows come from
+the same run on the same 1,484 chunks:
+
+| Effort (budget) | Policy | Identifier | Paraphrase | Off-topic got nothing | Tokens median / mean |
+|---|---|---|---|---|---|
+| low (1,500) | keep | 13/25 | 8/12 | 6/6 | 1,132 / 968 |
+| low (1,500) | exclude | 15/25 | 10/12 | 6/6 | 984 / 907 |
+| medium (3,000) | keep | 15/25 | 8/12 | 6/6 | 1,901 / 1,693 |
+| medium (3,000) | exclude | 20/25 | 11/12 | 6/6 | 1,570 / 1,642 |
+| high (6,000) | keep | 17/25 | 8/12 | 6/6 | 1,997 / 2,762 |
+| high (6,000) | exclude | 21/25 | 11/12 | 6/6 | 1,570 / 2,429 |
+| max (9,000) | keep | 17/25 | 9/12 | 6/6 | 1,997 / 3,469 |
+| max (9,000) | exclude | 22/25 | 11/12 | 6/6 | 1,570 / 3,054 |
+
+Recall rose at every budget, off-topic stayed at 6/6, and tokens fell or held.
+Questions that mention tests are unchanged by the carve-out.
+
+Two alternatives were measured on the 41-question set and not kept. A penalty
+of 1.0 fused z-score units left median tokens at medium above keep (2,042 against
+1,997). A penalty of 2.0 matched exclude on recall but needed a tuned constant,
+so the rule with no constant was kept. The benchmark flags are `--test-policy`
+(`keep`, `exclude` or `penalty`) and `--test-penalty`.
+
+Limits: the rule was measured on this repository only. The directory names
+come from common conventions, not from a survey of other projects.
+
 ### Embedding text experiment (2026-10-24, not shipped)
 
 A miss on `route_query` showed the cause. Each chunk's embedded text starts with

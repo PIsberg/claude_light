@@ -13,6 +13,7 @@ The Retrieval-Augmented Generation pipeline finds and injects only relevant code
 2. **Effort-Based Budget** - Low effort = 1.5K tokens, Max effort = 9K tokens
 3. **Two-Stage Filtering** - Absolute floor (0.35) + Relative floor (60% of top score)
 4. **Deduplication** - Shared preamble emitted once for multi-method results
+4a. **Test-file exclusion** - In the hybrid path, chunks under a test directory are never selected for a question that does not mention tests (`_exclude_test_chunks` in `retrieval.py`). Measured in docs/BENCHMARKS.md.
 5. **Code Block Stripping** - Edit blocks removed from history to prevent bloat
 6. **LLMLingua-2 Compression** *(on by default, no-op if `llmlingua` not installed)* - Post-retrieval token pruning of the retrieved-context block (see below)
 
