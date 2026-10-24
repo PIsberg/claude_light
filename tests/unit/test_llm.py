@@ -1083,6 +1083,95 @@ class TestChatWithoutIndex(unittest.TestCase):
         self.assertIn("index", out.getvalue().lower())
 
 
+class TestApiToolLoop(unittest.TestCase):
+    """API-key mode used to be one Messages call with whatever retrieval
+    found: the model could not open a file retrieval missed. It now gets
+    read-only tools (read_file, grep, list_files) in a manual loop."""
+
+    @staticmethod
+    def _msg(stop_reason, blocks, inp=100, out=10, cw=0, cr=0):
+        from types import SimpleNamespace as NS
+        usage = NS(input_tokens=inp, output_tokens=out, cache_creation_input_tokens=cw,
+                   cache_read_input_tokens=cr, cache_creation=None)
+        return NS(stop_reason=stop_reason, content=blocks, usage=usage)
+
+    @staticmethod
+    def _tool_use(tool_id, name, tool_input):
+        from types import SimpleNamespace as NS
+        return NS(type="tool_use", id=tool_id, name=name, input=tool_input)
+
+    @staticmethod
+    def _text(text):
+        from types import SimpleNamespace as NS
+        return NS(type="text", text=text)
+
+    def _run(self, responses, tool_impl=None):
+        from claude_light import llm, config
+        calls = []
+        replies = iter(responses)
+
+        def fake_stream(client, **kwargs):
+            calls.append({**kwargs, "messages": list(kwargs["messages"])})
+            text, msg = next(replies)
+            return text, {"input_tokens": 0, "output_tokens": 0, "message": msg}
+
+        run_tool = tool_impl or (lambda name, tool_input, root=None: (f"<{name} output>", False))
+        with patch.object(config, "AUTH_MODE", "API_KEY"), \
+             patch.object(llm, "client", MagicMock()), \
+             patch.object(llm, "stream_chat_response", side_effect=fake_stream), \
+             patch("claude_light.tools.run_tool", side_effect=run_tool) as tool_mock, \
+             patch("sys.stdout", io.StringIO()):
+            result = llm._make_streaming_api_call(
+                model="claude-sonnet-5-5", max_tokens=1000, system=[],
+                messages=[{"role": "user", "content": [{"type": "text", "text": "where is X?"}]}])
+        return result, calls, tool_mock
+
+    def test_tool_call_result_is_sent_back_and_final_text_returned(self):
+        print("\n  ▶ TestApiToolLoop.test_tool_call_result_is_sent_back_and_final_text_returned")
+        first = self._msg("tool_use", [self._tool_use("t1", "read_file", {"path": "pkg/retry.py"})], inp=100)
+        second = self._msg("end_turn", [self._text("It is in pkg/retry.py.")], inp=150)
+        (reply, usage, _), calls, tool_mock = self._run([("", first), ("It is in pkg/retry.py.", second)])
+        self.assertEqual(reply, "It is in pkg/retry.py.")
+        self.assertEqual(len(calls), 2)
+        self.assertEqual({t["name"] for t in calls[0]["tools"]}, {"read_file", "grep", "list_files"})
+        assistant, results = calls[1]["messages"][-2], calls[1]["messages"][-1]
+        self.assertEqual(assistant["role"], "assistant")
+        self.assertIs(assistant["content"], first.content)  # thinking blocks etc. passed back as is
+        self.assertEqual(results["content"][0]["tool_use_id"], "t1")
+        self.assertEqual(results["content"][0]["content"], "<read_file output>")
+        self.assertEqual(usage.input_tokens, 250)  # both calls counted
+        tool_mock.assert_called_once()
+
+    def test_parallel_tool_calls_return_in_one_message_and_errors_are_flagged(self):
+        print("\n  ▶ TestApiToolLoop.test_parallel_tool_calls_return_in_one_message_and_errors_are_flagged")
+        first = self._msg("tool_use", [self._tool_use("a", "grep", {"pattern": "x"}),
+                                       self._tool_use("b", "read_file", {"path": "../etc/passwd"})])
+        second = self._msg("end_turn", [self._text("done")])
+        impl = lambda name, tool_input, root=None: ("refused", True) if name == "read_file" else ("ok", False)
+        _, calls, _ = self._run([("", first), ("done", second)], tool_impl=impl)
+        results = calls[1]["messages"][-1]["content"]
+        self.assertEqual([r["tool_use_id"] for r in results], ["a", "b"])
+        self.assertTrue(results[1]["is_error"])
+        self.assertNotIn("is_error", results[0])
+        # Only the newest tool result carries a cache breakpoint (max 4 per request).
+        self.assertEqual(sum("cache_control" in r for r in results), 1)
+
+    def test_tools_never_run_on_a_truncated_turn(self):
+        print("\n  ▶ TestApiToolLoop.test_tools_never_run_on_a_truncated_turn")
+        cut = self._msg("max_tokens", [self._tool_use("t1", "read_file", {"path": "pkg/re"})])
+        (reply, _, _), calls, tool_mock = self._run([("partial", cut)])
+        tool_mock.assert_not_called()
+        self.assertEqual(len(calls), 1)
+
+    def test_loop_is_capped(self):
+        print("\n  ▶ TestApiToolLoop.test_loop_is_capped")
+        from claude_light import llm
+        looping = [("", self._msg("tool_use", [self._tool_use(f"t{i}", "grep", {"pattern": "x"})]))
+                   for i in range(50)]
+        _, calls, _ = self._run(looping)
+        self.assertLessEqual(len(calls), llm._API_TOOL_STEPS + 1)
+
+
 class TestRouterDoesNotWaitForIndexing(unittest.TestCase):
     """The index build holds embedder_lock while it embeds every chunk (5 min
     on a cold 64-file repo). Live, route_query() blocked on that lock, so a

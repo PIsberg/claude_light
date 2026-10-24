@@ -188,6 +188,7 @@ If you have a **Claude Pro** or **Team** subscription and have authorized the of
 #### Option B: Anthropic API Key
 If you prefer to pay per-token or don't have a Pro subscription:
 *   **Cost**: Usage-based (Pay-as-you-go via the Anthropic Console).
+*   **Files beyond the retrieved context**: the model can call three read-only tools, `read_file`, `grep` and `list_files`, confined to the project directory, when retrieval missed the code it needs (up to 8 rounds per turn). It cannot run commands; edits still come back as SEARCH/REPLACE blocks that claude_light lint-checks, previews and commits.
 *   **Setup**: Set the environment variable:
     ```bash
     # Linux / macOS

@@ -558,6 +558,7 @@ Skeleton is **not** compressed (already cached across many queries, so per-query
 
 | File | Role |
 |---|---|
+| `claude_light/tools.py` | Read-only tools for API-key turns (`read_file`, `grep`, `list_files`); `llm._api_tool_loop()` streams each request, runs any `tool_use` blocks, sends all results back in one user message and repeats (max 8 rounds), never on a `max_tokens` or `refusal` stop |
 | `claude_light/compressor.py` | Thread-safe lazy-loaded `PromptCompressor` singleton + `compress_context(text, rate, force_tokens)` that never raises into the hot path |
 | `claude_light/llm.py` | Calls `compress_context()` in `chat()` and `one_shot()` right after `retrieve()`; routes stats via `_accumulate_compression_stats()` |
 | `claude_light/state.py` | Three new `global_stats` fields: `total_tokens_pre_compress`, `total_tokens_post_compress`, `total_dollars_saved_llmlingua` — additive with existing cache savings, tracked separately so the display is never ambiguous |
