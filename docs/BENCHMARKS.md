@@ -342,6 +342,29 @@ The Opus cost gate only changes a query's tier when its score is between 12.0
 and 12.0 × (1 + margin). No query falls there, so the escalation margin has no
 effect on this set. The replay measures routing only; it does not score answers.
 
+### Embedding text experiment (2026-10-24, not shipped)
+
+A miss on `route_query` showed the cause. Each chunk's embedded text starts with
+the whole module preamble (imports, docstring), and all-mpnet-base-v2 reads only
+its first ~384 tokens. For `llm.py::route_query` that window is almost all
+imports, so the dense model never sees the function. Chunks from one file then
+embed alike: four `benchmark_models.py` chunks scored exactly 0.299.
+
+The experiment embedded `// <path>` plus the symbol alone, leaving the text sent
+to Claude unchanged. Against the configured hybrid, using the same question set:
+
+| Configuration | Identifier | Paraphrase | Off-topic got nothing | Median tokens, medium |
+|---|---|---|---|---|
+| Preamble in embedded text (shipped) | 14/23 | 9/12 | 6/6 | 1,901 |
+| Symbol alone | 17/23 | 10/12 | **2/6** | 2,571 |
+
+The dense model alone gained: all-mpnet-base-v2 went from 8/23 to 13/23 on the
+identifier questions, with off-topic at 6/6. The fused result did not hold.
+The `--sweep` of gap and floors could not restore 6/6 off-topic without losing
+the gain, so the change was reverted. Re-tuning on these 41 questions would
+have been fitting the answer key. The patch is kept out of the repo; the
+mechanism is described here so the next attempt starts from the cause.
+
 ---
 
 ## 3 · `benchmark_cost.py` — Real-World Cost Benchmark
