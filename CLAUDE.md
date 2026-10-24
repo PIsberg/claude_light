@@ -204,7 +204,7 @@ For a deeper dive, see [docs/architecture.md](docs/architecture.md).
 
 **Streaming** (`streaming.py`): real-time token streaming; thinking blocks shown as a progress indicator; accurate token tracking from streaming events.
 
-**Watchdog Lifecycle** (`main.py`): observer stopped and joined on exit (5 s timeout); SIGINT/SIGTERM handlers set `stop_event`; startup failures handled gracefully.
+**Watchdog Lifecycle** (`main.py`): observer stopped and joined on exit (5 s timeout); Ctrl+C (default SIGINT, `KeyboardInterrupt`) cancels the current turn and kills the CLI agent's whole process tree (`_kill_process_tree` in `llm.py`; `taskkill /T` on Windows, where the CLI runs under `cmd.exe`), then returns to the prompt; at the prompt it exits. SIGTERM exits; `start_chat()`'s `finally` sets `stop_event`. Startup failures handled gracefully.
 
 ## Key Config (`claude_light/config.py`)
 

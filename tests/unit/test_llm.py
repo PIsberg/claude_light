@@ -1007,6 +1007,90 @@ class TestCliSubprocessTimeouts(unittest.TestCase):
         self.assertIn("timed out", str(ctx.exception))
 
 
+def _pid_alive(pid):
+    import os as _os
+    import subprocess as _sp
+    if _os.name == "nt":
+        out = _sp.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                      capture_output=True, text=True).stdout
+        return str(pid) in out
+    try:
+        _os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+class TestCliProcessIsStopped(unittest.TestCase):
+    """The CLI agent edits files with permission prompts disabled, so when a
+    turn ends early (Ctrl+C, idle timeout) the agent process itself must be
+    dead, not just the shell wrapper around it (on Windows the command runs
+    via cmd.exe, so killing the Popen handle alone leaves claude.exe alive)."""
+
+    _SCRIPT = (
+        "import os, sys, time, json\n"
+        "open(sys.argv[1], 'w').write(str(os.getpid()))\n"
+        "print(json.dumps({'type': 'system', 'subtype': 'init'}), flush=True)\n"
+        "for _ in range(600):\n"
+        "    if sys.argv[2] == 'chatty':\n"
+        "        print(json.dumps({'type': 'system', 'subtype': 'status'}), flush=True)\n"
+        "    time.sleep(0.1)\n"
+    )
+
+    def _run(self, mode, interrupt_after=None, idle=30.0):
+        import subprocess as _sp
+        import sys as _sys
+        import tempfile as _tf
+        import threading as _threading
+        import _thread
+        import time as _time
+        from claude_light import llm
+
+        pid_file = _tf.mktemp(suffix=".pid")
+        script = _tf.mktemp(suffix="_agent.py")
+        with open(script, "w") as fh:
+            fh.write(self._SCRIPT)
+        self.addCleanup(lambda: [os.path.exists(p) and os.remove(p) for p in (script, pid_file)])
+        real_popen = _sp.Popen
+
+        def fake_popen(cmd, **kwargs):
+            if isinstance(cmd, list) and cmd and cmd[0] == "taskkill":
+                return real_popen(cmd, **kwargs)
+            # Same shell/env/pipes as the real call, but a stand-in agent.
+            return real_popen([_sys.executable, script, pid_file, mode], **kwargs)
+
+        if interrupt_after is not None:
+            _threading.Timer(interrupt_after, _thread.interrupt_main).start()
+        start = _time.monotonic()
+        error = None
+        with patch("claude_light.llm.subprocess.Popen", side_effect=fake_popen), \
+             patch("shutil.which", return_value=_sys.executable), \
+             patch.object(llm, "_CLI_IDLE_TIMEOUT_SECS", idle), \
+             patch("sys.stdout", io.StringIO()):
+            try:
+                llm._make_cli_subprocess_call("hi")
+            except (KeyboardInterrupt, RuntimeError) as e:
+                error = e
+        elapsed = _time.monotonic() - start
+        with open(pid_file) as fh:
+            agent_pid = int(fh.read())
+        _time.sleep(0.5)
+        return error, elapsed, agent_pid
+
+    def test_ctrl_c_kills_the_agent_process(self):
+        print("\n  ▶ TestCliProcessIsStopped.test_ctrl_c_kills_the_agent_process")
+        error, _, agent_pid = self._run("chatty", interrupt_after=1.5)
+        self.assertIsInstance(error, KeyboardInterrupt)
+        self.assertFalse(_pid_alive(agent_pid), "agent process survived Ctrl+C")
+
+    def test_idle_timeout_kills_the_agent_process_promptly(self):
+        print("\n  ▶ TestCliProcessIsStopped.test_idle_timeout_kills_the_agent_process_promptly")
+        error, elapsed, agent_pid = self._run("silent", idle=1.0)
+        self.assertIsInstance(error, RuntimeError)
+        self.assertLess(elapsed, 15, "turn did not end until the agent exited on its own")
+        self.assertFalse(_pid_alive(agent_pid), "agent process survived the idle timeout")
+
+
 class TestAgentEditDetection(unittest.TestCase):
     """Verify _git_modified_snapshot + _commit_agent_edits — the OAUTH safety
     net that catches files the Claude CLI agent edited directly (outside our

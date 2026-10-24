@@ -6763,6 +6763,34 @@ class TestIndexGate(unittest.TestCase):
         with patch.object(main, "AUTH_MODE", "OAUTH"), patch("builtins.print"):
             self.assertTrue(main._index_ready_for_query())
 
+class TestCtrlC(unittest.TestCase):
+    """Ctrl+C during a turn must interrupt that turn (chat() catches the
+    KeyboardInterrupt and returns to the prompt). It used to only set
+    stop_event: the turn kept running, and the heartbeat thread exited for
+    the rest of the session."""
+
+    def setUp(self):
+        import signal as _signal
+        self._int = _signal.getsignal(_signal.SIGINT)
+        self._term = _signal.getsignal(_signal.SIGTERM)
+
+    def tearDown(self):
+        import signal as _signal
+        import claude_light.state as state
+        _signal.signal(_signal.SIGINT, self._int)
+        _signal.signal(_signal.SIGTERM, self._term)
+        state.stop_event.clear()
+
+    def test_sigint_raises_keyboard_interrupt_and_keeps_session_alive(self):
+        import signal as _signal
+        import claude_light.state as state
+        from claude_light import main
+        state.stop_event.clear()
+        main._setup_signal_handlers()
+        with self.assertRaises(KeyboardInterrupt):
+            _signal.raise_signal(_signal.SIGINT)
+        self.assertFalse(state.stop_event.is_set())
+
 if __name__ == "__main__":
     unittest.main()
 

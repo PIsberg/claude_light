@@ -49,15 +49,19 @@ def heartbeat():
 
 
 def _setup_signal_handlers():
-    """Setup signal handlers for graceful shutdown."""
-    def signal_handler(signum, frame):
-        # Signal to stop everything gracefully
-        state.stop_event.set()
-    
-    # Handle SIGINT (Ctrl+C) and SIGTERM
+    """Ctrl+C interrupts the current turn; SIGTERM exits.
+
+    SIGINT keeps Python's default (KeyboardInterrupt) so chat() can abandon
+    the turn, kill the CLI agent and return to the prompt; at the prompt it
+    exits the loop. start_chat()'s finally block sets stop_event on the way
+    out, so neither signal needs to touch it.
+    """
+    def _terminate(signum, frame):
+        raise SystemExit(128 + signum)
+
     try:
-        signal.signal(signal.SIGINT, signal_handler)
-        signal.signal(signal.SIGTERM, signal_handler)
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+        signal.signal(signal.SIGTERM, _terminate)
     except Exception:
         # Signal handling might not be available on all platforms
         pass
@@ -339,12 +343,14 @@ def main():
     _start_llmlingua_load()
 
     query_str = " ".join(args.query).strip()
-    if query_str:
-        one_shot(query_str, auto_apply=args.yes)
-    elif not sys.stdin.isatty():
-        one_shot(sys.stdin.read().strip(), auto_apply=args.yes)
-    else:
+    if not query_str and sys.stdin.isatty():
         start_chat(auto_apply=args.yes)
+        return
+    try:
+        one_shot(query_str or sys.stdin.read().strip(), auto_apply=args.yes)
+    except KeyboardInterrupt:
+        print(f"\n  {_T_ERR}  Interrupted.", file=sys.stderr)
+        raise SystemExit(130)
 
 if __name__ == "__main__":
     main()

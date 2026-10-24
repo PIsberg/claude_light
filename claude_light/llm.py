@@ -567,6 +567,31 @@ def _describe_tool_call(name: str, tool_input) -> str:
     return name
 
 
+def _kill_process_tree(proc) -> None:
+    """Stop the CLI and everything it started.
+
+    On Windows the CLI runs via cmd.exe (shell=True), so proc.kill() only
+    ends the shell: claude.exe keeps running, keeps editing files, and keeps
+    the stdout pipe open so the read loop never finishes.
+    """
+    import subprocess
+    if proc.poll() is not None:
+        return
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                capture_output=True, stdin=subprocess.DEVNULL,
+            )
+        else:
+            proc.kill()
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
 # The CLI runs a full agent loop (read files, edit, re-read), so a multi-file
 # change routinely takes several minutes while streaming events the whole
 # time. Kill it only when it goes silent; the overall cap is a backstop.
@@ -770,7 +795,7 @@ def _make_cli_subprocess_call(
                     timed_out.set()
                 if idle_out.is_set() or timed_out.is_set():
                     try:
-                        proc.kill()
+                        _kill_process_tree(proc)
                     except Exception:
                         pass
                     return
@@ -933,6 +958,13 @@ def _make_cli_subprocess_call(
         return response_text.strip(), usage, session_id
 
     finally:
+        # A turn that ends early (Ctrl+C, an error mid-stream) must not leave
+        # the agent running: it edits files with permission prompts off.
+        try:
+            _kill_process_tree(proc)
+        except NameError:
+            pass  # Popen never ran
+
         # Always stop the heartbeat (idempotent) so a raised exception
         # doesn't leave the animated line ticking on screen forever.
         try:
@@ -1287,7 +1319,9 @@ def chat(query, auto_apply=False, use_index=True):
             break
 
     except KeyboardInterrupt:
-        print("\n[Interrupted]")
+        note = (" The agent was stopped; files it already changed are left"
+                " uncommitted in the working tree.") if AUTH_MODE == "OAUTH" else ""
+        print(f"\n  {_T_ERR}  Interrupted.{note}")
     except ClaudeNotLoggedIn:
         # Re-raise so main.py can handle the interactive login trigger
         raise
