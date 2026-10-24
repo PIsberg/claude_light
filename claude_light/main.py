@@ -413,14 +413,16 @@ def main():
     parser.add_argument("-y", "--yes", action="store_true", help="Automatically apply changes without asking.")
     parser.add_argument("--allow-command", action="append", default=[], metavar="PREFIX",
                         help="Let the Claude CLI agent (subscription mode) run shell commands starting "
-                             "with PREFIX, e.g. \"python -m pytest\". Repeatable. Also "
-                             "CLAUDE_LIGHT_ALLOW_COMMANDS=\"a; b\".")
+                             "with PREFIX, e.g. \"python -m pytest\". Prefix it with \"powershell: \" to "
+                             "allow a PowerShell command, e.g. \"powershell: Invoke-Pester\"; without a tag "
+                             "it is a Bash command. Repeatable. Also "
+                             "CLAUDE_LIGHT_ALLOW_COMMANDS=\"a; powershell: b\".")
     parser.add_argument("query", nargs="*", help="Optional query for one-shot mode.")
     args, unknown = parser.parse_known_args()
 
     import claude_light.config as _config
     for prefix in args.allow_command:
-        if prefix.strip() and prefix.strip() not in _config.ALLOWED_COMMANDS:
+        if _config.command_rule(prefix)[1] and prefix.strip() not in _config.ALLOWED_COMMANDS:
             _config.ALLOWED_COMMANDS.append(prefix.strip())
 
     if args.test_mode:

@@ -1021,6 +1021,27 @@ class TestCliCommandPermissions(unittest.TestCase):
         self.assertEqual(allowed, "Bash(python -m pytest:*),Bash(npm test:*)")
         self.assertEqual(cmd[cmd.index("--disallowed-tools") + 1], "PowerShell")
 
+    def test_powershell_entries_become_powershell_rules(self):
+        print("\n  ▶ TestCliCommandPermissions.test_powershell_entries_become_powershell_rules")
+        # A "powershell:" entry is a PowerShell command (Windows' native shell),
+        # so it must be granted to the PowerShell tool, not to Bash.
+        cmd = self._cmd_for(["powershell: Get-ChildItem", "bash: npm test"])
+        self.assertEqual(cmd[cmd.index("--allowedTools") + 1],
+                         "PowerShell(Get-ChildItem:*),Bash(npm test:*)")
+        # Both shells have an allowed prefix, so neither is denied outright.
+        self.assertNotIn("--disallowed-tools", cmd)
+
+    def test_bash_stays_off_when_only_powershell_is_allowed(self):
+        print("\n  ▶ TestCliCommandPermissions.test_bash_stays_off_when_only_powershell_is_allowed")
+        cmd = self._cmd_for(["pwsh: Invoke-Pester"])
+        self.assertEqual(cmd[cmd.index("--allowedTools") + 1], "PowerShell(Invoke-Pester:*)")
+        self.assertEqual(cmd[cmd.index("--disallowed-tools") + 1], "Bash")
+
+    def test_powershell_stays_off_when_only_bash_is_allowed(self):
+        print("\n  ▶ TestCliCommandPermissions.test_powershell_stays_off_when_only_bash_is_allowed")
+        cmd = self._cmd_for(["npm test"])
+        self.assertEqual(cmd[cmd.index("--disallowed-tools") + 1], "PowerShell")
+
     def test_denied_command_is_reported_with_how_to_allow_it(self):
         print("\n  ▶ TestCliCommandPermissions.test_denied_command_is_reported_with_how_to_allow_it")
         import json as _json
@@ -1116,6 +1137,26 @@ class TestCliCommandPermissions(unittest.TestCase):
         with patch.object(llm, "os", posix_os):
             cmd = self._cmd_for([])
         self.assertNotIn("--bare", cmd)
+
+    def test_shell_tags_select_the_tool(self):
+        print("\n  ▶ TestCliCommandPermissions.test_shell_tags_select_the_tool")
+        from claude_light.config import command_rule, parse_allowed_commands
+        self.assertEqual(command_rule("powershell: Get-ChildItem"), ("PowerShell", "Get-ChildItem"))
+        self.assertEqual(command_rule("PWSH:Invoke-Pester"), ("PowerShell", "Invoke-Pester"))
+        self.assertEqual(command_rule("bash: npm test"), ("Bash", "npm test"))
+        # An untagged entry keeps its old meaning: a Bash prefix.
+        self.assertEqual(command_rule("python -m pytest"), ("Bash", "python -m pytest"))
+        # Only the shell names are tags; "npm:" is part of the command.
+        self.assertEqual(command_rule("npm: test"), ("Bash", "npm: test"))
+        # A tag with nothing after it allows nothing.
+        self.assertEqual(parse_allowed_commands("bash:; powershell: ; npm test"), ["npm test"])
+
+    def test_system_prompt_names_the_shell_of_each_command(self):
+        print("\n  ▶ TestCliCommandPermissions.test_system_prompt_names_the_shell_of_each_command")
+        # The agent must know which tool to call for which command.
+        system = self._system_text_sent(["powershell: Get-ChildItem", "npm test"])
+        self.assertIn("With the PowerShell tool: Get-ChildItem", system)
+        self.assertIn("With the Bash tool: npm test", system)
 
     def test_allowlist_parsing(self):
         print("\n  ▶ TestCliCommandPermissions.test_allowlist_parsing")
