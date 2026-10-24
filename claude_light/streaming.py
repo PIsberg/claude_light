@@ -9,7 +9,7 @@ import sys
 import time
 import anthropic
 from typing import Iterator, Tuple, Dict, Any
-from claude_light.config import PRICE_INPUT, PRICE_WRITE, PRICE_READ, PRICE_OUTPUT
+from claude_light.config import model_prices
 from claude_light.ui import _ANSI_RESET, _ANSI_CYAN, _ANSI_DIM, _ANSI_GREEN, _ANSI_BOLD, _SYM_RESP, _UNICODE
 import claude_light.state as state
 
@@ -223,17 +223,18 @@ def stream_chat_response(client, **create_kwargs) -> Tuple[str, Dict[str, int]]:
     return response_text, usage
 
 
-def calculate_usage_cost(usage_dict: Dict[str, int]) -> float:
-    """Calculate cost from usage metrics."""
+def calculate_usage_cost(usage_dict: Dict[str, int], model=None) -> float:
+    """Calculate cost from usage metrics at `model`'s rates."""
+    p = model_prices(model)
     inp = usage_dict.get("input_tokens", 0)
     cw = usage_dict.get("cache_creation_tokens", 0)
     cr = usage_dict.get("cache_read_tokens", 0)
     out = usage_dict.get("output_tokens", 0)
     return (
-        (inp / 1_000_000) * PRICE_INPUT
-        + (cw / 1_000_000) * PRICE_WRITE
-        + (cr / 1_000_000) * PRICE_READ
-        + (out / 1_000_000) * PRICE_OUTPUT
+        (inp / 1_000_000) * p["input"]
+        + (cw / 1_000_000) * p["write"]
+        + (cr / 1_000_000) * p["read"]
+        + (out / 1_000_000) * p["output"]
     )
 
 

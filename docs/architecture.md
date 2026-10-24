@@ -322,12 +322,13 @@ Claude Light uses Anthropic's ephemeral caching with three strategic breakpoints
 
 ### Pricing (USD per 1M tokens)
 
-| Type | Price |
-|------|-------|
-| Full Input | $3.00 |
-| Cache Read | $0.30 (90% off) |
-| Cache Write | $3.75 |
-| Output | $15.00 |
+Every call is priced at the model that ran it (`MODEL_PRICES` in `config.py`, list prices checked 2026-10-24). The skeleton block uses the 1-hour cache TTL, so its writes cost the 1 h rate; in OAuth mode the cost the Claude CLI reports for the turn is used as is.
+
+| Model | Input | Cache write (5 m) | Cache write (1 h) | Cache read | Output |
+|-------|-------|-------------------|-------------------|------------|--------|
+| Haiku 5.5 | $0.10 | $0.125 | $0.20 | $0.01 | $0.50 |
+| Sonnet 5.5 | $2.00 | $2.50 | $4.00 | $0.10 | $10.00 |
+| Opus 5.5 | $4.00 | $5.00 | $8.00 | $0.20 | $20.00 |
 
 <details>
 <summary>View PlantUML Source</summary>
@@ -364,8 +365,8 @@ note right of Chunks
   Stable for same-code questions
 end note
 
-rectangle "Full: $3.00" as FullPrice
-rectangle "Cache Read: $0.30" as CacheRead
+rectangle "Full: $2.00 (Sonnet 5.5)" as FullPrice
+rectangle "Cache Read: $0.10" as CacheRead
 
 FullPrice ..> SystemPrompt
 FullPrice ..> Query
@@ -439,9 +440,9 @@ score = arch + logic + infra
 **Cost-aware adjustments** (applied after tier selection):
 
 1. *Lookup downgrade*: if `infra > (arch + logic)` and `(arch + logic) < 1.0`, the query is lookup-dominant and forced to `low/Haiku/2048` regardless of score or word count.
-2. *Escalation gate*: for any tier whose estimated cost exceeds `ROUTER_COST_CEILING = $0.12`, the router requires `score ≥ tier_threshold × (1 + ROUTER_ESCALATE_MARGIN)` (default margin 0.15). At the defaults this gate only fires for the `max/Opus` tier (~$0.15 per query); `high` (~$0.08) and below are never demoted by cost. A clearly architectural query (score ≫ 13.8) clears the bar and keeps Opus; a borderline one is demoted to `high`.
+2. *Escalation gate*: for any tier whose estimated cost exceeds `ROUTER_COST_CEILING = $0.12`, the router requires `score ≥ tier_threshold × (1 + ROUTER_ESCALATE_MARGIN)` (default margin 0.15). At the defaults this gate only fires for the `max/Opus` tier (~$0.20 per query); `high` (~$0.06) and below are never demoted by cost. A clearly architectural query (score ≫ 13.8) clears the bar and keeps Opus; a borderline one is demoted to `high`.
 
-Cost is estimated as: `(retrieval_budget + 1500) / 1M × $3.00 + max_tokens × 0.5 / 1M × $15.00`.
+Cost is estimated at the tier model's rates: `(retrieval_budget + 1500) / 1M × input + max_tokens × 0.5 / 1M × output`.
 
 **`/why` output** includes a `Routing:` line showing per-dimension scores, whether semantic scoring was active, and the estimated cost.
 
@@ -577,8 +578,8 @@ Skeleton is **not** compressed (already cached across many queries, so per-query
 
 | Path | Billed price | Effect of 2× compression |
 |---|---|---|
-| Cache miss / first query (cache write) | $3.75/M | Halves the write cost on the retrieved block |
-| Cache hit (cache read) | $0.30/M | Halves the (already-cheap) read cost |
+| Cache miss / first query (cache write) | $2.50/M on Sonnet 5.5 | Halves the write cost on the retrieved block |
+| Cache hit (cache read) | $0.10/M on Sonnet 5.5 | Halves the (already-cheap) read cost |
 | Skeleton | unchanged | Not touched |
 
 On a session with frequent distinct queries (cache miss on retrieved block), LLMLingua adds **~50% extra savings on top of caching** for the retrieved-context portion. On a session dominated by repeat queries over the same chunks, the extra saving is small in absolute dollars because caching is already doing most of the work — the projection table in `tests/benchmarks/benchmark.py` (`LLMLINGUA-2 PROJECTION` section) shows this clearly.

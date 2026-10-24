@@ -271,11 +271,28 @@ Rules:
 5. After all blocks, write a short plain-English summary of what changed.
 """
 
-# 2026 PRICING (USD per 1 Million Tokens)
-PRICE_INPUT  = 3.00
-PRICE_WRITE  = PRICE_INPUT * 1.25   # $3.75
-PRICE_READ   = PRICE_INPUT * 0.10   # $0.30
-PRICE_OUTPUT = 15.00
+# PRICING (USD per million tokens), Claude API list prices from
+# platform.claude.com/docs/en/about-claude/pricing, checked 2026-10-24.
+# "write" is a 5-minute cache write (1.25x input); "write_1h" a 1-hour write
+# (2x input), which is what the skeleton block uses. Haiku 5.5 rates are for
+# prompts up to 100K tokens; claude_light prompts stay well below that.
+MODEL_PRICES = {
+    MODEL_HAIKU:  {"input": 0.10, "write": 0.125, "write_1h": 0.20, "read": 0.01, "output": 0.50},
+    MODEL_SONNET: {"input": 2.00, "write": 2.50,  "write_1h": 4.00, "read": 0.10, "output": 10.00},
+    MODEL_OPUS:   {"input": 4.00, "write": 5.00,  "write_1h": 8.00, "read": 0.20, "output": 20.00},
+}
+
+
+def model_prices(model=None) -> dict:
+    """Rates for `model`; the default model's rates for anything unlisted."""
+    return MODEL_PRICES.get(model or MODEL, MODEL_PRICES[MODEL])
+
+
+# Default-model rates, for code that prices tokens without knowing the model.
+PRICE_INPUT  = MODEL_PRICES[MODEL]["input"]
+PRICE_WRITE  = MODEL_PRICES[MODEL]["write"]
+PRICE_READ   = MODEL_PRICES[MODEL]["read"]
+PRICE_OUTPUT = MODEL_PRICES[MODEL]["output"]
 
 # --- Dynamic router: hybrid (keyword+embedding) + cost-aware tuning ---
 ROUTER_SEMANTIC_WEIGHT    = 6.0    # max points a fully-on-prototype dimension adds

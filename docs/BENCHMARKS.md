@@ -71,7 +71,9 @@ retrieved_k  = min(retrieved_k, total_chunks)
 ```
 
 Pricing constants:  `PRICE_INPUT=3.00`, `PRICE_WRITE=3.75`, `PRICE_READ=0.30`,
-`PRICE_OUTPUT=15.00` (per million tokens).
+`PRICE_OUTPUT=15.00` (per million tokens). These are a fixed reference rate (Sonnet 4.6)
+defined in the benchmark scripts themselves, so results stay comparable with the committed
+baselines. claude_light prices real calls per model (`MODEL_PRICES` in `config.py`).
 
 A 10-turn session model `[low×3, medium×3, high×3, max×1]` is used to compute
 realistic session costs (turn 1 = cold, turns 2–10 = warm).

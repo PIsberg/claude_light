@@ -4,7 +4,7 @@ import threading
 import difflib
 from pathlib import Path
 
-from claude_light.config import PRICE_WRITE, PRICE_READ, PRICE_INPUT, PRICE_OUTPUT, ECONOMY_MODE
+from claude_light.config import PRICE_WRITE, ECONOMY_MODE, model_prices
 from claude_light.testing import TEST_MODE_TAG
 import claude_light.state as state
 
@@ -125,23 +125,61 @@ def print_banner(model: str, top_k: int, access_mode: str, device: str | None = 
         print(f"  {_ANSI_DIM}/help for commands  ·  Ctrl+C to exit{_ANSI_RESET}\n")
 
 
-def calculate_cost(usage):
+def _count(value) -> float:
+    """A token count from a usage field, or 0 for anything that isn't one."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    return value
+
+
+def _one_hour_writes(usage) -> float:
+    """Cache-write tokens made with the 1-hour TTL, when the usage says so."""
+    split = getattr(usage, "cache_creation", None)
+    if isinstance(split, dict):
+        return _count(split.get("ephemeral_1h_input_tokens"))
+    return _count(getattr(split, "ephemeral_1h_input_tokens", 0))
+
+
+def cost_breakdown(usage, model=None) -> dict:
+    """API-equivalent USD per token category, priced at `model`'s rates.
+
+    When the usage carries a cost reported by the Claude CLI (`cost_usd`),
+    the categories are scaled to that exact total: the CLI may run more than
+    one model in a turn.
+    """
+    p = model_prices(model)
+    writes = _count(getattr(usage, "cache_creation_input_tokens", 0))
+    writes_1h = min(_one_hour_writes(usage), writes)
+    costs = {
+        "input":       _count(usage.input_tokens) / 1e6 * p["input"],
+        "cache_write": ((writes - writes_1h) * p["write"] + writes_1h * p["write_1h"]) / 1e6,
+        "cache_read":  _count(getattr(usage, "cache_read_input_tokens", 0)) / 1e6 * p["read"],
+        "output":      _count(usage.output_tokens) / 1e6 * p["output"],
+    }
+    reported = getattr(usage, "cost_usd", None)
+    if _count(reported) and sum(costs.values()) > 0:
+        scale = reported / sum(costs.values())
+        costs = {k: v * scale for k, v in costs.items()}
+    return costs
+
+
+def calculate_cost(usage, model=None):
     """Always returns the API-equivalent cost regardless of auth mode."""
-    write = (getattr(usage, "cache_creation_input_tokens", 0) / 1_000_000) * PRICE_WRITE
-    read  = (getattr(usage, "cache_read_input_tokens",      0) / 1_000_000) * PRICE_READ
-    inp   = (usage.input_tokens  / 1_000_000) * PRICE_INPUT
-    out   = (usage.output_tokens / 1_000_000) * PRICE_OUTPUT
-    return write + read + inp + out
+    reported = getattr(usage, "cost_usd", None)
+    if _count(reported):
+        return float(reported)
+    return sum(cost_breakdown(usage, model).values())
 
 
-def print_stats(usage, label="Stats", file=sys.stdout):
+def print_stats(usage, label="Stats", file=sys.stdout, model=None):
     write_tokens = getattr(usage, "cache_creation_input_tokens", 0)
     read_tokens  = getattr(usage, "cache_read_input_tokens",      0)
     total_input  = usage.input_tokens + write_tokens + read_tokens
 
-    actual_cost  = calculate_cost(usage)
-    nocache_cost = (total_input         / 1_000_000) * PRICE_INPUT \
-                 + (usage.output_tokens / 1_000_000) * PRICE_OUTPUT
+    p = model_prices(model)
+    actual_cost  = calculate_cost(usage, model)
+    nocache_cost = (total_input         / 1_000_000) * p["input"] \
+                 + (usage.output_tokens / 1_000_000) * p["output"]
 
     savings     = nocache_cost - actual_cost
     savings_pct = (savings / nocache_cost * 100) if nocache_cost > 0 else 0.0
@@ -177,13 +215,13 @@ def print_session_summary():
         compress_post = state.session_tokens.get("compress_post", 0)
         cost  = state.session_cost
         turns = len(state.conversation_history) // 2
+        # Accumulated per call at the rate of the model that ran it.
+        cost_inp = state.session_costs["input"]
+        cost_cw  = state.session_costs["cache_write"]
+        cost_cr  = state.session_costs["cache_read"]
+        cost_out = state.session_costs["output"]
 
     total = inp + cw + cr + out
-
-    cost_inp = (inp / 1_000_000) * PRICE_INPUT
-    cost_cw  = (cw  / 1_000_000) * PRICE_WRITE
-    cost_cr  = (cr  / 1_000_000) * PRICE_READ
-    cost_out = (out / 1_000_000) * PRICE_OUTPUT
     cost_tot = cost_inp + cost_cw + cost_cr + cost_out
 
     def pct(n):
@@ -231,7 +269,8 @@ def print_session_summary():
 
     print(f"{_B}└{'─'*24}┴{'─'*14}┴{'─'*10}┴{'─'*12}┘{_R}")
 
-    cost_without_cache = (inp + cw + cr) / 1_000_000 * PRICE_INPUT + out / 1_000_000 * PRICE_OUTPUT
+    with state.lock:
+        cost_without_cache = state.session_costs["without_cache"]
     if cost_without_cache > 0:
         saved_pct = (cost_without_cache - cost_tot) / cost_without_cache * 100
         saved_str = f"{_ANSI_GREEN}{saved_pct:.1f}%{_R}"

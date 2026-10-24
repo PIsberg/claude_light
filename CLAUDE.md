@@ -179,7 +179,7 @@ The `claude_light/` package is organized by responsibility:
 **Scoring**: `retrieve()` uses a single matrix multiply (`embs @ q_emb`) over all chunk embeddings — no per-chunk loop. Two filters: `MIN_SCORE` (0.45, absolute floor) and `RELATIVE_SCORE_FLOOR` (0.60, fraction of the top chunk's score). Per-effort token budgets in `_RETRIEVAL_BUDGET` scale the context window from 1 500 (low) to 9 000 (max) tokens.
 
 **Token optimisations:**
-- Skeleton cached; retrieved chunks also cached (second `cache_control` block) — repeated queries over the same code pay $0.30/M instead of $3.00/M
+- Skeleton cached; retrieved chunks also cached (second `cache_control` block) — repeated queries over the same code pay the cache-read rate ($0.10/M on Sonnet 5.5) instead of full input ($2.00/M)
 - Conversation history capped at `MAX_HISTORY_TURNS` (6) via sliding window; old turns are summarised in batches of `SUMMARIZE_BATCH` (3) using the cheap Haiku model
 - `build_skeleton()` renders the directory tree with two compressions: (1) single-child directory chains collapsed (`main/java/com/example/`), (2) sibling files sharing an extension grouped with brace notation (`{OrderService,UserService}.java`). Typical savings: 30–50% of skeleton tokens.
 - **LLMLingua-2** *(on by default when `pip install llmlingua` is present; silent no-op otherwise)* — post-retrieval BERT-based token pruning of the retrieved-context block. Closes the gap left by caching: the retrieved block changes per query and rarely hits the cross-query cache, so halving it halves the cache-write cost on that block. Skeleton, history, and the user query are **not** compressed. See `compressor.py` and the architecture doc's [LLMLingua-2 section](docs/architecture.md#llmlingua-2-prompt-compression-optional) for the full rationale.
@@ -221,7 +221,7 @@ For a deeper dive, see [docs/architecture.md](docs/architecture.md).
 | `CACHE_TTL_SECS` | Idle seconds before heartbeat warms the cache (default 240) |
 | `MODEL_HAIKU` / `MODEL_SONNET` / `MODEL_OPUS` | Model ID constants used by the router |
 | `SUMMARY_MODEL` | Model used for history compression (set to `MODEL_HAIKU`) |
-| `PRICE_INPUT` / `PRICE_WRITE` / `PRICE_READ` / `PRICE_OUTPUT` | Token pricing ($3.00 / $3.75 / $0.30 / $15.00 per M) |
+| `MODEL_PRICES` / `model_prices()` | Per-model USD per M tokens (input, 5 m and 1 h cache write, read, output); every call is priced at the model that ran it. `PRICE_INPUT/WRITE/READ/OUTPUT` are the default model's rates (Sonnet 5.5: $2.00 / $2.50 / $0.10 / $10.00) |
 | `SKIP_DIRS` | Directory names excluded from indexing |
 | `EMBED_MODEL`, `TOP_K` | Set at runtime by `auto_tune()` — do not set manually |
 | `LLMLINGUA_ENABLED` | **On** by default (silent no-op if `llmlingua` isn't installed). Opt out via `CLAUDE_LIGHT_LLMLINGUA=0` |

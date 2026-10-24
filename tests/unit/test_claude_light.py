@@ -373,22 +373,22 @@ class TestCalculateCost(unittest.TestCase):
     def test_output_only(self):
         usage = self._make_usage(output_tokens=1_000_000)
         cost = calculate_cost(usage)
-        self.assertAlmostEqual(cost, 15.0, places=4)
+        self.assertAlmostEqual(cost, 10.0, places=4)
 
     def test_input_only(self):
         usage = self._make_usage(input_tokens=1_000_000)
         cost = calculate_cost(usage)
-        self.assertAlmostEqual(cost, 3.0, places=4)
+        self.assertAlmostEqual(cost, 2.0, places=4)
 
     def test_cache_write(self):
         usage = self._make_usage(cache_creation=1_000_000)
         cost = calculate_cost(usage)
-        self.assertAlmostEqual(cost, 3.75, places=4)
+        self.assertAlmostEqual(cost, 2.5, places=4)
 
     def test_cache_read(self):
         usage = self._make_usage(cache_read=1_000_000)
         cost = calculate_cost(usage)
-        self.assertAlmostEqual(cost, 0.30, places=4)
+        self.assertAlmostEqual(cost, 0.10, places=4)
 
     def test_combined(self):
         usage = self._make_usage(
@@ -398,7 +398,7 @@ class TestCalculateCost(unittest.TestCase):
             cache_read=100_000,
         )
         cost = calculate_cost(usage)
-        expected = (100_000/1_000_000)*3.0 + (100_000/1_000_000)*15.0 + (100_000/1_000_000)*3.75 + (100_000/1_000_000)*0.30
+        expected = (100_000/1_000_000)*2.0 + (100_000/1_000_000)*10.0 + (100_000/1_000_000)*2.5 + (100_000/1_000_000)*0.10
         self.assertAlmostEqual(cost, expected, places=6)
 
     def test_no_cache_attrs(self):
@@ -407,7 +407,7 @@ class TestCalculateCost(unittest.TestCase):
         usage.input_tokens = 500_000
         usage.output_tokens = 500_000
         cost = calculate_cost(usage)
-        self.assertAlmostEqual(cost, 1.5 + 7.5, places=4)
+        self.assertAlmostEqual(cost, 1.0 + 5.0, places=4)
 
 
 # ---------------------------------------------------------------------------

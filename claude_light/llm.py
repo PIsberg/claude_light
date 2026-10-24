@@ -12,7 +12,6 @@ from claude_light.config import (
     API_KEY, AUTH_MODE, API_KEY_SOURCE, ECONOMY_MODE, MODEL, MODEL_HAIKU, MODEL_SONNET, MODEL_OPUS, SUMMARY_MODEL,
     MAX_HISTORY_TURNS, SUMMARIZE_BATCH, _RETRIEVAL_BUDGET, SYSTEM_PROMPT,
     ENABLE_STREAMING,
-    PRICE_INPUT, PRICE_OUTPUT,
     ROUTER_SEMANTIC_WEIGHT, ROUTER_SEMANTIC_FLOOR, ROUTER_COST_CEILING,
     ROUTER_ESCALATE_MARGIN, ROUTER_FIXED_INPUT_TOKENS, ROUTER_PROTOTYPES,
 )
@@ -160,11 +159,13 @@ def _semantic_dimension_scores(query: str):
         return zeros, False
 
 
-def _estimate_query_cost(max_tokens: int, retrieval_budget: int) -> float:
+def _estimate_query_cost(max_tokens: int, retrieval_budget: int, model=None) -> float:
     """Rough per-query cost estimate used only for tier gating."""
+    from claude_light.config import model_prices
+    p = model_prices(model)
     expected_input  = retrieval_budget + ROUTER_FIXED_INPUT_TOKENS
     expected_output = max_tokens * 0.5
-    return expected_input / 1e6 * PRICE_INPUT + expected_output / 1e6 * PRICE_OUTPUT
+    return expected_input / 1e6 * p["input"] + expected_output / 1e6 * p["output"]
 
 
 def route_query(query: str) -> tuple[str, str, int]:
@@ -224,7 +225,7 @@ def route_query(query: str) -> tuple[str, str, int]:
         _last_route_info.update(
             arch=arch, logic=logic, infra=infra,
             semantic_used=sem_used,
-            est_cost=_estimate_query_cost(max_tokens, _RETRIEVAL_BUDGET[effort]),
+            est_cost=_estimate_query_cost(max_tokens, _RETRIEVAL_BUDGET[effort], model),
         )
         return _route_result(effort, model, max_tokens)
 
@@ -245,7 +246,7 @@ def route_query(query: str) -> tuple[str, str, int]:
         "low":    (MODEL_HAIKU,    2_048),
     }
     while True:
-        cand_cost = _estimate_query_cost(max_tokens, _RETRIEVAL_BUDGET[effort])
+        cand_cost = _estimate_query_cost(max_tokens, _RETRIEVAL_BUDGET[effort], model)
         required_score = _tier_threshold[effort] * (1.0 + ROUTER_ESCALATE_MARGIN)
         if cand_cost <= ROUTER_COST_CEILING or score >= required_score:
             break
@@ -277,19 +278,28 @@ def _extract_text(content_blocks) -> str:
         b.text for b in content_blocks if getattr(b, "type", None) == "text"
     )
 
-def _accumulate_usage(usage):
-    from claude_light.config import PRICE_INPUT, PRICE_READ
+def _accumulate_usage(usage, model=None):
+    from claude_light.config import model_prices
+    from claude_light.ui import cost_breakdown
+    p = model_prices(model)
     input_tokens = usage.input_tokens
     cache_read = getattr(usage, "cache_read_input_tokens", 0)
     cache_write = getattr(usage, "cache_creation_input_tokens", 0)
     output_tokens = usage.output_tokens
+    costs = cost_breakdown(usage, model)
 
     with state.lock:
         state.session_tokens["input"]       += input_tokens
         state.session_tokens["cache_write"] += cache_write
         state.session_tokens["cache_read"]  += cache_read
         state.session_tokens["output"]      += output_tokens
-        
+        for category, dollars in costs.items():
+            state.session_costs[category] += dollars
+        state.session_costs["without_cache"] += (
+            (input_tokens + cache_write + cache_read) / 1e6 * p["input"]
+            + output_tokens / 1e6 * p["output"]
+        )
+
         # Update Global Stats
         # Saved tokens = everything that hit the cache (read)
         # Full tokens = everything that didn't hit the cache (input + write)
@@ -297,27 +307,27 @@ def _accumulate_usage(usage):
         state.global_stats["total_tokens_saved"] += cache_read
         
         # Dollars saved = tokens * (Full Price - Cache Read Price)
-        dollars_saved = (cache_read / 1_000_000.0) * (PRICE_INPUT - PRICE_READ)
+        dollars_saved = (cache_read / 1_000_000.0) * (p["input"] - p["read"])
         state.global_stats["total_dollars_saved"] += dollars_saved
     
     # Persist after every interaction
     state.save_global_stats()
 
-def _accumulate_compression_stats(info: dict) -> None:
+def _accumulate_compression_stats(info: dict, model=None) -> None:
     """Record tokens saved by LLMLingua-2 in global_stats.
 
-    Priced at PRICE_WRITE: the retrieved-context block is new on nearly every
-    query (unique top-K chunks), so its first trip through the API is a cache
-    write. Pricing at PRICE_INPUT would overstate savings; PRICE_READ would
-    understate them. PRICE_WRITE is the honest middle path.
+    Priced at the model's 5-minute cache-write rate: the retrieved-context
+    block is new on nearly every query (unique top-K chunks), so its first
+    trip through the API is a cache write. The input rate would overstate
+    savings; the read rate would understate them.
     """
     if not info or info.get("skipped"):
         return
-    from claude_light.config import PRICE_WRITE
+    from claude_light.config import model_prices
     delta = max(0, info["tokens_before"] - info["tokens_after"])
     if delta == 0:
         return
-    dollars = (delta / 1_000_000.0) * PRICE_WRITE
+    dollars = (delta / 1_000_000.0) * model_prices(model)["write"]
     with state.lock:
         state.global_stats["total_tokens_pre_compress"]    += info["tokens_before"]
         state.global_stats["total_tokens_post_compress"]   += info["tokens_after"]
@@ -367,9 +377,9 @@ def _maybe_compress_history():
     try:
         print(f"  {_T_SYS}  Compressing history…", end="", flush=True)
         summary_text, usage = _summarize_turns(to_summarize)
-        _accumulate_usage(usage)
+        _accumulate_usage(usage, SUMMARY_MODEL)
         with state.lock:
-            state.session_cost += calculate_cost(usage)
+            state.session_cost += calculate_cost(usage, SUMMARY_MODEL)
         summary_pair = [
             {"role": "user",      "content": f"[Summary of earlier conversation]\n{summary_text}"},
             {"role": "assistant", "content": "Understood, I have context from our earlier discussion."},
@@ -822,6 +832,7 @@ def _make_cli_subprocess_call(
         usage_data: dict = {}
         session_id = None
         final_result_text: str | None = None
+        cli_cost_usd = None
         # The agent narrates in separate text blocks between tool calls.
         # Without a break they print as one run-on paragraph.
         new_block = False
@@ -905,6 +916,7 @@ def _make_cli_subprocess_call(
             elif ev_type == "result":
                 final_result_text = event.get("result")
                 usage_data = event.get("usage", {}) or {}
+                cli_cost_usd = event.get("total_cost_usd")
                 session_id = event.get("session_id")
 
         returncode = proc.wait()
@@ -959,6 +971,10 @@ def _make_cli_subprocess_call(
         usage.output_tokens = usage_data.get("output_tokens", 0)
         usage.cache_creation_input_tokens = usage_data.get("cache_creation_input_tokens", 0)
         usage.cache_read_input_tokens = usage_data.get("cache_read_input_tokens", 0)
+        # The CLI splits writes by TTL and reports the exact cost of the turn
+        # (every model it ran); calculate_cost() prefers that figure.
+        usage.cache_creation = usage_data.get("cache_creation")
+        usage.cost_usd = cli_cost_usd
 
         return response_text.strip(), usage, session_id
 
@@ -1100,13 +1116,13 @@ def warm_cache(quiet=False):
             messages=[{"role": "user", "content": "ok"}],
             extra_headers=_EXTENDED_CACHE_HEADERS,
         )
-        cost = calculate_cost(response.usage)
-        _accumulate_usage(response.usage)
+        cost = calculate_cost(response.usage, MODEL)
+        _accumulate_usage(response.usage, MODEL)
         with state.lock:
             state.session_cost += cost
 
         if not quiet:
-            print_stats(response.usage, label="Cache warm")
+            print_stats(response.usage, label="Cache warm", model=MODEL)
     except Exception as e:
         print(f"{_T_ERR} Cache warm failed: {e}")
 
@@ -1194,7 +1210,7 @@ def chat(query, auto_apply=False, use_index=True):
     compression_info = None
     if retrieved_ctx and config.LLMLINGUA_ENABLED:
         retrieved_ctx, compression_info = compress_context(retrieved_ctx)
-        _accumulate_compression_stats(compression_info)
+        _accumulate_compression_stats(compression_info, routed_model)
         if compression_info and not compression_info.get("skipped"):
             pct = compression_info["ratio"] * 100
             tag = "cached" if compression_info.get("cached") else f"{compression_info['elapsed_ms']:.0f} ms"
@@ -1263,8 +1279,8 @@ def chat(query, auto_apply=False, use_index=True):
             if edits:
                 lint_errs = apply_edits(edits, check_only=True)
                 if lint_errs:
-                    cost = calculate_cost(usage)
-                    _accumulate_usage(usage)
+                    cost = calculate_cost(usage, routed_model)
+                    _accumulate_usage(usage, routed_model)
                     with state.lock:
                         state.session_cost += cost
 
@@ -1293,8 +1309,8 @@ def chat(query, auto_apply=False, use_index=True):
                 clean_reply = reply
             state.conversation_history.append({"role": "assistant", "content": clean_reply})
 
-            cost = calculate_cost(usage)
-            _accumulate_usage(usage)
+            cost = calculate_cost(usage, routed_model)
+            _accumulate_usage(usage, routed_model)
             with state.lock:
                 state.last_interaction = time.time()
                 state.session_cost += cost
@@ -1320,7 +1336,7 @@ def chat(query, auto_apply=False, use_index=True):
                 if agent_edits:
                     _commit_agent_edits(agent_edits, query, auto_apply=auto_apply)
 
-            print_stats(usage, label=f"Turn {turns}")
+            print_stats(usage, label=f"Turn {turns}", model=routed_model)
             break
 
     except KeyboardInterrupt:
@@ -1343,7 +1359,7 @@ def one_shot(prompt, auto_apply=False):
 
     if retrieved_ctx and config.LLMLINGUA_ENABLED:
         retrieved_ctx, info = compress_context(retrieved_ctx)
-        _accumulate_compression_stats(info)
+        _accumulate_compression_stats(info, routed_model)
 
     from claude_light.indexer import _chunk_label
     import re
@@ -1378,8 +1394,8 @@ def one_shot(prompt, auto_apply=False):
             if edits:
                 lint_errs = apply_edits(edits, check_only=True)
                 if lint_errs:
-                    cost = calculate_cost(usage)
-                    _accumulate_usage(usage)
+                    cost = calculate_cost(usage, routed_model)
+                    _accumulate_usage(usage, routed_model)
                     with state.lock:
                         state.session_cost += cost
 
@@ -1411,11 +1427,11 @@ def one_shot(prompt, auto_apply=False):
                 if agent_edits:
                     _commit_agent_edits(agent_edits, prompt, auto_apply=auto_apply)
 
-            cost = calculate_cost(usage)
-            _accumulate_usage(usage)
+            cost = calculate_cost(usage, routed_model)
+            _accumulate_usage(usage, routed_model)
             with state.lock:
                 state.session_cost += cost
-            print_stats(usage, label="Stats", file=sys.stderr)
+            print_stats(usage, label="Stats", file=sys.stderr, model=routed_model)
             break
 
     except Exception as e:
