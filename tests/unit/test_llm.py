@@ -1046,11 +1046,13 @@ class TestCliProcessIsStopped(unittest.TestCase):
         import time as _time
         from claude_light import llm
 
-        pid_file = _tf.mktemp(suffix=".pid")
-        script = _tf.mktemp(suffix="_agent.py")
+        import shutil as _shutil
+        work = _tf.mkdtemp(prefix="cl_agent_")
+        self.addCleanup(_shutil.rmtree, work, True)
+        pid_file = os.path.join(work, "agent.pid")
+        script = os.path.join(work, "agent.py")
         with open(script, "w") as fh:
             fh.write(self._SCRIPT)
-        self.addCleanup(lambda: [os.path.exists(p) and os.remove(p) for p in (script, pid_file)])
         real_popen = _sp.Popen
 
         def fake_popen(cmd, **kwargs):
