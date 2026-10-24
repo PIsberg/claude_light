@@ -18,7 +18,7 @@ from claude_light.config import (
 from claude_light.ui import (
     _T_ROUTE, _T_SYS, _T_ERR, _T_RAG, _T_CACHE, _T_EDIT,
     _ANSI_GREEN, _ANSI_CYAN, _ANSI_YELLOW, _ANSI_MAGENTA, _ANSI_BOLD, _ANSI_DIM, _ANSI_RESET, _ANSI_RED,
-    _SYM_RESP, _SYM_TOOL, print_stats, _Spinner, calculate_cost, _print_reply, ResponseView, NullView, notify,
+    _SYM_RESP, _SYM_TOOL, print_stats, _Spinner, calculate_cost, _print_reply, ResponseView, NullView, notify, choose,
 )
 import claude_light.state as state
 from claude_light.skeleton import build_skeleton, _refresh_tree_only, _assemble_skeleton, _refresh_single_md
@@ -523,20 +523,21 @@ def _commit_agent_edits(new_files, explanation, auto_apply=False):
         else:
             print(f"  {_T_EDIT}  {f}  {_ANSI_DIM}(deleted by the agent){_ANSI_RESET}")
 
-    if auto_apply:
+    if auto_apply or state.auto_approve_edits:
         commit = True
     elif not sys.stdin.isatty():
         commit = True
     else:
-        print(
-            f"  Commit {_ANSI_BOLD}{len(files)}{_ANSI_RESET} agent-made change(s)? "
-            f"[{_ANSI_GREEN}y{_ANSI_RESET}/{_ANSI_RED}n{_ANSI_RESET}] ",
-            end="", flush=True,
+        n = len(files)
+        choice = choose(
+            f"Commit the agent's change{'s' if n != 1 else ''} to {n} file{'s' if n != 1 else ''}?",
+            [("yes", "Yes"),
+             ("always", "Yes, and don't ask again this session"),
+             ("no", "No, leave them uncommitted")],
         )
-        try:
-            commit = input().strip().lower() in ("y", "yes")
-        except (KeyboardInterrupt, EOFError):
-            commit = False
+        if choice == "always":
+            state.auto_approve_edits = True
+        commit = choice in ("yes", "always")
 
     if not commit:
         print(f"  {_T_EDIT}  Kept in working tree; not committed.\n")

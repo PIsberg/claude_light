@@ -6132,6 +6132,18 @@ class TestStartChatLoop(unittest.TestCase):
             self._run_start_chat(["/compact", "exit"])
         compact.assert_called_once()
 
+    def test_undo_asks_with_the_menu(self):
+        """/undo reverts only when "Yes" is picked; cancel leaves the commit."""
+        import claude_light as cl
+        for picked, reverted in (("yes", True), ("no", False), (None, False)):
+            with patch("claude_light.git_manager.is_git_repo", return_value=True), \
+                 patch("claude_light.git_manager.get_last_commit_message", return_value="Claude: x"), \
+                 patch("claude_light.git_manager.undo_last_commit", return_value=True) as undo, \
+                 patch.object(cl.main, "choose", return_value=picked) as ask:
+                self._run_start_chat(["/undo", "exit"])
+            self.assertIn("Claude: x", ask.call_args.args[0])
+            self.assertEqual(undo.called, reverted, picked)
+
     def test_slash_menu_lists_commands_with_descriptions(self):
         """Typing "/" offers every command with what it does."""
         import claude_light.main as m

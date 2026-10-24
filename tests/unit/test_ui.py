@@ -280,6 +280,60 @@ class TestAccessLabel(unittest.TestCase):
         self.assertEqual(access_label("sk-ant-api03-secret"), "")
 
 
+class TestChoose(unittest.TestCase):
+    """The approval menu is drawn inline under the diff it asks about. The
+    old prompt was a full-screen dialog that covered that diff, or a bare
+    y/n input()."""
+
+    _OPTS = [("yes", "Yes"), ("always", "Yes, and don't ask again"), ("no", "No")]
+
+    def _pick(self, keys):
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        from claude_light.ui import choose
+        with create_pipe_input() as inp, patch("sys.stdout", io.StringIO()):
+            inp.send_text(keys)
+            return choose("Apply 1 change?", self._OPTS, _input=inp, _output=DummyOutput())
+
+    def test_enter_takes_the_default(self):
+        print("\n  ▶ TestChoose.test_enter_takes_the_default")
+        self.assertEqual(self._pick("\r"), "yes")
+
+    def test_arrow_keys_move_the_selection(self):
+        print("\n  ▶ TestChoose.test_arrow_keys_move_the_selection")
+        self.assertEqual(self._pick("\x1b[B\x1b[B\r"), "no")
+        self.assertEqual(self._pick("\x1b[B\x1b[B\x1b[A\r"), "always")
+
+    def test_number_and_letter_pick_at_once(self):
+        print("\n  ▶ TestChoose.test_number_and_letter_pick_at_once")
+        self.assertEqual(self._pick("2"), "always")
+        self.assertEqual(self._pick("n"), "no")
+
+    def test_ctrl_c_cancels(self):
+        print("\n  ▶ TestChoose.test_ctrl_c_cancels")
+        self.assertIsNone(self._pick("\x03"))
+
+    def test_typed_fallback_without_a_terminal(self):
+        print("\n  ▶ TestChoose.test_typed_fallback_without_a_terminal")
+        from claude_light.ui import choose
+        for typed, expected in (("y", "yes"), ("3", "no"), ("always", "always"), ("", None), ("zzz", None)):
+            with patch("builtins.input", return_value=typed), patch("sys.stdout", io.StringIO()):
+                self.assertEqual(choose("Apply?", self._OPTS, _force_plain=True), expected, typed)
+
+    def test_the_choice_stays_on_screen(self):
+        print("\n  ▶ TestChoose.test_the_choice_stays_on_screen")
+        # The menu erases itself; one line records what was picked.
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        from claude_light.ui import choose
+        out = io.StringIO()
+        with create_pipe_input() as inp, patch("sys.stdout", out):
+            inp.send_text("3")
+            choose("Apply 1 change?", self._OPTS, _input=inp, _output=DummyOutput())
+        self.assertIn("Apply 1 change?", out.getvalue())
+        self.assertIn("No", out.getvalue())
+
+
 class TestStartupHeader(unittest.TestCase):
 
     def test_header_names_the_model_access_and_help(self):

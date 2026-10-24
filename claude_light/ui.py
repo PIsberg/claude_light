@@ -469,6 +469,104 @@ class ToolExecutionManager:
         return False  # don't suppress exceptions
 
 
+def choose(question, options, default=0, *, _input=None, _output=None, _force_plain=False):
+    """Ask a question with an inline menu; return the chosen value or None.
+
+    options is a list of (value, label). The menu is drawn under whatever is
+    on screen (the diff being approved stays visible): arrow keys move,
+    Enter picks, a number or an option's first letter picks at once, Esc or
+    Ctrl+C cancels. Afterwards one line records the answer. Without a
+    terminal or prompt_toolkit, the user types a number or a value instead.
+    """
+    if not _force_plain:
+        try:
+            value = _choose_menu(question, options, default, _input, _output)
+        except Exception:  # no console (pytest, a dumb terminal): ask in plain text
+            value = _plain_choice(question, options)
+        else:
+            label = dict(options).get(value, "cancelled")
+            print(f"  {_ANSI_DIM}{question}{_ANSI_RESET} {label}", flush=True)
+        return value
+    return _plain_choice(question, options)
+
+
+def _choose_menu(question, options, default, _input, _output):
+    from prompt_toolkit.application import Application
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.layout import Layout, Window
+    from prompt_toolkit.layout.controls import FormattedTextControl
+    from prompt_toolkit.styles import Style
+
+    selected = [default]
+    kb = KeyBindings()
+
+    @kb.add("up")
+    @kb.add("k")
+    def _up(event):
+        selected[0] = (selected[0] - 1) % len(options)
+
+    @kb.add("down")
+    @kb.add("j")
+    def _down(event):
+        selected[0] = (selected[0] + 1) % len(options)
+
+    @kb.add("enter")
+    def _enter(event):
+        event.app.exit(result=options[selected[0]][0])
+
+    @kb.add("escape", eager=True)
+    @kb.add("c-c")
+    def _cancel(event):
+        event.app.exit(result=None)
+
+    hotkeys = {}
+    for i, (value, _label) in enumerate(options):
+        hotkeys.setdefault(str(i + 1), value)
+        hotkeys.setdefault(value[0].lower(), value)
+    for key, value in hotkeys.items():
+        kb.add(key)(lambda event, v=value: event.app.exit(result=v))
+
+    pointer = "❯" if _UNICODE else ">"
+
+    def _render():
+        lines = [("class:question", f"  {question}\n")]
+        for i, (_value, label) in enumerate(options):
+            mark = pointer if i == selected[0] else " "
+            style = "class:selected" if i == selected[0] else ""
+            lines.append((style, f"  {mark} {i + 1}. {label}\n"))
+        lines.append(("class:hint", "  ↑/↓ then enter, or press a number · esc cancels"
+                      if _UNICODE else "  up/down then enter, or press a number; esc cancels"))
+        return lines
+
+    app = Application(
+        layout=Layout(Window(FormattedTextControl(_render), always_hide_cursor=True)),
+        key_bindings=kb,
+        full_screen=False,
+        erase_when_done=True,
+        style=Style.from_dict({"question": "bold", "selected": "ansicyan bold", "hint": "#888888"}),
+        input=_input,
+        output=_output,
+    )
+    return app.run()
+
+
+def _plain_choice(question, options):
+    numbered = "  ".join(f"{i + 1}. {label}" for i, (_v, label) in enumerate(options))
+    print(f"  {question}  {_ANSI_DIM}{numbered}{_ANSI_RESET}")
+    print("  > ", end="", flush=True)
+    try:
+        answer = input().strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        return None
+    if not answer:
+        return None
+    for i, (value, _label) in enumerate(options):
+        if answer in (str(i + 1), value) or (len(answer) == 1 and value.startswith(answer)) \
+                or (answer in ("y", "yes") and value == "yes"):
+            return value
+    return None
+
+
 NOTICE_SECS = 8
 
 

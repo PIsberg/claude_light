@@ -4,7 +4,8 @@ import difflib
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from claude_light.ui import _T_EDIT, _T_ERR, _ANSI_CYAN, _ANSI_GREEN, _ANSI_RED, _ANSI_BOLD, _ANSI_DIM, _ANSI_RESET, show_diff, ToolExecutionManager
+from claude_light.ui import _T_EDIT, _T_ERR, _ANSI_CYAN, _ANSI_GREEN, _ANSI_RED, _ANSI_BOLD, _ANSI_DIM, _ANSI_RESET, show_diff, ToolExecutionManager, choose
+import claude_light.state as state
 from claude_light.linter import _lint_content
 from claude_light import git_manager
 
@@ -12,31 +13,22 @@ _ANY_BLOCK = re.compile(r"```[a-zA-Z0-9_+-]*(?::([^\n`]+))?[ \t]*\n(.*?)```", re
 
 
 def _prompt_approval(n: int) -> bool:
-    """Keyboard-navigable approval prompt. Falls back to plain input() if
-    prompt_toolkit is unavailable or the dialog is cancelled."""
-    try:
-        from prompt_toolkit.shortcuts import radiolist_dialog
-        from prompt_toolkit.styles import Style
-        result = radiolist_dialog(
-            title=f"Apply {n} change{'s' if n != 1 else ''}?",
-            text="Use arrow keys to select, Enter to confirm.",
-            values=[("y", "Approve — apply the changes"), ("n", "Reject — discard")],
-            style=Style.from_dict({"dialog.body": "bg:#1e1e1e #ffffff"}),
-        ).run()
-        return result == "y"
-    except Exception:
-        pass
-    # Plain fallback
-    print(
-        f"  Apply {_ANSI_BOLD}{n}{_ANSI_RESET} change(s)? "
-        f"[{_ANSI_GREEN}y{_ANSI_RESET}/{_ANSI_RED}n{_ANSI_RESET}] ",
-        end="",
-        flush=True,
+    """Ask before applying edits, with the inline menu under the diff.
+
+    "Don't ask again" holds for the rest of the session, for these edits and
+    for commits of the CLI agent's own edits (state.auto_approve_edits).
+    """
+    if state.auto_approve_edits:
+        return True
+    choice = choose(
+        f"Apply {n} change{'s' if n != 1 else ''}?",
+        [("yes", "Yes"),
+         ("always", "Yes, and don't ask again this session"),
+         ("no", "No, discard")],
     )
-    try:
-        return input().strip().lower() in ("y", "yes")
-    except (KeyboardInterrupt, EOFError):
-        return False
+    if choice == "always":
+        state.auto_approve_edits = True
+    return choice in ("yes", "always")
 _SR_PATTERN = re.compile(
     r"^<<<<<<< SEARCH\n(.*?)=======\n(.*?)>>>>>>> REPLACE\n?$",
     re.DOTALL,
@@ -259,9 +251,7 @@ def apply_edits(edits, check_only=False, explanation="", auto_apply=False):
     print()
 
     for r in applicable:
-        path = r["path"]
-        print(f"  {_ANSI_DIM}── {path}{_ANSI_RESET}")
-        show_diff(path, r["_new"], old_content=r["_old"])
+        show_diff(r["path"], r["_new"], old_content=r["_old"])  # the panel is titled with the path
 
     if auto_apply:
         auto = True

@@ -207,7 +207,7 @@ Run the script from the root of your project — it will immediately build the s
 ### 1. Interactive Loop (Default)
 `python3 claude_light.py`
 
-The prompt appears in about half a second: the index builds in the background, and the toolbar under the prompt says `indexing…` until it is ready, then shows the session's tokens, cache hit rate and cost. Replies stream in as rendered markdown (tables, lists, syntax-highlighted code), with a spinner and elapsed time while Claude thinks or runs a tool, and one line per file it reads, searches or edits. Edits are shown as diffs before they are committed.
+The prompt appears in about half a second: the index builds in the background, and the toolbar under the prompt says `indexing…` until it is ready, then shows the session's tokens, cache hit rate and cost. Replies stream in as rendered markdown (tables, lists, syntax-highlighted code), with a spinner and elapsed time while Claude thinks or runs a tool, and one line per file it reads, searches or edits. Edits are shown as diffs, with a menu underneath to approve them (arrow keys and Enter, or press `1`/`2`/`3`; Esc says no). "Yes, and don't ask again" approves the rest of the session's edits and agent commits; `-y` does the same from the start.
 
 | Command / key | What it does |
 |---|---|

@@ -23,7 +23,7 @@ import claude_light.state as state
 from claude_light.config import MODEL, CACHE_DIR, HEARTBEAT_SECS, CACHE_TTL_SECS, AUTH_MODE, ECONOMY_MODE, API_KEY_SOURCE
 from claude_light.ui import (
     _ANSI_BOLD, _ANSI_RESET, _ANSI_CYAN, _ANSI_DIM, _ANSI_GREEN, _ANSI_RED, _T_SYS, _T_ERR,
-    _UNICODE, access_label, current_notice, print_session_summary, print_session_footer, print_startup_header,
+    _UNICODE, access_label, choose, current_notice, print_session_summary, print_session_footer, print_startup_header,
     ToolExecutionManager,
 )
 from claude_light.llm import full_refresh, chat, one_shot, warm_cache, compact_history, ClaudeNotLoggedIn
@@ -314,13 +314,8 @@ def start_chat(auto_apply=False):
                     continue
                 
                 msg_preview = last_commit.strip().split('\n')[0][:60]
-                print(f"  {_T_SYS}  Last commit: {_ANSI_DIM}{msg_preview}{_ANSI_RESET}")
-                print(f"  Undo? [{_ANSI_GREEN}y{_ANSI_RESET}/{_ANSI_RED}n{_ANSI_RESET}] ", end="", flush=True)
-                try:
-                    confirm = input().strip().lower() in ("y", "yes")
-                except (KeyboardInterrupt, EOFError):
-                    confirm = False
-                
+                confirm = choose(f"Undo \"{msg_preview}\"?",
+                                 [("yes", "Yes, revert it"), ("no", "No")]) == "yes"
                 if confirm:
                     if git_manager.undo_last_commit():
                         print(f"  {_T_SYS}  Reverted.\n")
@@ -341,13 +336,9 @@ def start_chat(auto_apply=False):
                 chat(query, auto_apply=auto_apply, use_index=use_index)
             except ClaudeNotLoggedIn:
                 print(f"\n  {_T_ERR}  Claude CLI is not logged in.")
-                print(f"  {_T_SYS}  Set up a long-lived Automation Token? [{_ANSI_GREEN}y{_ANSI_RESET}/{_ANSI_RED}n{_ANSI_RESET}] ", end="", flush=True)
-                try:
-                    choice = input().strip().lower()
-                except (KeyboardInterrupt, EOFError):
-                    choice = "n"
-                
-                if choice in ("y", "yes"):
+                choice = choose("Set up a long-lived automation token?",
+                                [("yes", "Yes, run claude setup-token"), ("no", "No")])
+                if choice == "yes":
                     import subprocess
                     import shutil
                     from pathlib import Path

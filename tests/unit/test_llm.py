@@ -1624,6 +1624,25 @@ class TestAgentEditDetection(unittest.TestCase):
         mock_commit.assert_not_called()
         self.assertIn("not committed", captured.getvalue().lower())
 
+    def test_agent_commit_dont_ask_again_is_remembered(self):
+        print("\n  ▶ TestAgentEditDetection.test_agent_commit_dont_ask_again_is_remembered")
+        from claude_light import llm
+        import claude_light.state as st
+        st.auto_approve_edits = False
+        try:
+            with patch("sys.stdout", io.StringIO()), \
+                 patch("claude_light.llm.subprocess.run", return_value=MagicMock(stdout="")), \
+                 patch("claude_light.git_manager.auto_commit") as commit, \
+                 patch("sys.stdin") as stdin, \
+                 patch("claude_light.llm.choose", return_value="always") as ask:
+                stdin.isatty.return_value = True
+                llm._commit_agent_edits({"a.py"}, "x")
+                llm._commit_agent_edits({"b.py"}, "y")
+            self.assertEqual(ask.call_count, 1)
+            self.assertEqual(commit.call_count, 2)
+        finally:
+            st.auto_approve_edits = False
+
     def test_agent_diff_is_shown_without_git_headers(self):
         print("\n  ▶ TestAgentEditDetection.test_agent_diff_is_shown_without_git_headers")
         # Live, the raw `git diff` output ("diff --git", "index c064e26..")
