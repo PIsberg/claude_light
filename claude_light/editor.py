@@ -15,8 +15,8 @@ _ANY_BLOCK = re.compile(r"```[a-zA-Z0-9_+-]*(?::([^\n`]+))?[ \t]*\n(.*?)```", re
 def _prompt_approval(n: int) -> bool:
     """Ask before applying edits, with the inline menu under the diff.
 
-    "Don't ask again" holds for the rest of the session, for these edits and
-    for commits of the CLI agent's own edits (state.auto_approve_edits).
+    "Don't ask again" holds for these edits for the rest of the session
+    (state.auto_approve_edits); it does not cover agent commits.
     """
     if state.auto_approve_edits:
         return True

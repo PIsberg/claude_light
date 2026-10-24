@@ -252,6 +252,17 @@ class TestDiffDisplay(unittest.TestCase):
             i = next(i for i, l in enumerate(lines) if l.strip() == "-b")
             self.assertEqual(lines[i + 1].strip(), "+B", (rich_available, lines))
 
+    def test_path_markup_is_shown_literally(self):
+        print("\n  ▶ TestDiffDisplay.test_path_markup_is_shown_literally")
+        # The path comes from the model's edit block; rich markup in it
+        # could restyle or disguise the title of the diff being approved.
+        evil = "x[/cyan][green]safe.py"
+        with patch("claude_light.ui._RICH_AVAILABLE", True):
+            text = "\n".join(self._lines(lambda ui: ui.show_unified_diff(evil, "@@ -1 +1 @@\n-a\n+b")))
+            new = "\n".join(self._lines(lambda ui: ui.show_diff(evil, "b\n", old_content="")))
+        self.assertIn("[/cyan][green]", text)
+        self.assertIn("[/cyan][green]", new)
+
     def test_long_diff_is_capped_with_a_count(self):
         print("\n  ▶ TestDiffDisplay.test_long_diff_is_capped_with_a_count")
         diff = "@@ -1,200 +1,200 @@\n" + "\n".join(f"+line{i}" for i in range(200))
@@ -304,10 +315,27 @@ class TestChoose(unittest.TestCase):
         self.assertEqual(self._pick("\x1b[B\x1b[B\r"), "no")
         self.assertEqual(self._pick("\x1b[B\x1b[B\x1b[A\r"), "always")
 
-    def test_number_and_letter_pick_at_once(self):
-        print("\n  ▶ TestChoose.test_number_and_letter_pick_at_once")
+    def test_a_number_picks_at_once_but_a_letter_does_not(self):
+        print("\n  ▶ TestChoose.test_a_number_picks_at_once_but_a_letter_does_not")
         self.assertEqual(self._pick("2"), "always")
-        self.assertEqual(self._pick("n"), "no")
+        # Single letters are what a user types into the next prompt while a
+        # turn runs; "a" must not grant "don't ask again".
+        self.assertEqual(self._pick("a\x1b[B\x1b[B\r"), "no")
+
+    def test_keys_typed_before_the_menu_are_discarded(self):
+        print("\n  ▶ TestChoose.test_keys_typed_before_the_menu_are_discarded")
+        from claude_light import ui
+        order = []
+        with patch.object(ui, "_discard_typeahead", side_effect=lambda: order.append("flush")), \
+             patch.object(ui, "_choose_menu", side_effect=lambda *a: order.append("menu") or "no"), \
+             patch("sys.stdout", io.StringIO()):
+            ui.choose("Apply?", self._OPTS)
+        self.assertEqual(order, ["flush", "menu"])
+
+    def test_discard_typeahead_never_raises(self):
+        print("\n  ▶ TestChoose.test_discard_typeahead_never_raises")
+        from claude_light import ui
+        ui._discard_typeahead()  # stdin is not a console under pytest
 
     def test_ctrl_c_cancels(self):
         print("\n  ▶ TestChoose.test_ctrl_c_cancels")

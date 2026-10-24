@@ -1,3 +1,4 @@
+import os
 import sys
 import time
 import threading
@@ -15,6 +16,7 @@ try:
     from rich.status import Status as _RichStatus
     from rich.syntax import Syntax as _RichSyntax
     from rich.panel import Panel as _RichPanel
+    from rich.markup import escape as _escape_markup
     _RICH_AVAILABLE = True
 except ImportError:
     _RICH_AVAILABLE = False
@@ -379,7 +381,7 @@ def show_diff(path, new_content, old_content=None):
                 _RichPanel(
                     _RichSyntax(preview, Path(path).suffix.lstrip(".") or "text",
                                 theme="monokai", line_numbers=True),
-                    title=f"[green][NEW FILE][/green]  {path}",
+                    title=f"[green][NEW FILE][/green]  {_escape_markup(str(path))}",
                     border_style="dim green",
                 )
             )
@@ -421,7 +423,7 @@ def show_unified_diff(path, diff_text, max_lines=80):
         _con.print(
             _RichPanel(
                 _RichSyntax("\n".join(lines), "diff", theme="monokai", line_numbers=False),
-                title=f"[cyan]{path}[/cyan]",
+                title=f"[cyan]{_escape_markup(str(path))}[/cyan]",
                 title_align="left",
                 subtitle=f"[dim]{more}[/dim]" if more else None,
                 border_style="dim blue",
@@ -478,6 +480,8 @@ def choose(question, options, default=0, *, _input=None, _output=None, _force_pl
     Ctrl+C cancels. Afterwards one line records the answer. Without a
     terminal or prompt_toolkit, the user types a number or a value instead.
     """
+    if _input is None:
+        _discard_typeahead()
     if not _force_plain:
         try:
             value = _choose_menu(question, options, default, _input, _output)
@@ -519,12 +523,10 @@ def _choose_menu(question, options, default, _input, _output):
     def _cancel(event):
         event.app.exit(result=None)
 
-    hotkeys = {}
-    for i, (value, _label) in enumerate(options):
-        hotkeys.setdefault(str(i + 1), value)
-        hotkeys.setdefault(value[0].lower(), value)
-    for key, value in hotkeys.items():
-        kb.add(key)(lambda event, v=value: event.app.exit(result=v))
+    # Numbers pick at once; letters do nothing, since they are what a user
+    # types into the next prompt while a turn is still running.
+    for i, (value, _label) in enumerate(options[:9]):
+        kb.add(str(i + 1))(lambda event, v=value: event.app.exit(result=v))
 
     pointer = "❯" if _UNICODE else ">"
 
@@ -548,6 +550,31 @@ def _choose_menu(question, options, default, _input, _output):
         output=_output,
     )
     return app.run()
+
+
+def _discard_typeahead():
+    """Drop keys typed before the menu appeared.
+
+    Keystrokes typed while a turn runs wait in the terminal's input buffer;
+    without this, an Enter meant for the next prompt answered the approval
+    the moment it was drawn.
+    """
+    try:
+        # The real descriptor, not sys.stdin.isatty(): only a console has a
+        # buffer to drain, and msvcrt reads the console whatever sys.stdin is.
+        if not os.isatty(sys.stdin.fileno()):
+            return
+        if os.name == "nt":
+            import msvcrt
+            for _ in range(4096):  # bounded: never spin on a stuck console
+                if not msvcrt.kbhit():
+                    break
+                msvcrt.getwch()
+        else:
+            import termios
+            termios.tcflush(sys.stdin, termios.TCIFLUSH)
+    except Exception:
+        pass
 
 
 def _plain_choice(question, options):

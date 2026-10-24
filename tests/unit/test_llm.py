@@ -1628,7 +1628,7 @@ class TestAgentEditDetection(unittest.TestCase):
         print("\n  ▶ TestAgentEditDetection.test_agent_commit_dont_ask_again_is_remembered")
         from claude_light import llm
         import claude_light.state as st
-        st.auto_approve_edits = False
+        st.auto_approve_edits = st.auto_commit_agent_edits = False
         try:
             with patch("sys.stdout", io.StringIO()), \
                  patch("claude_light.llm.subprocess.run", return_value=MagicMock(stdout="")), \
@@ -1640,8 +1640,11 @@ class TestAgentEditDetection(unittest.TestCase):
                 llm._commit_agent_edits({"b.py"}, "y")
             self.assertEqual(ask.call_count, 1)
             self.assertEqual(commit.call_count, 2)
+            # Committing the agent's edits is a different act from writing
+            # files: "always" here must not pre-approve SEARCH/REPLACE edits.
+            self.assertFalse(st.auto_approve_edits)
         finally:
-            st.auto_approve_edits = False
+            st.auto_approve_edits = st.auto_commit_agent_edits = False
 
     def test_agent_diff_is_shown_without_git_headers(self):
         print("\n  ▶ TestAgentEditDetection.test_agent_diff_is_shown_without_git_headers")

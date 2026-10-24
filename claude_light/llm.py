@@ -523,7 +523,7 @@ def _commit_agent_edits(new_files, explanation, auto_apply=False):
         else:
             print(f"  {_T_EDIT}  {f}  {_ANSI_DIM}(deleted by the agent){_ANSI_RESET}")
 
-    if auto_apply or state.auto_approve_edits:
+    if auto_apply or state.auto_commit_agent_edits:
         commit = True
     elif not sys.stdin.isatty():
         commit = True
@@ -536,7 +536,7 @@ def _commit_agent_edits(new_files, explanation, auto_apply=False):
              ("no", "No, leave them uncommitted")],
         )
         if choice == "always":
-            state.auto_approve_edits = True
+            state.auto_commit_agent_edits = True
         commit = choice in ("yes", "always")
 
     if not commit:
