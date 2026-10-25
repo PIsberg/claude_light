@@ -25,7 +25,7 @@ This sequence diagram illustrates the complete flow from user query to response,
 
 | Command | Description |
 |---------|-------------|
-| `/clear` | Reset conversation history |
+| `/clear` | Reset conversation history, and the session model under `CLAUDE_LIGHT_ROUTE_ONCE=1` |
 | `/compact` | Replace the conversation with a summary of it (`llm.compact_history()`; Haiku, through the CLI in OAuth mode) |
 | `/cost` | Show session spend and global lifetime savings |
 | `/why` | Explain the last query's routing and retrieval |

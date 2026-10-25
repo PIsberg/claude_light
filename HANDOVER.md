@@ -21,7 +21,7 @@ History: the first sessions had no shell tool, and claude_light auto-committed t
 | 1 | `fetch_chunk(id)` tool: up to 5 method bodies by `path::symbol` or bare name, with callers and callees | Shipped | `claude_light/tools.py` |
 | 2 | Call-graph retrieval expansion | Built, **off by default**: no recall gain, 20-28% more tokens. `CLAUDE_LIGHT_CALLGRAPH=1` turns it on | `claude_light/callgraph.py`, `retrieval.py::_related_pairs` |
 | 3 | Working-tree boost for modified, staged or untracked files. Hybrid path only | Shipped, tuned to 1.0 | `retrieval.py` (`_modified_paths`, `_boost_modified_chunks`) |
-| 4 | Cache-aware routing | Effort: fixed top-level effort plus an effort message per turn. Model: still per turn; pinning cost 48-67% more (`benchmark_session_cache.py`) | `llm.py::_apply_effort`, `warm_cache` |
+| 4 | Cache-aware routing | Effort: fixed top-level effort plus an effort message per turn. Model: per turn by default; pinning to the strongest model cost 48-67% more. Keeping the first question's model is opt-in, `CLAUDE_LIGHT_ROUTE_ONCE=1` (+71% opening on Sonnet, -91% opening on Haiku) | `llm.py::_apply_effort`, `_route_result`, `warm_cache` |
 | 5 | Run only the affected tests after an edit | Shipped | `claude_light/affected_tests.py`, hook in `editor.apply_edits` |
 | 6 | `/budget` command and per-turn cost estimate | Shipped | `state.py`, `llm.py::_route_result`, `main.py` |
 | extra | `shell` tool (allowlisted commands only) | Shipped | `claude_light/tools.py` |
@@ -46,7 +46,7 @@ All offline, with `tests/benchmarks/benchmark_models.py` on this repo's 43 quest
 
 ## Open work
 
-- The `feature/cache-stable-routing` PR: CI, then the merge (the developer's call).
+- PR #89 (`feature/cache-stable-routing`) and the route-once PR stacked on it (`feature/session-model-pin`): the merges are the developer's call, #89 first, with merge commits.
 - Effort messages are verified offline only (mocks and the SDK stub server). A live run must confirm the API accepts them on Haiku, Sonnet and Opus 5.5 and that `cache_read_input_tokens` holds across an effort change; see the issue linked from that PR.
 - #85: measure `fetch_chunk` per-turn tokens with live API runs.
 - #86: decide whether call-graph expansion helps answer quality, which the offline benchmark cannot see. Delete the expansion path if it does not.

@@ -316,6 +316,7 @@ def start_chat(auto_apply=False):
             if query == "/clear":
                 state.conversation_history.clear()
                 state.cli_session_id = None
+                state.session_model = None
                 print(f"  {_T_SYS}  Conversation cleared.")
                 continue
             if query == "/compact":

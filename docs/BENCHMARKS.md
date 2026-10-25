@@ -35,7 +35,7 @@ comparison, and this document now reflects that.
 | `benchmark_retrieval.py` | RAG retrieval quality (Hit@K, MRR) | No | Free* |
 | `benchmark_models.py` | Embedding models, hybrid fusion, and per-effort budgets on this repo | No | Free (models download on first run) |
 | `benchmark_router.py` | Effort tier and model the router picks for each question | No | Free (static model download on first run) |
-| `benchmark_session_cache.py` | Session cost of three routing policies under a prompt-cache model | No | Free (static model download on first run) |
+| `benchmark_session_cache.py` | Session cost of four routing policies under a prompt-cache model | No | Free (static model download on first run) |
 | `benchmark_cost.py` | Real-world cost savings vs naive baseline | Yes | ~$0.05–$0.50 |
 | `benchmark_claude_code.py` | Claude Code vs `claude_light` vs naive baseline | Yes | Varies with live API/tool runs |
 
@@ -464,7 +464,7 @@ mechanism is described here so the next attempt starts from the cause.
 
 ### Purpose
 
-Prices one session of the repo questions under three routing policies, to decide how effort and model changes should reach the API without throwing away the prompt cache (lever 1 in `TOKEN-SAVINGS.md`).
+Prices one session of the repo questions under four routing policies, to decide how effort and model changes should reach the API without throwing away the prompt cache (lever 1 in `TOKEN-SAVINGS.md`).
 
 ### Methodology
 
@@ -475,6 +475,7 @@ The questions in `tests/fixtures/repo_questions.json` are routed with the real `
 | `old` | Per-turn model and top-level effort; an effort change on the same model invalidates the history cache |
 | `effort` | Per-turn model, top-level effort fixed, routed effort in an effort message (`llm._apply_effort`) |
 | `pinned` | `effort`, plus the session's model only moves up a tier |
+| `first` | `effort`, plus the first question's model for the whole session (`CLAUDE_LIGHT_ROUTE_ONCE=1`). Its cost depends on the opening question, so each of the 43 questions opens one session and the result is split by the opener's model |
 
 Whether an effort change also invalidates the cached skeleton is model-specific and not documented per model; `--effort-in-prefix` models that case.
 
@@ -499,6 +500,16 @@ python tests/benchmarks/benchmark_session_cache.py --gap 3 --output-scale 0.3 --
 | 3 min | x1.0 | yes | -8.9% | +49.0% |
 
 The fixed top-level effort is never more expensive, and saves most when an effort change would also have invalidated the skeleton. Pinning the model loses in every case: Haiku-routed questions run on Sonnet at 20 times the output price, to save cache writes that cost Haiku almost nothing. Limits: this is a cost model, not a live run, and it does not score answers; pinning would raise answer quality on the questions it moves to Sonnet.
+
+`first` against `effort` with the same opener (prefix 11,786 tokens, measured after the docs above grew):
+
+| Gap between turns | Output | Effort in prefix | Opens on Sonnet (10 sessions) | Opens on Haiku (33 sessions) |
+|---|---|---|---|---|
+| 2 min | x1.0 | no | +71.1% | -91.0% |
+| 2 min | x1.0 | yes | +71.1% | -91.0% |
+| 3 min | x0.3 | no | +75.0% | -90.9% |
+
+Averaged over openers in the repo mix, `first` costs about 54% less than `effort`, but all of that comes from sessions that open on Haiku and then answer the 10 Sonnet-routed questions on Haiku as well. Whichever question happens to come first decides the session's model, so it ships off by default, as an opt-in for users who want one predictable model and accept that trade.
 
 ---
 

@@ -54,6 +54,27 @@ def _history_part(messages):
     return messages[:last_user]
 
 
+def _run_turns(routes):
+    """Run one chat() turn per (effort, model, max_tokens); return each request's kwargs."""
+    sent = []
+
+    def fake_call(**kwargs):
+        sent.append(json.loads(json.dumps(kwargs, default=str)))
+        return f"answer {len(sent)}", _usage(), False
+
+    queue = list(routes)
+    with patch("claude_light.llm.route_query",
+               side_effect=lambda q: llm._route_result(*queue.pop(0))), \
+         patch("claude_light.llm._make_streaming_api_call", side_effect=fake_call), \
+         patch("claude_light.llm.retrieve", return_value=("", [])), \
+         patch("claude_light.llm._maybe_compress_history"), \
+         patch("claude_light.llm._print_reply"), \
+         patch("claude_light.llm.print_stats"):
+        for i in range(len(routes)):
+            llm.chat(f"question {i + 1}")
+    return sent
+
+
 class TestPerMessageEffort(unittest.TestCase):
 
     def setUp(self):
@@ -65,32 +86,14 @@ class TestPerMessageEffort(unittest.TestCase):
         state.conversation_history[:] = hist
 
     def _run_turns(self, routes):
-        """Run one chat() turn per (effort, model, max_tokens); return each request's kwargs."""
-        sent = []
-
-        def fake_call(**kwargs):
-            sent.append(json.loads(json.dumps(kwargs, default=str)))
-            return f"answer {len(sent)}", _usage(), False
-
-        queue = list(routes)
-        with patch("claude_light.llm.route_query",
-                   side_effect=lambda q: llm._route_result(*queue.pop(0))), \
-             patch("claude_light.llm._make_streaming_api_call", side_effect=fake_call), \
-             patch("claude_light.llm.retrieve", return_value=("", [])), \
-             patch("claude_light.llm._maybe_compress_history"), \
-             patch("claude_light.llm._print_reply"), \
-             patch("claude_light.llm.print_stats"):
-            for i in range(len(routes)):
-                llm.chat(f"question {i + 1}")
-        return sent
+        return _run_turns(routes)
 
     def test_top_level_effort_is_the_same_on_every_turn(self):
         sent = self._run_turns([SONNET_MEDIUM, SONNET_HIGH, HAIKU_LOW])
         self.assertEqual({r["output_config"]["effort"] for r in sent}, {llm.BASE_EFFORT})
 
     def test_routed_model_still_changes_per_turn(self):
-        # Pinning the session's model was measured and rejected: most
-        # questions route to Haiku, whose output is 20x cheaper than Sonnet's.
+        # Default. Keeping the first turn's model is opt-in, see TestRouteOnce.
         sent = self._run_turns([SONNET_MEDIUM, HAIKU_LOW])
         self.assertEqual([r["model"] for r in sent], [llm.MODEL_SONNET, llm.MODEL_HAIKU])
 
@@ -163,6 +166,57 @@ class TestWarmCacheMatchesTurns(unittest.TestCase):
         kwargs = create.call_args.kwargs
         self.assertEqual(kwargs["output_config"], {"effort": llm.BASE_EFFORT})
         self.assertIn(llm.EFFORT_BETA, kwargs["extra_headers"]["anthropic-beta"])
+
+
+class TestRouteOnce(unittest.TestCase):
+    """CLAUDE_LIGHT_ROUTE_ONCE=1: the first turn's model runs the whole session."""
+
+    def setUp(self):
+        self._saved = (list(state.conversation_history), state.turn_count,
+                       state.session_model, state.session_budget, state.session_cost)
+        state.conversation_history[:] = []
+        state.session_model = None
+        state.session_budget = None
+        self._flag = patch("claude_light.config.ROUTE_ONCE", True)
+        self._flag.start()
+
+    def tearDown(self):
+        self._flag.stop()
+        (hist, state.turn_count, state.session_model,
+         state.session_budget, state.session_cost) = self._saved
+        state.conversation_history[:] = hist
+
+    def test_first_turn_on_haiku_keeps_haiku(self):
+        sent = _run_turns([HAIKU_LOW, SONNET_MEDIUM, SONNET_HIGH])
+        self.assertEqual([r["model"] for r in sent], [llm.MODEL_HAIKU] * 3)
+
+    def test_first_turn_on_sonnet_keeps_sonnet(self):
+        sent = _run_turns([SONNET_MEDIUM, HAIKU_LOW])
+        self.assertEqual([r["model"] for r in sent], [llm.MODEL_SONNET] * 2)
+
+    def test_effort_is_still_routed_per_turn(self):
+        sent = _run_turns([HAIKU_LOW, SONNET_MEDIUM])
+        self.assertEqual(sent[1]["messages"][-2],
+                         {"role": "system", "content": [], "output_config": {"effort": "medium"}})
+
+    def test_budget_cap_still_drops_to_haiku(self):
+        state.session_budget = 1.0
+        sent = _run_turns([SONNET_MEDIUM])
+        state.session_cost = 2.0
+        sent += _run_turns([SONNET_MEDIUM])
+        self.assertEqual([r["model"] for r in sent], [llm.MODEL_SONNET, llm.MODEL_HAIKU])
+
+    def test_warm_cache_warms_the_session_model_once_set(self):
+        # Before the first turn the model is unknown, so MODEL is warmed; after
+        # it, re-warms and the heartbeat must keep the model the turns read.
+        resp = MagicMock()
+        resp.usage = _usage()
+        with patch("claude_light.llm.client.messages.create", return_value=resp) as create:
+            llm.warm_cache(quiet=True)
+            state.session_model = llm.MODEL_HAIKU
+            llm.warm_cache(quiet=True)
+        self.assertEqual([c.kwargs["model"] for c in create.call_args_list],
+                         [llm.MODEL, llm.MODEL_HAIKU])
 
 
 if __name__ == "__main__":

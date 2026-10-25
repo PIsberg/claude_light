@@ -298,6 +298,11 @@ def _route_result(effort, model, max_tokens) -> tuple[str, str, int]:
         "high":   _ANSI_YELLOW,
         "max":    _ANSI_MAGENTA,
     }
+    if config.ROUTE_ONCE:
+        with state.lock:
+            if state.session_model is None:
+                state.session_model = model
+            model = state.session_model
     budget = state.session_budget
     over_budget = budget is not None and state.session_cost >= budget
     if over_budget and (model != MODEL_HAIKU or effort != "low"):
@@ -1268,9 +1273,11 @@ def warm_cache(quiet=False):
     from claude_light import tools as _tools
     with state.lock:
         skeleton = state.skeleton_context
+        # Set only under ROUTE_ONCE, after the first turn: warm what turns read.
+        model = state.session_model or MODEL
     try:
         response = client.messages.create(
-            model=MODEL,
+            model=model,
             # 0 = prefill only: writes the cache, bills no output tokens.
             max_tokens=0,
             # Tools render before the system prompt in the cache prefix; warm
@@ -1282,13 +1289,13 @@ def warm_cache(quiet=False):
             output_config={"effort": BASE_EFFORT},
             extra_headers=_EXTENDED_CACHE_HEADERS,
         )
-        cost = calculate_cost(response.usage, MODEL)
-        _accumulate_usage(response.usage, MODEL)
+        cost = calculate_cost(response.usage, model)
+        _accumulate_usage(response.usage, model)
         with state.lock:
             state.session_cost += cost
 
         if not quiet:
-            print_stats(response.usage, label="Cache warm", model=MODEL)
+            print_stats(response.usage, label="Cache warm", model=model)
     except Exception as e:
         if quiet:
             notify(f"cache warm failed: {e}", error=True)
