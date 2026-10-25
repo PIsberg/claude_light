@@ -24,6 +24,12 @@ SONNET_MEDIUM = ("medium", llm.MODEL_SONNET, 4_096)
 SONNET_HIGH = ("high", llm.MODEL_SONNET, 8_192)
 
 
+def _raw(route):
+    """route_query()'s return order for an (effort, model, max_tokens) route."""
+    effort, model, max_tokens = route
+    return model, effort, max_tokens
+
+
 def _usage():
     usage = MagicMock()
     usage.input_tokens = 100
@@ -64,7 +70,7 @@ def _run_turns(routes):
 
     queue = list(routes)
     with patch("claude_light.llm.route_query",
-               side_effect=lambda q: llm._route_result(*queue.pop(0))), \
+               side_effect=lambda q: _raw(queue.pop(0))), \
          patch("claude_light.llm._make_streaming_api_call", side_effect=fake_call), \
          patch("claude_light.llm.retrieve", return_value=("", [])), \
          patch("claude_light.llm._maybe_compress_history"), \
@@ -147,7 +153,7 @@ class TestPerMessageEffort(unittest.TestCase):
             return "answer", _usage(), False
 
         with patch("claude_light.llm.route_query",
-                   side_effect=lambda q: llm._route_result(*HAIKU_LOW)), \
+                   return_value=_raw(HAIKU_LOW)), \
              patch("claude_light.llm._make_streaming_api_call", side_effect=fake_call), \
              patch("claude_light.llm.retrieve", return_value=("", [])), \
              patch("claude_light.llm._print_reply"), \

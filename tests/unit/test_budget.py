@@ -45,18 +45,19 @@ class TestBudget(unittest.TestCase):
     def test_under_budget_keeps_route(self):
         state.session_budget = 5.0
         state.session_cost = 1.0
-        model, effort, _ = llm._route_result("max", llm.MODEL_OPUS, 16_000)
-        self.assertEqual((model, effort), (llm.MODEL_OPUS, "max"))
+        # A Sonnet route: an Opus route goes through the top-tier prompt (test_top_tier.py).
+        model, effort, _ = llm._finalize_route(llm.MODEL_SONNET, "high", 8_192)
+        self.assertEqual((model, effort), (llm.MODEL_SONNET, "high"))
 
     def test_over_budget_drops_to_cheapest(self):
         state.session_budget = 1.0
         state.session_cost = 1.0
-        model, effort, max_tokens = llm._route_result("max", llm.MODEL_OPUS, 16_000)
+        model, effort, max_tokens = llm._finalize_route(llm.MODEL_OPUS, "max", 16_000)
         self.assertEqual((model, effort, max_tokens), (llm.MODEL_HAIKU, "low", 2_048))
 
     def test_no_budget_never_downgrades(self):
         state.session_cost = 1000.0
-        model, _, _ = llm._route_result("high", llm.MODEL_SONNET, 8_192)
+        model, _, _ = llm._finalize_route(llm.MODEL_SONNET, "high", 8_192)
         self.assertEqual(model, llm.MODEL_SONNET)
 
 

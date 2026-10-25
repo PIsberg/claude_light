@@ -10,7 +10,7 @@ from pathlib import Path
 
 import claude_light.config as config
 from claude_light.config import (
-    API_KEY, AUTH_MODE, API_KEY_SOURCE, ECONOMY_MODE, MODEL, MODEL_HAIKU, MODEL_SONNET, MODEL_OPUS, SUMMARY_MODEL,
+    API_KEY, AUTH_MODE, API_KEY_SOURCE, ECONOMY_MODE, MODEL, MODEL_HAIKU, MODEL_SONNET, MODEL_OPUS, MODEL_FABLE, SUMMARY_MODEL,
     MAX_HISTORY_TURNS, SUMMARIZE_BATCH, _RETRIEVAL_BUDGET, SYSTEM_PROMPT,
     ENABLE_STREAMING,
     ROUTER_SEMANTIC_WEIGHT, ROUTER_SEMANTIC_FLOOR, ROUTER_COST_CEILING,
@@ -209,7 +209,7 @@ def route_query(query: str) -> tuple[str, str, int]:
 
     # 1. Meta quick-route — short greetings/commands → Haiku immediately
     if word_count < 5 and any(s in q for s in _META_SIGNALS):
-        return _route_result("low", MODEL_HAIKU, 2_048)
+        return MODEL_HAIKU, "low", 2_048
 
     # 2. Fused intent scores (keyword + semantic, additive)
     lex = _lexical_dimension_scores(q)
@@ -260,7 +260,7 @@ def route_query(query: str) -> tuple[str, str, int]:
             semantic_used=sem_used,
             est_cost=_estimate_query_cost(max_tokens, _RETRIEVAL_BUDGET[effort], model),
         )
-        return _route_result(effort, model, max_tokens)
+        return model, effort, max_tokens
 
     # Explicit downgrade: lookup-dominant queries (no real arch/logic intent)
     # should never be promoted by verbosity or file-path bonuses.
@@ -291,22 +291,64 @@ def route_query(query: str) -> tuple[str, str, int]:
 
     return _record_and_return(effort, model, max_tokens)
 
-def _route_result(effort, model, max_tokens) -> tuple[str, str, int]:
+_TOP_TIER_MODELS = (MODEL_OPUS, MODEL_FABLE)
+
+
+def _top_tier_model(effort, max_tokens) -> str:
+    """The model a question routed to Opus runs on: asked, or Sonnet 5.5."""
+    with state.lock:
+        current = state.session_model if config.ROUTE_ONCE else None
+        declined = state.top_tier_declined
+    if current in _TOP_TIER_MODELS:
+        return current
+    if declined:
+        return MODEL_SONNET
+    if not sys.stdin.isatty():
+        print(f"  {_ANSI_DIM}◆  top tier needs a terminal to confirm: using sonnet-5-5{_ANSI_RESET}",
+              file=sys.stderr)
+        return MODEL_SONNET
+
+    def label(name, model):
+        est = _estimate_query_cost(max_tokens, _RETRIEVAL_BUDGET[effort], model)
+        return f"{name}  ~${est:.2f}"
+
+    choice = choose("This question routed to the top tier. Run it on", [
+        ("opus", label("Opus 5.5", MODEL_OPUS)),
+        ("fable", label("Fable 5.1", MODEL_FABLE)),
+        ("sonnet", label("Sonnet 5.5", MODEL_SONNET)),
+        ("never", "Sonnet 5.5, and don't ask again this session"),
+    ])
+    if choice == "never":
+        with state.lock:
+            state.top_tier_declined = True
+    return {"opus": MODEL_OPUS, "fable": MODEL_FABLE}.get(choice, MODEL_SONNET)
+
+
+def _finalize_route(model, effort, max_tokens) -> tuple[str, str, int]:
+    """Apply the session to route_query()'s pick: budget cap, top-tier
+    confirmation and ROUTE_ONCE. route_query() itself stays a pure router, so
+    benchmarks and /why never pin or prompt."""
     _effort_color = {
         "low":    _ANSI_GREEN,
         "medium": _ANSI_CYAN,
         "high":   _ANSI_YELLOW,
         "max":    _ANSI_MAGENTA,
     }
-    if config.ROUTE_ONCE:
+    budget = state.session_budget
+    over_budget = budget is not None and state.session_cost >= budget
+    if over_budget:
+        effort, model, max_tokens = "low", MODEL_HAIKU, 2_048
+    elif model == MODEL_OPUS:
+        # The only route that may move a ROUTE_ONCE session to another model.
+        model = _top_tier_model(effort, max_tokens)
+        if config.ROUTE_ONCE:
+            with state.lock:
+                state.session_model = model
+    elif config.ROUTE_ONCE:
         with state.lock:
             if state.session_model is None:
                 state.session_model = model
             model = state.session_model
-    budget = state.session_budget
-    over_budget = budget is not None and state.session_cost >= budget
-    if over_budget and (model != MODEL_HAIKU or effort != "low"):
-        effort, model, max_tokens = "low", MODEL_HAIKU, 2_048
     color = _effort_color[effort]
     model_short = model.replace("claude-", "").replace("-20251001", "")
     extra = ""
@@ -1366,7 +1408,7 @@ def _is_followup_clarification(query: str) -> bool:
 
 
 def chat(query, auto_apply=False, use_index=True):
-    routed_model, effort, max_tok = route_query(query)
+    routed_model, effort, max_tok = _finalize_route(*route_query(query))
     token_budget = _RETRIEVAL_BUDGET[effort]
 
     from claude_light.indexer import _chunk_label
@@ -1578,7 +1620,7 @@ def one_shot(prompt, auto_apply=False):
 
 
 def _one_shot_turn(prompt, auto_apply, use_index):
-    routed_model, effort, max_tok = route_query(prompt)
+    routed_model, effort, max_tok = _finalize_route(*route_query(prompt))
     if use_index:
         retrieved_ctx, hits = retrieve(prompt, token_budget=_RETRIEVAL_BUDGET[effort], effort=effort)
     else:

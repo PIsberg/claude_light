@@ -21,9 +21,10 @@ History: the first sessions had no shell tool, and claude_light auto-committed t
 | 1 | `fetch_chunk(id)` tool: up to 5 method bodies by `path::symbol` or bare name, with callers and callees | Shipped | `claude_light/tools.py` |
 | 2 | Call-graph retrieval expansion | Built, **off by default**: no recall gain, 20-28% more tokens. `CLAUDE_LIGHT_CALLGRAPH=1` turns it on | `claude_light/callgraph.py`, `retrieval.py::_related_pairs` |
 | 3 | Working-tree boost for modified, staged or untracked files. Hybrid path only | Shipped, tuned to 1.0 | `retrieval.py` (`_modified_paths`, `_boost_modified_chunks`) |
-| 4 | Cache-aware routing | Effort: fixed top-level effort plus an effort message per turn. Model: the first question's model is kept by default, the developer's choice (`ROUTE_ONCE`; +71% opening on Sonnet, -91% opening on Haiku; `CLAUDE_LIGHT_ROUTE_ONCE=0` routes per turn). Pinning to the strongest model cost 48-67% more and was rejected | `llm.py::_apply_effort`, `_route_result`, `warm_cache` |
+| 4 | Cache-aware routing | Effort: fixed top-level effort plus an effort message per turn. Model: the first question's model is kept by default, the developer's choice (`ROUTE_ONCE`; +71% opening on Sonnet, -91% opening on Haiku; `CLAUDE_LIGHT_ROUTE_ONCE=0` routes per turn). Pinning to the strongest model cost 48-67% more and was rejected | `llm.py::_apply_effort`, `_finalize_route`, `warm_cache` |
 | 5 | Run only the affected tests after an edit | Shipped | `claude_light/affected_tests.py`, hook in `editor.apply_edits` |
-| 6 | `/budget` command and per-turn cost estimate | Shipped | `state.py`, `llm.py::_route_result`, `main.py` |
+| 6 | `/budget` command and per-turn cost estimate | Shipped | `state.py`, `llm.py::_finalize_route`, `main.py` |
+| extra | Top-tier prompt: a question routed to Opus asks Opus 5.5, Fable 5.1 or Sonnet 5.5 (Sonnet without a terminal) | Built, stacked on #91 | `llm.py::_top_tier_model`, `_finalize_route` |
 | extra | `shell` tool (allowlisted commands only) | Shipped | `claude_light/tools.py` |
 
 ## Measurements
