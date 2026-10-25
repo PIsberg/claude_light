@@ -37,6 +37,7 @@ _COMMANDS = [
     ("/compact",    "summarise the conversation so far, to send fewer tokens"),
     ("/cost",       "token usage and cost for this session"),
     ("/run <cmd>",  "run a shell command and ask Claude about its output"),
+    ("/budget <$>", "cap session spend; routing drops to the cheapest model at the cap"),
     ("/undo",       "revert the last commit Claude made"),
     ("/why",        "explain the last query's routing and retrieval"),
     ("exit",        "quit"),
@@ -124,6 +125,27 @@ def _status_text(columns: int | None = None) -> str:
         return f"<{style}>{escape(text)}</{style}>" if style else escape(text)
 
     return " <ansicyan>◆</ansicyan> " + _SEP.join(html(t, s) for t, s in parts)
+
+
+def _budget_command(arg: str) -> str:
+    """Handle `/budget [dollars|off]`; returns the line to show."""
+    if not arg:
+        if state.session_budget is None:
+            return "No budget set. /budget <dollars> sets one."
+        return f"Budget ${state.session_budget:.2f}, spent ${state.session_cost:.2f}."
+    if arg.lower() in ("off", "none", "0"):
+        state.session_budget = None
+        return "Budget removed."
+    try:
+        value = float(arg.lstrip("$"))
+    except ValueError:
+        return "Usage: /budget <dollars> | off"
+    if not value > 0 or value == float("inf"):
+        return "Usage: /budget <dollars> | off"
+    state.session_budget = value
+    state.budget_asked = False
+    return (f"Budget ${value:.2f} (spent ${state.session_cost:.2f}). "
+            "At the cap, questions go to the cheapest model.")
 
 
 def _print_help():
@@ -331,6 +353,9 @@ def start_chat(auto_apply=False):
                 chat(f"I ran the following command and got this output. Please help me understand or fix any issues:\n\n```\n{transcript}\n```",
                      auto_apply=auto_apply, use_index=_index_ready_for_query())
                 continue
+            if query == "/budget" or query.startswith("/budget "):
+                print(f"  {_T_SYS}  {_budget_command(query[7:].strip())}")
+                continue
             if query == "/undo":
                 from claude_light import git_manager
                 if not git_manager.is_git_repo():
@@ -357,6 +382,14 @@ def start_chat(auto_apply=False):
                 continue
 
             # Standard Chat Query
+            if (state.session_budget is not None and not state.budget_asked
+                    and state.session_cost >= state.session_budget):
+                state.budget_asked = True
+                if choose(f"Session budget ${state.session_budget:.2f} reached "
+                          f"(spent ${state.session_cost:.2f}).",
+                          [("go", "Continue on the cheapest model"),
+                           ("stop", "Skip this question")]) == "stop":
+                    continue
             use_index = _index_ready_for_query()
             try:
                 chat(query, auto_apply=auto_apply, use_index=use_index)

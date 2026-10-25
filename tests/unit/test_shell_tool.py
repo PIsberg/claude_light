@@ -1,0 +1,87 @@
+"""Tests for the allowlist-gated `shell` tool in claude_light.tools."""
+
+import os
+import sys
+import tempfile
+import time
+import unittest
+from pathlib import Path
+from unittest import mock
+
+os.environ.setdefault("ANTHROPIC_API_KEY", "sk-ant-dummy-test-key")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+
+from claude_light import config
+from claude_light.tools import run_tool
+
+_PY = f'"{sys.executable}"' if os.name == "nt" else sys.executable
+
+
+class TestShellTool(unittest.TestCase):
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="cl_shell_"))
+
+    def run_shell(self, command, allowed=None):
+        with mock.patch.object(config, "ALLOWED_COMMANDS", list(allowed or [])):
+            return run_tool("shell", {"command": command}, root=self.root)
+
+    def test_refused_when_nothing_allowed(self):
+        out, is_error = self.run_shell("echo hi")
+        self.assertTrue(is_error)
+        self.assertIn("not allowed", out)
+
+    def test_refused_when_not_on_allowlist(self):
+        out, is_error = self.run_shell("rm -rf x", allowed=["echo"])
+        self.assertTrue(is_error)
+        self.assertIn("not allowed", out)
+
+    def test_prefix_needs_word_boundary(self):
+        out, is_error = self.run_shell("echoes hi", allowed=["echo"])
+        self.assertTrue(is_error)
+
+    def test_chaining_and_redirection_refused(self):
+        for cmd in ("echo a; echo b", "echo a && echo b", "echo a | cat",
+                    "echo a > f", "echo `id`", "echo $HOME", "echo a\necho b"):
+            out, is_error = self.run_shell(cmd, allowed=["echo"])
+            self.assertTrue(is_error, cmd)
+            self.assertIn("may not contain", out)
+
+    def test_newline_refused_before_whitespace_is_collapsed(self):
+        out, is_error = self.run_shell("echo a\necho b", allowed=["echo"])
+        self.assertTrue(is_error)
+        self.assertIn("may not contain", out)
+
+    def test_allowed_command_runs_in_root(self):
+        out, is_error = self.run_shell("echo hello", allowed=["echo"])
+        self.assertFalse(is_error)
+        self.assertIn("(exit 0)", out)
+        self.assertIn("hello", out)
+
+    def test_nonzero_exit_is_error(self):
+        cmd = f"{_PY} -c \"raise SystemExit(3)\""
+        out, is_error = self.run_shell(cmd, allowed=[_PY])
+        self.assertTrue(is_error)
+        self.assertIn("(exit 3)", out)
+
+    def test_timeout_kills_command(self):
+        # No ';' in the command: the forbidden-character check would refuse it
+        # before the timeout path ever ran.
+        cmd = f"{_PY} -c \"__import__('time').sleep(30)\""
+        start = time.monotonic()
+        with mock.patch.dict(os.environ, {"CLAUDE_LIGHT_RUN_TIMEOUT": "1"}):
+            out, is_error = self.run_shell(cmd, allowed=[_PY])
+        elapsed = time.monotonic() - start
+        self.assertTrue(is_error)
+        self.assertIn("TIMEOUT", out)
+        # Killing only the shell leaves the child holding the pipe, and the
+        # call then waits out the 5 s grace communicate() as well (about 6 s).
+        self.assertLess(elapsed, 4)
+
+    def test_missing_command_arg(self):
+        out, is_error = run_tool("shell", {}, root=self.root)
+        self.assertTrue(is_error)
+
+
+if __name__ == "__main__":
+    unittest.main()

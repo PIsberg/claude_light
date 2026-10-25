@@ -29,3 +29,7 @@ Constants live in `claude_light/config.py`. Environment variables override the d
 | `LLMLINGUA_FORCE_TOKENS` | Tokens preserved verbatim (default `["\n", "```", "::", "//"]` so chunk structure survives) |
 | `AGENT_SYSTEM_PROMPT` | Replaces `SYSTEM_PROMPT` in OAuth mode when `ALLOWED_COMMANDS` is non-empty. See [architecture/components.md](architecture/components.md#agent-mode-and-allowed-commands) |
 | `ALLOWED_COMMANDS` | Shell command prefixes the OAuth agent may run. From `--allow-command` or `CLAUDE_LIGHT_ALLOW_COMMANDS`. See [architecture/components.md](architecture/components.md#agent-mode-and-allowed-commands) |
+| `CALL_GRAPH` | Call-graph retrieval expansion: adds callers or callees of the best hit within the token budget (default off; skipped at low effort). Off because it sent 20-28% more tokens for no extra right-file hits, see [BENCHMARKS.md](BENCHMARKS.md). Enable with `CLAUDE_LIGHT_CALLGRAPH=1` |
+| `CALL_GRAPH_MAX` | Most related chunks added per query by the call-graph expansion (default 3) |
+| `WORKTREE_BOOST` | Z-score boost for chunks in modified, staged or untracked files; hybrid path only (default 1.0, tuned with `benchmark_models.py --worktree`; 1.5 starts losing answers). Disable with `CLAUDE_LIGHT_WORKTREE_BOOST=0` |
+| `CLAUDE_LIGHT_RUN_TIMEOUT` | Timeout in seconds for the `shell` tool and the executor's commands (default 120; 0 or blank disables the cap) |

@@ -101,3 +101,32 @@ class TestGlobalStatsFile(unittest.TestCase):
             env=env, capture_output=True, text=True, cwd=str(Path(__file__).resolve().parents[2]),
         )
         self.assertEqual(out.stdout.strip(), str(target), out.stderr)
+
+
+class TestMeasuredRetrievalDefaults(unittest.TestCase):
+    """Both defaults come from tests/benchmarks/benchmark_models.py runs recorded
+    in TOKEN-SAVINGS.md: call-graph expansion sent 20-28% more tokens for no
+    extra right-file hits, and a working-tree boost of 1.5 or more lost
+    answers when an unrelated file was the modified one."""
+
+    def test_defaults_without_env_overrides(self):
+        print("\n  ▶ TestMeasuredRetrievalDefaults.test_defaults_without_env_overrides")
+        import subprocess
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("CLAUDE_LIGHT_CALLGRAPH", "CLAUDE_LIGHT_WORKTREE_BOOST")}
+        out = subprocess.run(
+            [sys.executable, "-c",
+             "import claude_light.config as c; print(c.CALL_GRAPH, c.WORKTREE_BOOST)"],
+            env=env, capture_output=True, text=True, cwd=str(Path(__file__).resolve().parents[2]),
+        )
+        self.assertEqual(out.stdout.strip(), "False 1.0", out.stderr)
+
+    def test_call_graph_is_opt_in(self):
+        print("\n  ▶ TestMeasuredRetrievalDefaults.test_call_graph_is_opt_in")
+        import subprocess
+        env = dict(os.environ, CLAUDE_LIGHT_CALLGRAPH="1")
+        out = subprocess.run(
+            [sys.executable, "-c", "import claude_light.config as c; print(c.CALL_GRAPH)"],
+            env=env, capture_output=True, text=True, cwd=str(Path(__file__).resolve().parents[2]),
+        )
+        self.assertEqual(out.stdout.strip(), "True", out.stderr)

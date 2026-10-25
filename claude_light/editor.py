@@ -296,4 +296,8 @@ def apply_edits(edits, check_only=False, explanation="", auto_apply=False):
         print(f"  {_T_ERR}  Failed to write {err}")
 
     if written_files and git_manager.is_git_repo():
-        git_manager.auto_commit(written_files, explanation)
+        # Only offer the test run (and its revert) when the commit went in;
+        # otherwise "revert the last commit" would target an older commit.
+        if git_manager.auto_commit(written_files, explanation):
+            from claude_light.affected_tests import check_after_edit
+            check_after_edit(written_files)

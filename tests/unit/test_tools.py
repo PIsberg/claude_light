@@ -42,7 +42,7 @@ class TestWorkspaceTools(unittest.TestCase):
     def test_tool_definitions_are_read_only_and_well_formed(self):
         print("\n  ▶ TestWorkspaceTools.test_tool_definitions_are_read_only_and_well_formed")
         names = {t["name"] for t in TOOLS}
-        self.assertEqual(names, {"read_file", "grep", "list_files"})
+        self.assertEqual(names, {"read_file", "fetch_chunk", "grep", "list_files", "shell"})
         for t in TOOLS:
             self.assertEqual(t["input_schema"]["type"], "object")
             self.assertTrue(t["description"])

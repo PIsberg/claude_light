@@ -14,6 +14,10 @@ notice = None
 auto_approve_edits = False
 auto_commit_agent_edits = False
 session_cost = 0.0
+# /budget <dollars>: once session_cost reaches it, routing drops to the cheapest
+# tier. None = no cap. budget_asked: the one-time prompt has been answered.
+session_budget = None
+budget_asked = False
 session_tokens = {"input": 0, "cache_write": 0, "cache_read": 0, "output": 0, "compress_pre": 0, "compress_post": 0}
 # USD per token category, each call priced at the model that ran it
 session_costs = {"input": 0.0, "cache_write": 0.0, "cache_read": 0.0, "output": 0.0,

@@ -262,6 +262,11 @@ Results: dev split  23 instances  K=[5,10,15]
   are dropped, which improves precision at the cost of recall.
 - Some SWE-bench instances touch only configuration files or test files that are
   outside the indexed extensions — these count as misses.
+- It reimplements chunking and ranks by cosine similarity alone; it does not
+  import `claude_light.retrieval`. Hybrid fusion, the test-file exclusion, the
+  working-tree boost and call-graph expansion never run here, so their env vars
+  (`CLAUDE_LIGHT_CALLGRAPH`, `CLAUDE_LIGHT_WORKTREE_BOOST`) do not change its
+  output. Measure those with `benchmark_models.py` (section 2b).
 
 ---
 
@@ -293,6 +298,8 @@ that answers the question reach the context the model is given?
 python tests/benchmarks/benchmark_models.py          # all configurations
 python tests/benchmarks/benchmark_models.py --sweep  # also sweep the gap and floors
 python tests/benchmarks/benchmark_models.py --budgets  # recall and tokens sent per effort budget
+python tests/benchmarks/benchmark_models.py --callgraph  # each budget with and without call-graph expansion
+python tests/benchmarks/benchmark_models.py --worktree   # working-tree boost, right file or unrelated file modified
 python tests/benchmarks/benchmark_router.py            # effort and model per question
 python tests/benchmarks/benchmark_router.py --margin 0.30  # replay with another escalation margin
 ```
@@ -377,6 +384,55 @@ so the rule with no constant was kept. The benchmark flags are `--test-policy`
 
 Limits: the rule was measured on this repository only. The directory names
 come from common conventions, not from a survey of other projects.
+
+### Call-graph expansion (2026-10-25, `--callgraph`, off by default)
+
+Expansion adds up to 3 direct callers or callees of the best hit while the
+budget has room (`_related_pairs`). Same question set, 1,579 chunks, static +
+all-mpnet-base-v2, test-file exclusion on:
+
+| Effort (budget) | Graph | Identifier | Paraphrase | Off-topic got nothing | Tokens median / mean |
+|---|---|---|---|---|---|
+| low (1,500) | off | 13/25 | 10/12 | 6/6 | 1,074 / 978 |
+| low (1,500) | on | 13/25 | 10/12 | 6/6 | 1,074 / 978 |
+| medium (3,000) | off | 19/25 | 11/12 | 6/6 | 1,933 / 1,802 |
+| medium (3,000) | on | 19/25 | 11/12 | 6/6 | 2,833 / 2,169 |
+| high (6,000) | off | 20/25 | 11/12 | 6/6 | 2,301 / 2,829 |
+| high (6,000) | on | 20/25 | 11/12 | 6/6 | 3,838 / 3,503 |
+| max (9,000) | off | 22/25 | 11/12 | 6/6 | 2,301 / 3,586 |
+| max (9,000) | on | 22/25 | 11/12 | 6/6 | 3,949 / 4,603 |
+
+No extra right-file hits at any budget, and 20-28% more mean tokens from
+medium up (low skips expansion by design). So `CALL_GRAPH` defaults to off;
+`CLAUDE_LIGHT_CALLGRAPH=1` turns it on. Limit: the metric is whether the
+answering file is sent, not answer quality. A caller's body may help an answer
+even when the file was already found, and nothing offline measures that. The
+model can still pull callers and callees on demand with `fetch_chunk`.
+
+### Working-tree boost (2026-10-25, `--worktree`, shipped at 1.0)
+
+`_boost_modified_chunks` adds `WORKTREE_BOOST` fused z-score units to chunks in
+files git reports as modified. The benchmark replaces the git file list per
+question: "right file" marks the answering file as modified (the case the
+boost is for), "other file" marks one unrelated source file, rotating through
+them (what the boost costs when you ask about something else). Medium budget,
+same run as above:
+
+| Boost | Right file modified: identifier / paraphrase | Tokens mean | Other file modified: identifier / paraphrase | Tokens mean |
+|---|---|---|---|---|
+| 0 | 19/25 / 11/12 | 1,802 | 19/25 / 11/12 | 1,802 |
+| 0.5 | 22/25 / 11/12 | 1,767 | 19/25 / 11/12 | 1,816 |
+| 0.75 | 23/25 / 11/12 | 1,696 | 19/25 / 11/12 | 1,820 |
+| 1.0 | 25/25 / 11/12 | 1,658 | 19/25 / 11/12 | 1,829 |
+| 1.5 | 25/25 / 11/12 | 1,443 | 19/25 / **9/12** | 1,869 |
+| 2.0 | 25/25 / 12/12 | 1,282 | **18/25 / 9/12** | 1,934 |
+
+Off-topic questions got nothing (6/6) in every row. 1.0 is the largest boost
+with no loss when an unrelated file is modified, and it gains 6 identifier
+answers when the answering file is. 1.5 loses two paraphrase answers. Limits:
+one repository, one modified file per question, and the scenarios bound the
+effect rather than sample real sessions, where you are sometimes asking about
+the file you are editing and sometimes not.
 
 ### Embedding text experiment (2026-10-24, not shipped)
 
