@@ -14,6 +14,9 @@ This diagram shows the main components and their relationships within Claude Lig
 | `main.py` | Entry point, orchestrates the chat loop and handles user commands |
 | `llm.py` | LLM client, handles API calls, routing, and response processing |
 | `retrieval.py` | RAG engine, performs similarity search and chunk selection |
+| `callgraph.py` | In-memory call graph over the chunk store (`name(` matched against chunk symbols), used by `fetch_chunk` and the opt-in retrieval expansion |
+| `tools.py` | API-mode tools: `read_file`, `fetch_chunk`, `grep`, `list_files`, and `shell` (allowlisted commands only) |
+| `affected_tests.py` | After an auto-commit, runs the test files that mention the edited modules, if a pytest command is allowed |
 | `editor.py` | Code editor, parses and applies SEARCH/REPLACE blocks |
 | `indexer.py` | File watcher, manages incremental indexing and cache |
 | `skeleton.py` | Builds compressed directory tree and markdown documentation |
@@ -157,6 +160,8 @@ Modules import each other's globals at load time, so `__init__.py` wraps every p
 In OAuth mode, `AGENT_SYSTEM_PROMPT` replaces `SYSTEM_PROMPT` when `ALLOWED_COMMANDS` is non-empty. The agent then edits with its own Edit/Write tools and runs the allowed commands to check its work. SEARCH/REPLACE blocks only land after the turn, which is too late to test.
 
 `ALLOWED_COMMANDS` holds shell command prefixes, each becoming `Bash(<prefix>:*)`, or `PowerShell(<prefix>:*)` for a `powershell:` or `pwsh:` entry. They come from `--allow-command` or `CLAUDE_LIGHT_ALLOW_COMMANDS` (`;`-separated). The CLI runs with `--permission-mode acceptEdits`, `--setting-sources user` and `--strict-mcp-config`, so the target repo's `.claude/settings*.json` (allow rules, hooks) and `.mcp.json` never apply. A shell stays disallowed unless an entry names it: Bash for untagged or `bash:` entries, PowerShell for `powershell:` or `pwsh:`. Refused commands are listed after the turn.
+
+In API mode the same prefixes gate the `shell` tool in `tools.py`. A command must start with an allowed prefix on a word boundary, and any of `; & | < > `` ` `` $` or a newline is refused before whitespace is collapsed. It runs from the project root with a 120 s timeout (`CLAUDE_LIGHT_RUN_TIMEOUT`); on timeout the whole process tree is killed (`taskkill /T` on Windows, the process group on POSIX). The tool is always in `TOOLS`, even with no allowlist, so the cached prompt prefix does not change between sessions.
 
 ## Test mode
 

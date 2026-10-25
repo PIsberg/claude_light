@@ -108,14 +108,20 @@ RELATIVE_SCORE_FLOOR    = 0.60    # drop chunks below this fraction of the top c
 # CLAUDE_LIGHT_HYBRID=0 restores the single dense model chosen by auto_tune().
 HYBRID_RETRIEVAL   = os.environ.get("CLAUDE_LIGHT_HYBRID", "1") != "0"
 # After retrieval, add the best chunk's direct callers and callees (see
-# callgraph.py) while the token budget has room. CLAUDE_LIGHT_CALLGRAPH=0 turns it off.
-CALL_GRAPH         = os.environ.get("CLAUDE_LIGHT_CALLGRAPH", "1") != "0"
+# callgraph.py) while the token budget has room. Off by default: in
+# benchmark_models.py --callgraph it sent 20-28% more tokens at medium to max
+# for no extra right-file hits. fetch_chunk still returns callers and callees on
+# request. CLAUDE_LIGHT_CALLGRAPH=1 turns it on.
+CALL_GRAPH         = os.environ.get("CLAUDE_LIGHT_CALLGRAPH", "0") == "1"
 CALL_GRAPH_MAX     = 3     # most related chunks added per query
 
 # Hybrid retrieval adds this many fused z-score units to chunks in files git
 # reports as modified, staged or untracked: questions are mostly about what you
-# are working on now. CLAUDE_LIGHT_WORKTREE_BOOST=0 turns it off.
-WORKTREE_BOOST     = float(os.environ.get("CLAUDE_LIGHT_WORKTREE_BOOST", "0.5"))
+# are working on now. Tuned with benchmark_models.py --worktree: 1.0 sends the
+# right file for 25/25 identifier questions when it is the modified one (19/25
+# without), and loses nothing when an unrelated file is; 1.5 starts losing.
+# CLAUDE_LIGHT_WORKTREE_BOOST=0 turns it off.
+WORKTREE_BOOST     = float(os.environ.get("CLAUDE_LIGHT_WORKTREE_BOOST", "1.0"))
 FAST_EMBED_MODEL   = "sentence-transformers/static-retrieval-mrl-en-v1"
 DENSE_EMBED_MODEL  = "all-mpnet-base-v2"
 HYBRID_FAST_WEIGHT = 0.5

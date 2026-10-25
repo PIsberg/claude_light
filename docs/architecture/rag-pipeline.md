@@ -14,6 +14,8 @@ The Retrieval-Augmented Generation pipeline finds and injects only relevant code
 3. **Two-Stage Filtering** - Absolute floor (0.35) + Relative floor (60% of top score)
 4. **Deduplication** - Shared preamble emitted once for multi-method results
 4a. **Test-file exclusion** - In the hybrid path, chunks under a test directory are never selected for a question that does not mention tests (`_exclude_test_chunks` in `retrieval.py`). Measured in docs/BENCHMARKS.md.
+4b. **Working-tree boost** - In the hybrid path, chunks in files git reports as modified, staged or untracked get `WORKTREE_BOOST` (1.0) fused z-score units, after the test-file exclusion, so an excluded test chunk stays excluded (`_boost_modified_chunks` in `retrieval.py`; the git file list is cached for 5 s). Measured in docs/BENCHMARKS.md.
+4c. **Call-graph expansion** *(opt-in, `CLAUDE_LIGHT_CALLGRAPH=1`)* - Adds up to `CALL_GRAPH_MAX` direct callers or callees of the best hit while the budget has room, skipped at low effort (`_related_pairs` in `retrieval.py`, graph in `callgraph.py`). Off by default because it raised tokens with no recall gain. The model can still ask for callers and callees with the `fetch_chunk` tool.
 5. **Code Block Stripping** - Edit blocks removed from history to prevent bloat
 6. **LLMLingua-2 Compression** *(on by default, no-op if `llmlingua` not installed)* - Post-retrieval token pruning of the retrieved-context block (see below)
 

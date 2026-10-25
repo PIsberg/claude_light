@@ -152,6 +152,13 @@ class TestFetchChunk(_StoreCase):
 
 
 class TestRelatedExpansion(_StoreCase):
+    """Expansion is opt-in (CLAUDE_LIGHT_CALLGRAPH=1), so these turn it on."""
+
+    def setUp(self):
+        super().setUp()
+        patcher = patch("claude_light.config.CALL_GRAPH", True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_adds_neighbours_within_budget(self):
         print("\n  ▶ TestRelatedExpansion.test_adds_neighbours_within_budget")

@@ -26,6 +26,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 
@@ -124,6 +125,11 @@ def main():
     ap.add_argument("--cache-dir", type=Path, default=ROOT / ".claude_light_cache" / "bench")
     ap.add_argument("--sweep", action="store_true", help="also sweep HYBRID_SCORE_GAP and the floors")
     ap.add_argument("--budgets", action="store_true", help="also report recall and tokens per effort budget")
+    ap.add_argument("--callgraph", action="store_true",
+                    help="also report each effort budget with and without call-graph expansion")
+    ap.add_argument("--worktree", action="store_true",
+                    help="also report the working-tree boost with the right file, or an unrelated "
+                         "file, marked as modified")
     ap.add_argument("--test-policy", choices=["keep", "exclude", "penalty"], default="exclude",
                     help="for chunks under tests/: keep them, drop them, or subtract --test-penalty "
                          "from their fused score. Not applied when the question mentions tests.")
@@ -150,7 +156,7 @@ def main():
         E, Q = dense[model]
         return lambda i, k: retrieval._adaptive_select_pairs(ids, E @ Q[i], BUDGET, k)
 
-    def hybrid(model, gap=None, fast_min=None, dense_min=None, budget=BUDGET):
+    def hybrid(model, gap=None, fast_min=None, dense_min=None, budget=BUDGET, worktree=False):
         def select(i, k):
             s_fast = Ef @ Qf[i]
             s_dense = None
@@ -162,6 +168,8 @@ def main():
                                             else config.HYBRID_MIN_SCORE.get(model, config.MIN_SCORE))
             if fused is not None:
                 fused = apply_test_policy(fused, is_test, questions[i]["question"])
+                if worktree:
+                    fused = retrieval._boost_modified_chunks(fused, ids)
             return [] if fused is None else retrieval._hybrid_select_pairs(ids, fused, budget, k, gap=gap)
         return select
 
@@ -182,6 +190,49 @@ def main():
             report(r)
             print(f"{'':34} tokens sent median {np.median(r['tokens_sent']):.0f}"
                   f"  mean {np.mean(r['tokens_sent']):.0f}")
+
+    if args.callgraph:
+        m = config.DENSE_EMBED_MODEL
+        print(f"\nCall-graph expansion, static + {m} (tokens include the added callers/callees):")
+        for effort, budget in config._RETRIEVAL_BUDGET.items():
+            base = hybrid(m, budget=budget)
+
+            def expanded(i, k, base=base, budget=budget, effort=effort):
+                top = base(i, k)
+                with mock.patch.object(config, "CALL_GRAPH", True):
+                    return top + retrieval._related_pairs(top, budget, effort)
+
+            for label, select in (("off", base), ("on", expanded)):
+                r = evaluate(f"{effort} budget {budget}, graph {label}", ids, files, questions,
+                             select, budget=budget)
+                report(r)
+                print(f"{'':34} tokens sent median {np.median(r['tokens_sent']):.0f}"
+                      f"  mean {np.mean(r['tokens_sent']):.0f}")
+
+    if args.worktree:
+        m = config.DENSE_EMBED_MODEL
+        sources = sorted({f for f in files if not f.startswith("tests/")})
+        boosted = hybrid(m, worktree=True)
+        print(f"\nWorking-tree boost, static + {m}. 'right file' marks the answer's file as "
+              "modified, 'other file' an unrelated source file:")
+        for scenario in ("right file", "other file"):
+            for boost in (0.0, 0.5, 0.75, 1.0, 1.5, 2.0):
+
+                def select(i, k, scenario=scenario, boost=boost):
+                    gold = questions[i].get("file")
+                    if scenario == "right file":
+                        modified = [gold] if gold else []
+                    else:
+                        others = [f for f in sources if f != gold]
+                        modified = [others[i % len(others)]]
+                    with mock.patch.object(retrieval, "_modified_paths", lambda: modified), \
+                            mock.patch.object(config, "WORKTREE_BOOST", boost):
+                        return boosted(i, k)
+
+                r = evaluate(f"{scenario}, boost {boost}", ids, files, questions, select)
+                report(r)
+                print(f"{'':34} tokens sent median {np.median(r['tokens_sent']):.0f}"
+                      f"  mean {np.mean(r['tokens_sent']):.0f}")
 
     if args.sweep:
         m = config.DENSE_EMBED_MODEL
