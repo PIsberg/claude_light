@@ -19,6 +19,10 @@ A read-through without a shell found and fixed these. Each has a new regression 
 - **`editor.apply_edits`:** the affected-tests run (and its "revert the last commit?" offer) now happens only if `auto_commit` returned True. Otherwise the revert could target an older commit.
 - **`llm._route_result`:** over budget, a query already routed to Haiku kept its high or max effort. It now drops to low effort too, as documented.
 
+### Session log (latest first)
+
+- **2026-10-25, third session (no shell tool again):** The `shell` tool was reviewed by reading `claude_light/tools.py`. It is **already built**: schema in `TOOLS`, dispatch in `run_tool`, allowlist, forbidden-character check, tree-kill timeout and output trimming are all there. Do not build it again. No code changed. Still nothing run, no branch, no commit. Next action is step 1 under "Do this next".
+
 ## Feature status
 
 | # | Feature | Status | Where |
