@@ -23,6 +23,7 @@ _MAX_OUTPUT_CHARS = 40_000
 _MAX_GREP_MATCHES = 100
 _MAX_LIST_ENTRIES = 300
 _MAX_SCAN_BYTES = 1_000_000  # skip larger files when searching
+_MAX_FETCH_IDS = 5
 _SKIP = set(SKIP_DIRS) | {".claude_light_cache", ".venv", "venv", "dist"}
 
 TOOLS = [
@@ -42,6 +43,30 @@ TOOLS = [
                 "end_line": {"type": "integer", "description": "Last line to read (inclusive)"},
             },
             "required": ["path"],
+            "additionalProperties": False,
+        },
+        "eager_input_streaming": True,
+    },
+    {
+        "name": "fetch_chunk",
+        "description": (
+            "Fetch indexed code by chunk id: one function or method body, without the "
+            "rest of its file. Use it before read_file when you know the symbol you "
+            "need, since it costs a fraction of the tokens. An id is 'path::symbol' as "
+            "shown in the retrieved context (e.g. 'claude_light/llm.py::route_query'); a "
+            "bare symbol name also works when it is unambiguous. Each result lists the "
+            f"chunks the symbol calls and is called by. Takes at most {_MAX_FETCH_IDS} ids."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Chunk ids ('path::symbol') or bare symbol names",
+                },
+            },
+            "required": ["ids"],
             "additionalProperties": False,
         },
         "eager_input_streaming": True,
@@ -95,6 +120,8 @@ def run_tool(name, tool_input, root=None):
             raise _ToolError("tool input must be a JSON object")
         if name == "read_file":
             return _read_file(root, tool_input), False
+        if name == "fetch_chunk":
+            return _fetch_chunk(tool_input), False
         if name == "grep":
             return _grep(root, tool_input), False
         if name == "list_files":
@@ -183,6 +210,60 @@ def _read_file(root, tool_input):
     body = "\n".join(f"{n}\t{lines[n - 1]}" for n in range(start, min(end, len(lines)) + 1))
     more = f"\n… ({len(lines) - end} more lines; pass start_line={end + 1})" if end < len(lines) else ""
     return _cap(body + more)
+
+
+def _find_chunks(wanted, ids):
+    """Chunk ids matching `wanted`: an exact id, else any id ending '::wanted'
+    or '/wanted' (a symbol name, or a path suffix plus symbol)."""
+    if wanted in ids:
+        return [wanted]
+    tail = wanted.rsplit("::", 1)[-1] if "::" in wanted else None
+    found = [c for c in ids if c.endswith("::" + wanted) or c.endswith("/" + wanted)
+             or c.endswith("\\" + wanted)]
+    if not found and tail is not None:
+        # 'dir/file.py::name' written with another path form: match file suffix + symbol
+        head = wanted.rsplit("::", 1)[0].replace("\\", "/")
+        found = [c for c in ids if "::" in c and c.rsplit("::", 1)[1] == tail
+                 and c.split("::", 1)[0].replace("\\", "/").endswith(head)]
+    return sorted(found)
+
+
+def _fetch_chunk(tool_input):
+    from claude_light import callgraph
+    import claude_light.state as state
+
+    wanted = tool_input.get("ids")
+    if isinstance(wanted, str):
+        wanted = [wanted]
+    if not isinstance(wanted, list) or not wanted or not all(isinstance(w, str) and w.strip() for w in wanted):
+        raise _ToolError("'ids' must be a non-empty list of strings")
+    wanted = [w.strip() for w in wanted[:_MAX_FETCH_IDS]]
+
+    with state.lock:
+        texts = {cid: e["text"] for cid, e in state.chunk_store.items()}
+    if not texts:
+        raise _ToolError("the code index is not ready; use read_file instead")
+
+    parts = []
+    for w in wanted:
+        found = _find_chunks(w, list(texts))
+        if not found:
+            parts.append(f"## {w}\nNo such chunk. Use grep to find the symbol, or read_file.")
+            continue
+        if len(found) > 1:
+            parts.append(f"## {w}\nAmbiguous; pass one of: " + ", ".join(found[:10]))
+            continue
+        cid = found[0]
+        text = texts[cid]
+        body = text.split(callgraph._SEP, 1)[1] if callgraph._SEP in text else text
+        callees, callers = callgraph.related_chunks(cid, limit=8)
+        links = []
+        if callees:
+            links.append("Calls: " + ", ".join(callees))
+        if callers:
+            links.append("Called by: " + ", ".join(callers))
+        parts.append("\n".join([f"## {cid}", body.strip()] + links))
+    return _cap("\n\n".join(parts))
 
 
 def _grep(root, tool_input):

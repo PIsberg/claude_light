@@ -1314,7 +1314,8 @@ class TestApiToolLoop(unittest.TestCase):
         (reply, usage, _), calls, tool_mock = self._run([("", first), ("It is in pkg/retry.py.", second)])
         self.assertEqual(reply, "It is in pkg/retry.py.")
         self.assertEqual(len(calls), 2)
-        self.assertEqual({t["name"] for t in calls[0]["tools"]}, {"read_file", "grep", "list_files"})
+        self.assertEqual({t["name"] for t in calls[0]["tools"]},
+                         {"read_file", "fetch_chunk", "grep", "list_files"})
         assistant, results = calls[1]["messages"][-2], calls[1]["messages"][-1]
         self.assertEqual(assistant["role"], "assistant")
         self.assertIs(assistant["content"], first.content)  # thinking blocks etc. passed back as is

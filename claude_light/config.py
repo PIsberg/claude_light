@@ -107,6 +107,10 @@ RELATIVE_SCORE_FLOOR    = 0.60    # drop chunks below this fraction of the top c
 # similarities are averaged. Measured with tests/benchmarks/benchmark_models.py.
 # CLAUDE_LIGHT_HYBRID=0 restores the single dense model chosen by auto_tune().
 HYBRID_RETRIEVAL   = os.environ.get("CLAUDE_LIGHT_HYBRID", "1") != "0"
+# After retrieval, add the best chunk's direct callers and callees (see
+# callgraph.py) while the token budget has room. CLAUDE_LIGHT_CALLGRAPH=0 turns it off.
+CALL_GRAPH         = os.environ.get("CLAUDE_LIGHT_CALLGRAPH", "1") != "0"
+CALL_GRAPH_MAX     = 3     # most related chunks added per query
 FAST_EMBED_MODEL   = "sentence-transformers/static-retrieval-mrl-en-v1"
 DENSE_EMBED_MODEL  = "all-mpnet-base-v2"
 HYBRID_FAST_WEIGHT = 0.5

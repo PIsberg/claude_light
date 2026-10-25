@@ -242,15 +242,53 @@ def _select_within_budget(candidates, budget, k, strong=None):
     return selected
 
 
-def _render_retrieved_context(top_pairs, effort: str) -> str:
+def _related_pairs(top_pairs, budget, effort):
+    """Callers and callees of the best hit that still fit in the token budget.
+
+    Returned with score 0.0: they were not found by similarity. Skipped at low
+    effort, whose budget leaves no room, and when CALL_GRAPH is off.
+    """
+    from claude_light import config, callgraph
+    if not top_pairs or effort == "low" or not config.CALL_GRAPH:
+        return []
+    chosen = {cid for cid, _ in top_pairs}
+    with state.lock:
+        room = budget - sum(_estimate_tokens(state.chunk_store[c]["text"])
+                            for c in chosen if c in state.chunk_store)
+    related = []
+    for cid in callgraph.interleaved(top_pairs[0][0]):
+        if cid in chosen:
+            continue
+        with state.lock:
+            entry = state.chunk_store.get(cid)
+        if entry is None:
+            continue
+        tokens = _estimate_tokens(entry["text"])
+        if tokens > room:
+            continue
+        related.append((cid, 0.0))
+        room -= tokens
+        if len(related) >= config.CALL_GRAPH_MAX:
+            break
+    return related
+
+
+def _finish(top_pairs, budget, effort):
+    """Render the context for `top_pairs` plus their related chunks."""
+    related = _related_pairs(top_pairs, budget, effort)
+    return _render_retrieved_context(top_pairs, effort, related), top_pairs + related
+
+
+def _render_retrieved_context(top_pairs, effort: str, related=()) -> str:
     if not top_pairs:
         return ""
     if effort == "low":
         return _render_file_summaries(top_pairs, max_files=6, max_symbols_per_file=2)
 
     detail_limit = 1 if effort == "medium" else 2
-    detail_pairs = top_pairs[:detail_limit]
-    summary = _render_file_summaries(top_pairs)
+    # Related chunks are shown in full: a caller is only useful with its body.
+    detail_pairs = top_pairs[:detail_limit] + list(related)
+    summary = _render_file_summaries(list(top_pairs) + list(related))
     details = _dedup_retrieved_context(detail_pairs)
     if not details:
         return summary
@@ -356,7 +394,7 @@ def _retrieve_hybrid(query, budget, k, effort):
         return "", []
     fused = _exclude_test_chunks(fused, ids, query)
     top_pairs = _hybrid_select_pairs(ids, fused, budget, k)
-    return _render_retrieved_context(top_pairs, effort), top_pairs
+    return _finish(top_pairs, budget, effort)
 
 
 def retrieve(query, token_budget=None, effort="medium"):
@@ -391,5 +429,4 @@ def retrieve(query, token_budget=None, effort="medium"):
     scores       = embs @ q_emb
 
     top_pairs = _adaptive_select_pairs(ids, scores, budget, k)
-    ctx = _render_retrieved_context(top_pairs, effort)
-    return ctx, top_pairs
+    return _finish(top_pairs, budget, effort)
