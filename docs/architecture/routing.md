@@ -40,6 +40,10 @@ Cost is estimated at the tier model's rates: `(retrieval_budget + 1500) / 1M × 
 
 **`/why` output** includes a `Routing:` line showing per-dimension scores, whether semantic scoring was active, and the estimated cost.
 
+**How the tier reaches the API** (`_apply_effort()`, API-key mode). Every request sends the same top-level `output_config.effort`, `BASE_EFFORT = "high"`. When the tier's effort differs, an effort-only system message, `{"role": "system", "content": [], "output_config": {"effort": <tier>}}`, goes right before the question, under the beta `mid-conversation-output-config-2026-07-01`. A top-level effort change between requests would invalidate the cached history, and on some models the cached skeleton too. The effort message sits after the history's cache breakpoint and is not stored in `conversation_history`, so the next turn's prefix still matches. The base is `high` because lowering effort this way is reliable. The OAuth path flattens messages into prompt text, so it gets no effort message.
+
+**The model still changes per turn.** The cache is scoped per model, so a switch writes the target model's cache. Pinning a session to its first or strongest model was simulated with `tests/benchmarks/benchmark_session_cache.py` and rejected: 33 of the 43 repo questions route to Haiku, whose output costs a twentieth of Sonnet's, and a session pinned to Sonnet cost 48% to 67% more. Each model's cached history prefix also stays readable for 5 minutes across switches, so switching back pays only for the turns in between. See `TOKEN-SAVINGS.md`, lever 1.
+
 <details>
 <summary>View PlantUML Source</summary>
 
@@ -95,7 +99,7 @@ partition "3. Context Assembly" {
 }
 
 partition "4. API Call" {
-  :Send output_config.effort = tier\nraise max_tokens for thinking;
+  :Send output_config.effort = high\n+ effort message for the tier\nraise max_tokens for thinking;
   :Call Anthropic API\nwith streaming;
   :Stream response to terminal;
 }

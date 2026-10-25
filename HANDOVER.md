@@ -1,10 +1,10 @@
 # HANDOVER
 
-Read this first in a new session. It records where the `feature/chunk-tools-callgraph` work stands.
+Read this first in a new session. It records where the unique-features work stands.
 
 ## Where we are
 
-The developer asked which unique features to add beyond Claude Code. Six were proposed and all were chosen. Five are built, tested and measured on branch `feature/chunk-tools-callgraph` (PR: `gh pr view feature/chunk-tools-callgraph`). Feature 4 is not built.
+The developer asked which unique features to add beyond Claude Code. Six were proposed and all were chosen. Five shipped in PR #87 (merged 2026-10-25). Feature 4, cache-aware routing, is on branch `feature/cache-stable-routing`: the effort half is built, the model half was measured and rejected.
 
 History: the first sessions had no shell tool, and claude_light auto-committed their edits straight onto local `main` as seven `Claude: ...` commits. On 2026-10-25 those commits were moved onto this branch and local `main` was reset to `origin/main`. Nothing reached `origin/main`.
 
@@ -21,7 +21,7 @@ History: the first sessions had no shell tool, and claude_light auto-committed t
 | 1 | `fetch_chunk(id)` tool: up to 5 method bodies by `path::symbol` or bare name, with callers and callees | Shipped | `claude_light/tools.py` |
 | 2 | Call-graph retrieval expansion | Built, **off by default**: no recall gain, 20-28% more tokens. `CLAUDE_LIGHT_CALLGRAPH=1` turns it on | `claude_light/callgraph.py`, `retrieval.py::_related_pairs` |
 | 3 | Working-tree boost for modified, staged or untracked files. Hybrid path only | Shipped, tuned to 1.0 | `retrieval.py` (`_modified_paths`, `_boost_modified_chunks`) |
-| 4 | Cache-aware routing | **Not built** (#76) | n/a |
+| 4 | Cache-aware routing | Effort: fixed top-level effort plus an effort message per turn. Model: still per turn; pinning cost 48-67% more (`benchmark_session_cache.py`) | `llm.py::_apply_effort`, `warm_cache` |
 | 5 | Run only the affected tests after an edit | Shipped | `claude_light/affected_tests.py`, hook in `editor.apply_edits` |
 | 6 | `/budget` command and per-turn cost estimate | Shipped | `state.py`, `llm.py::_route_result`, `main.py` |
 | extra | `shell` tool (allowlisted commands only) | Shipped | `claude_light/tools.py` |
@@ -46,9 +46,9 @@ All offline, with `tests/benchmarks/benchmark_models.py` on this repo's 43 quest
 
 ## Open work
 
-- The PR (`gh pr view feature/chunk-tools-callgraph`): CI on Python 3.12, then the merge (the developer's call).
+- The `feature/cache-stable-routing` PR: CI, then the merge (the developer's call).
+- Effort messages are verified offline only (mocks and the SDK stub server). A live run must confirm the API accepts them on Haiku, Sonnet and Opus 5.5 and that `cache_read_input_tokens` holds across an effort change; see the issue linked from that PR.
 - #85: measure `fetch_chunk` per-turn tokens with live API runs.
-- #76: feature 4, cache-aware routing. A "stay on the previous model" rule cannot be checked without live runs that show cache writes and reads across model switches, and it trades answer quality against cost. See lever 1 in `TOKEN-SAVINGS.md`.
 - #86: decide whether call-graph expansion helps answer quality, which the offline benchmark cannot see. Delete the expansion path if it does not.
 
 ## Gotchas

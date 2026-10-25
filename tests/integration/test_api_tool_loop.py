@@ -59,6 +59,7 @@ _ANSWER_TURN = [
 
 class _StubMessagesAPI(BaseHTTPRequestHandler):
     requests = []
+    headers_seen = []
 
     def log_message(self, *args):
         pass
@@ -66,6 +67,7 @@ class _StubMessagesAPI(BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         type(self).requests.append(body)
+        type(self).headers_seen.append(dict(self.headers))
         data = _sse(_TOOL_TURN if len(type(self).requests) == 1 else _ANSWER_TURN)
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -84,6 +86,7 @@ class TestApiToolLoopThroughSdk(unittest.TestCase):
         self.cwd = os.getcwd()
         os.chdir(self.project)
         _StubMessagesAPI.requests = []
+        _StubMessagesAPI.headers_seen = []
         self.server = HTTPServer(("127.0.0.1", 0), _StubMessagesAPI)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
@@ -123,6 +126,34 @@ class TestApiToolLoopThroughSdk(unittest.TestCase):
         self.assertIn("1\tdef retry_with_backoff(fn):", result["content"])
         self.assertEqual(reply, "It is retry_with_backoff in pkg/retry.py.")
         self.assertEqual((usage.input_tokens, usage.output_tokens), (400, 35))
+
+    def test_effort_message_and_beta_reach_the_wire(self):
+        # The SDK's types have no role "system" message; check it is sent as
+        # built, with the beta header, on every round of the tool loop.
+        print("\n  ▶ TestApiToolLoopThroughSdk.test_effort_message_and_beta_reach_the_wire")
+        import io
+        import anthropic
+        import claude_light.config as config
+        from claude_light import llm
+
+        stub = anthropic.Anthropic(api_key="sk-ant-stub",
+                                   base_url=f"http://127.0.0.1:{self.server.server_port}")
+        kwargs = dict(model="claude-sonnet-5-5", max_tokens=2000,
+                      system=llm._build_system_blocks("SKELETON"),
+                      messages=[{"role": "user", "content": [{"type": "text", "text": "Where is retry?"}]}],
+                      extra_headers=llm._EXTENDED_CACHE_HEADERS)
+        llm._apply_effort(kwargs, "low")
+        with patch.object(config, "AUTH_MODE", "API_KEY"), \
+             patch.object(llm, "client", stub), \
+             patch("sys.stdout", io.StringIO()):
+            llm._make_streaming_api_call(**kwargs)
+
+        effort_msg = {"role": "system", "content": [], "output_config": {"effort": "low"}}
+        for body, headers in zip(_StubMessagesAPI.requests, _StubMessagesAPI.headers_seen):
+            self.assertEqual(body["output_config"], {"effort": llm.BASE_EFFORT})
+            self.assertEqual(body["messages"][0], effort_msg)
+            self.assertIn(llm.EFFORT_BETA, headers["anthropic-beta"])
+        self.assertEqual(len(_StubMessagesAPI.requests), 2)
 
 
 if __name__ == "__main__":

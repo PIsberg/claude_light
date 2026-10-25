@@ -2669,8 +2669,9 @@ class TestChatAutoCorrection(unittest.TestCase):
         self.assertEqual(len(cl.conversation_history), 4)
 
     def test_chat_max_effort_adds_thinking(self):
-        """effort=max is sent as output_config.effort. The 5.5 models reject a
-        thinking budget with a 400, so none may be sent."""
+        """effort=max is sent in an effort message, the top level stays at
+        BASE_EFFORT. The 5.5 models reject a thinking budget with a 400, so
+        none may be sent."""
         import claude_light as cl
         resp = self._make_response("Deep analysis result.")
         streaming_response = self._make_streaming_response("Deep analysis result.")
@@ -2687,7 +2688,10 @@ class TestChatAutoCorrection(unittest.TestCase):
              patch("claude_light.print_stats"), \
              patch("claude_light.route_query", return_value=("model", "max", 16000)):
             cl.chat("evaluate architecture deeply")
-        self.assertEqual(captured_kwargs.get("output_config"), {"effort": "max"})
+        from claude_light.llm import BASE_EFFORT
+        self.assertEqual(captured_kwargs.get("output_config"), {"effort": BASE_EFFORT})
+        self.assertIn({"role": "system", "content": [], "output_config": {"effort": "max"}},
+                      captured_kwargs["messages"])
         self.assertNotIn("budget_tokens", str(captured_kwargs.get("thinking")))
 
 
@@ -4718,7 +4722,10 @@ class TestOneShotMaxEffort(unittest.TestCase):
              patch("sys.stderr", io.StringIO()):
             cl.one_shot("evaluate the architecture deeply")
 
-        self.assertEqual(captured_kwargs.get("output_config"), {"effort": "max"})
+        from claude_light.llm import BASE_EFFORT
+        self.assertEqual(captured_kwargs.get("output_config"), {"effort": BASE_EFFORT})
+        self.assertIn({"role": "system", "content": [], "output_config": {"effort": "max"}},
+                      captured_kwargs["messages"])
         self.assertNotIn("budget_tokens", str(captured_kwargs.get("thinking")))
         # Thinking shares max_tokens with the answer; the cap must leave room.
         self.assertGreaterEqual(captured_kwargs["max_tokens"], 32_000)
