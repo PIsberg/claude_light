@@ -6129,9 +6129,12 @@ class TestStartChatLoop(unittest.TestCase):
     def test_clear_command(self):
         """/clear resets conversation history then loop exits."""
         import claude_light as cl
+        import claude_light.state as state
         cl.conversation_history.append({"role": "user", "content": "hi"})
+        state.session_model = "claude-haiku-5-5"
         self._run_start_chat(["/clear", "exit"])
         self.assertEqual(cl.conversation_history, [])
+        self.assertIsNone(state.session_model, "/clear must let the next turn route the model again")
 
     def test_compact_command_summarises(self):
         """/compact keeps a summary of the conversation; /clear drops it."""

@@ -18,6 +18,9 @@ session_cost = 0.0
 # tier. None = no cap. budget_asked: the one-time prompt has been answered.
 session_budget = None
 budget_asked = False
+# ROUTE_ONCE (on by default): the model the session's first turn routed to.
+# None until then; /clear resets it.
+session_model = None
 session_tokens = {"input": 0, "cache_write": 0, "cache_read": 0, "output": 0, "compress_pre": 0, "compress_post": 0}
 # USD per token category, each call priced at the model that ran it
 session_costs = {"input": 0.0, "cache_write": 0.0, "cache_read": 0.0, "output": 0.0,

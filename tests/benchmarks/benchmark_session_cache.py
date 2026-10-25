@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Session cache cost model: what three routing policies cost over one session.
+Session cache cost model: what four routing policies cost over one session.
 
 Routes the questions in tests/fixtures/repo_questions.json with the real
 route_query() and static embedder, plays them as one session (the fixture
@@ -22,6 +22,10 @@ Policies:
            effort message (what llm._apply_effort does)
   pinned   effort, plus the model only moves up a tier within a session
            (measured and rejected, see TOKEN-SAVINGS.md)
+  first    effort, plus the first turn's model for the whole session
+           (ROUTE_ONCE, the default); its cost depends on
+           the opening question, so each question opens one session and the
+           result is split by the opener's model
 
 Whether an effort change also invalidates the cached skeleton is model-specific
 and not documented per model; --effort-in-prefix models the case where it does.
@@ -54,7 +58,7 @@ OUTPUT = {"low": 600, "medium": 1_500, "high": 3_000, "max": 6_000}  # thinking 
 ANSWER = 400      # answer tokens kept in history, assumed
 SUMMARY = 420     # the summary pair compression leaves, assumed
 RANK = {config.MODEL_HAIKU: 0, config.MODEL_SONNET: 1, config.MODEL_OPUS: 2}
-POLICIES = ("old", "effort", "pinned")
+POLICIES = ("old", "effort", "pinned")   # "first" is reported per opening model
 
 
 def prefix_tokens():
@@ -86,6 +90,8 @@ def simulate(routes, policy, prefix, gap, output_scale, effort_in_prefix):
     for i, (model, effort, q_tokens) in enumerate(routes):
         now = i * gap
         if policy == "pinned" and session and RANK[model] < RANK[session]:
+            model = session
+        if policy == "first" and session:
             model = session
         session = model
         p = config.MODEL_PRICES[model]
@@ -137,6 +143,19 @@ def main():
         base = base or mean
         print(f"  {policy:7} fixture order ${costs[0]:.4f}   shuffled mean ${mean:.4f} "
               f"({100 * (mean / base - 1):+.1f}% vs old)")
+    # 'first' depends on the opening question, which a handful of shuffles
+    # samples badly: open with each question once and split by its model.
+    by_model = {}
+    for i, opener in enumerate(routes):
+        order = [opener] + routes[:i] + routes[i + 1:]
+        pair = [simulate(order, p, prefix, args.gap, args.output_scale, args.effort_in_prefix)
+                for p in ("effort", "first")]
+        by_model.setdefault(opener[0], []).append(pair)
+    for model, pairs in by_model.items():
+        e = sum(a for a, _ in pairs) / len(pairs)
+        f = sum(b for _, b in pairs) / len(pairs)
+        print(f"  first, opening on {model.split('-')[1]} ({len(pairs)} sessions): "
+              f"${f:.4f} vs effort ${e:.4f} ({100 * (f / e - 1):+.1f}%)")
 
 
 if __name__ == "__main__":
