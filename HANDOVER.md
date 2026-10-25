@@ -8,6 +8,17 @@ The developer asked which unique features to add beyond Claude Code. Six were pr
 
 **Nothing has been run.** The sessions that wrote this code had no shell tool. No branch was created, pytest was not run, and nothing was committed. Treat all of it as untested.
 
+### Static-review fixes (2026-10-25, also not run)
+
+A read-through without a shell found and fixed these. Each has a new regression test.
+
+- **`tools._shell`:** the forbidden-character check ran *after* whitespace was collapsed, so a newline turned into a space and `echo a\necho b` got through. The check now runs on the raw command. Test: `test_newline_refused_before_whitespace_is_collapsed`.
+- **`tools._shell` timeout:** `subprocess.run(shell=True, timeout=…)` killed only `cmd.exe` on Windows. The child kept the pipe open, so the timeout had no effect. It now uses `Popen` + `communicate(timeout)` and kills the whole tree (`taskkill /T` on Windows, `killpg` on POSIX via `start_new_session`). `_kill_tree` is a copy of the helper in `llm.py`, because importing `llm` runs the auth check.
+- **`retrieval._boost_modified_chunks`:** a plain `endswith` boosted `src/oauth.py` when `auth.py` was modified. Matching now goes through `_same_or_inside()`, which compares whole path components and also handles git paths relative to a repo root above the cwd. Tests: `test_boost_matches_whole_path_components`, `test_boost_git_path_relative_to_repo_root_above_cwd`.
+- **`affected_tests.is_test_file`:** it counted `conftest.py` and every `.py` under `tests/` (fixtures, helpers) as a test file. Passed to pytest alone, those collect nothing and exit with code 5, which read as a failure. Only `test_*.py` and `*_test.py` count now. Test: `test_helpers_under_tests_are_not_run_directly`.
+- **`editor.apply_edits`:** the affected-tests run (and its "revert the last commit?" offer) now happens only if `auto_commit` returned True. Otherwise the revert could target an older commit.
+- **`llm._route_result`:** over budget, a query already routed to Haiku kept its high or max effort. It now drops to low effort too, as documented.
+
 ## Feature status
 
 | # | Feature | Status | Where |
@@ -51,15 +62,16 @@ A rule like "stay on the previous model to keep the cache warm" cannot be checke
    python -m pytest tests/unit/test_callgraph.py tests/unit/test_worktree_boost.py tests/unit/test_shell_tool.py tests/unit/test_budget.py tests/unit/test_affected_tests.py tests/unit/test_tools.py -x -q
    python -m pytest tests/unit tests/integration -q --timeout=120
    ```
-2. Fix any failures. Check these two first:
-   - `test_shell_tool.py`: how it quotes `sys.executable` on Windows.
-   - `test_editor.py`: `MockManager` patches `Path`, which may interfere with the new `check_after_edit` call in `editor.apply_edits`.
+2. Fix any failures. Both earlier suspects were reviewed by reading the code:
+   - `test_shell_tool.py`: quoting `sys.executable` on Windows looks right. Python wraps a `shell=True` command as `cmd /c "<command>"`, and cmd strips only the outer quotes. If it still fails, check paths that contain spaces.
+   - `test_editor.py`: `check_after_edit` returns early when `config.ALLOWED_COMMANDS` is empty, which is the suite default, and it swallows exceptions. `MockManager` patching `Path` should not reach it. If an editor test mocks `auto_commit` with `return_value=None`, the hook is now skipped, which is fine.
+   - `test_timeout_kills_command` should now finish in about 1 s on Windows. Before the fix it took about 30 s.
 3. Commit only specific paths. Leave out `diff_dump.txt` and `dist/`:
    ```powershell
-   git add claude_light tests/unit tests/integration HANDOVER.md
+   git add claude_light tests/unit tests/integration HANDOVER.md CLAUDE.md docs/CONFIG.md
    git commit -m "Add fetch_chunk, call graph, worktree boost, shell tool, /budget, affected tests"
    ```
-4. ~~Update the docs~~ Done (not committed): `docs/CONFIG.md` and `CLAUDE.md` now cover the new settings, tools, `/budget` and affected tests. Add both files to the `git add` in step 3.
+4. ~~Update the docs~~ Done (not committed): `docs/CONFIG.md` and `CLAUDE.md` now cover the new settings, tools, `/budget` and affected tests. They are included in the `git add` in step 3.
 
 ## Measurements still owed
 

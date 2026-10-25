@@ -18,10 +18,11 @@ _SKIP = set(SKIP_DIRS) | {".venv", "venv", "dist", ".claude_light_cache"}
 
 
 def is_test_file(path):
+    """A file pytest collects tests from. conftest.py and helpers or fixtures
+    under tests/ are not: passed to pytest alone they collect nothing and
+    pytest exits 5, which would read as a failure."""
     p = Path(path)
-    return (p.suffix == ".py"
-            and (p.name.startswith("test_") or p.name.endswith("_test.py") or p.name == "conftest.py"
-                 or "tests" in p.parts))
+    return p.suffix == ".py" and (p.name.startswith("test_") or p.name.endswith("_test.py"))
 
 
 def _all_test_files(root):

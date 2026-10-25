@@ -46,6 +46,11 @@ class TestShellTool(unittest.TestCase):
             self.assertTrue(is_error, cmd)
             self.assertIn("may not contain", out)
 
+    def test_newline_refused_before_whitespace_is_collapsed(self):
+        out, is_error = self.run_shell("echo a\necho b", allowed=["echo"])
+        self.assertTrue(is_error)
+        self.assertIn("may not contain", out)
+
     def test_allowed_command_runs_in_root(self):
         out, is_error = self.run_shell("echo hello", allowed=["echo"])
         self.assertFalse(is_error)

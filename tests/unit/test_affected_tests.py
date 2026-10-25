@@ -38,6 +38,12 @@ class TestAffectedTests(unittest.TestCase):
         self.assertEqual(at.find_affected_tests(["tests/test_other.py"], self.root),
                          ["tests/test_other.py"])
 
+    def test_helpers_under_tests_are_not_run_directly(self):
+        (self.root / "tests" / "conftest.py").write_text("import billing\n", encoding="utf-8")
+        (self.root / "tests" / "helpers.py").write_text("import billing\n", encoding="utf-8")
+        self.assertEqual(at.find_affected_tests(["pkg/billing.py"], self.root),
+                         ["tests/test_billing.py"])
+
     def test_non_python_edit_maps_to_nothing(self):
         self.assertEqual(at.find_affected_tests(["README.md"], self.root), [])
 

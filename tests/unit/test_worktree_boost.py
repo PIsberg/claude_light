@@ -27,6 +27,18 @@ def test_boost_directory_prefix(monkeypatch):
     assert out[0] == 0.5 and out[1] == 0.0
 
 
+def test_boost_matches_whole_path_components(monkeypatch):
+    _setup(monkeypatch, {"auth.py"})
+    out = retrieval._boost_modified_chunks(np.array([0.0, 0.0]), ["src/oauth.py::f", "auth.py::g"])
+    assert out[0] == 0.0 and out[1] == 0.5
+
+
+def test_boost_git_path_relative_to_repo_root_above_cwd(monkeypatch):
+    _setup(monkeypatch, {"sub/src/a.py"})
+    out = retrieval._boost_modified_chunks(np.array([0.0]), ["src/a.py::f"])
+    assert out[0] == 0.5
+
+
 def test_boost_disabled(monkeypatch):
     _setup(monkeypatch, {"src/a.py"})
     monkeypatch.setattr(config, "WORKTREE_BOOST", 0.0)

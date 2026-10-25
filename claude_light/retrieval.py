@@ -223,12 +223,24 @@ def _boost_modified_chunks(fused, ids):
     if not modified:
         return fused
     mask = np.array([
-        any(_chunk_id_to_file(cid).replace("\\", "/").endswith(m) or
-            (m.endswith("/") and m in _chunk_id_to_file(cid).replace("\\", "/") + "/")
-            for m in modified)
+        any(_same_or_inside(_chunk_id_to_file(cid), m) for m in modified)
         for cid in ids
     ], dtype=bool)
     return np.where(mask, fused + boost, fused)
+
+
+def _same_or_inside(chunk_file, git_path):
+    """True if `chunk_file` (relative to the cwd) is the file `git_path` names,
+    or lies in the untracked directory it names ("newdir/"). git paths are
+    relative to the repo root, which may sit above the cwd, so either side may
+    carry extra leading directories. Matching is on whole path components, so
+    "src/oauth.py" does not match a modified "auth.py"."""
+    f = chunk_file.replace("\\", "/")
+    if f.startswith("./"):
+        f = f[2:]
+    if git_path.endswith("/"):
+        return ("/" + f).find("/" + git_path) != -1 or f.startswith(git_path)
+    return f == git_path or f.endswith("/" + git_path) or git_path.endswith("/" + f)
 
 
 def _hybrid_select_pairs(ids, fused, budget, k, gap=None):

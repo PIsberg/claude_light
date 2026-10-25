@@ -327,11 +327,14 @@ def _shell(root, tool_input):
     """Run an allowlisted command. Returns (output, is_error); a non-zero exit
     is reported as an error result so the model sees the run failed."""
     import subprocess
-    command = " ".join(_str_arg(tool_input, "command").split())
-    bad = sorted(set(command) & _SHELL_FORBIDDEN)
+    raw_command = _str_arg(tool_input, "command")
+    # Check before collapsing whitespace: split() would turn a newline into a
+    # space and let "echo a\necho b" through as one harmless-looking command.
+    bad = sorted(set(raw_command) & _SHELL_FORBIDDEN)
     if bad:
         raise _ToolError("command may not contain " + " ".join(repr(c) for c in bad)
                          + "; run one simple command")
+    command = " ".join(raw_command.split())
     tool = _match_allowed(command)
     if tool is None:
         raise _ToolError(
@@ -343,20 +346,49 @@ def _shell(root, tool_input):
         argv, use_shell = command, True
     timeout = _shell_timeout()
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             argv, shell=use_shell, cwd=str(root),
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, encoding="utf-8", errors="replace", timeout=timeout,
+            text=True, encoding="utf-8", errors="replace",
+            # Own process group on POSIX, so a timeout can kill sh and its children.
+            start_new_session=(os.name != "nt"),
         )
-    except subprocess.TimeoutExpired as exc:
-        raw = exc.stdout or ""
-        if isinstance(raw, bytes):
-            raw = raw.decode("utf-8", errors="replace")
-        return f"$ {command}\n[TIMEOUT after {timeout}s, process killed]\n{_trim_output(raw)}", True
     except OSError as exc:
         raise _ToolError(f"failed to start: {exc}")
-    out = f"$ {command}\n(exit {proc.returncode})\n{_trim_output(proc.stdout or '')}"
+    try:
+        stdout, _ = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # subprocess.run would only kill the shell; on Windows the child keeps
+        # the pipe open and communicate() blocks until it exits on its own.
+        _kill_tree(proc)
+        try:
+            stdout, _ = proc.communicate(timeout=5)
+        except Exception:
+            stdout = ""
+        return f"$ {command}\n[TIMEOUT after {timeout:g}s, process killed]\n{_trim_output(stdout or '')}", True
+    out = f"$ {command}\n(exit {proc.returncode})\n{_trim_output(stdout or '')}"
     return out, proc.returncode != 0
+
+
+def _kill_tree(proc):
+    """Kill a shell=True process and everything it started. Kept here rather
+    than imported from llm.py, whose import runs the auth check."""
+    import subprocess
+    if proc.poll() is not None:
+        return
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           capture_output=True, stdin=subprocess.DEVNULL)
+        else:
+            import signal
+            os.killpg(proc.pid, signal.SIGKILL)
+    except Exception:
+        pass
+    try:
+        proc.kill()
+    except Exception:
+        pass
 
 
 def _grep(root, tool_input):

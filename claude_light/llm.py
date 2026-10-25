@@ -300,7 +300,7 @@ def _route_result(effort, model, max_tokens) -> tuple[str, str, int]:
     }
     budget = state.session_budget
     over_budget = budget is not None and state.session_cost >= budget
-    if over_budget and model != MODEL_HAIKU:
+    if over_budget and (model != MODEL_HAIKU or effort != "low"):
         effort, model, max_tokens = "low", MODEL_HAIKU, 2_048
     color = _effort_color[effort]
     model_short = model.replace("claude-", "").replace("-20251001", "")
