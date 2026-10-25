@@ -1315,7 +1315,7 @@ class TestApiToolLoop(unittest.TestCase):
         self.assertEqual(reply, "It is in pkg/retry.py.")
         self.assertEqual(len(calls), 2)
         self.assertEqual({t["name"] for t in calls[0]["tools"]},
-                         {"read_file", "fetch_chunk", "grep", "list_files"})
+                         {"read_file", "fetch_chunk", "grep", "list_files", "shell"})
         assistant, results = calls[1]["messages"][-2], calls[1]["messages"][-1]
         self.assertEqual(assistant["role"], "assistant")
         self.assertIs(assistant["content"], first.content)  # thinking blocks etc. passed back as is

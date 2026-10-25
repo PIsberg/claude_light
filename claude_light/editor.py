@@ -297,3 +297,5 @@ def apply_edits(edits, check_only=False, explanation="", auto_apply=False):
 
     if written_files and git_manager.is_git_repo():
         git_manager.auto_commit(written_files, explanation)
+        from claude_light.affected_tests import check_after_edit
+        check_after_edit(written_files)

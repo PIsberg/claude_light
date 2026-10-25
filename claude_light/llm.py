@@ -298,10 +298,18 @@ def _route_result(effort, model, max_tokens) -> tuple[str, str, int]:
         "high":   _ANSI_YELLOW,
         "max":    _ANSI_MAGENTA,
     }
+    budget = state.session_budget
+    over_budget = budget is not None and state.session_cost >= budget
+    if over_budget and model != MODEL_HAIKU:
+        effort, model, max_tokens = "low", MODEL_HAIKU, 2_048
     color = _effort_color[effort]
     model_short = model.replace("claude-", "").replace("-20251001", "")
+    extra = ""
+    if budget is not None:
+        est = _estimate_query_cost(max_tokens, _RETRIEVAL_BUDGET[effort], model)
+        extra = f"  ·  ~${est:.3f}" + ("  ·  over budget" if over_budget else "")
     print(
-        f"  {_ANSI_DIM}◆  {model_short}  ·  {color}{effort}{_ANSI_RESET}",
+        f"  {_ANSI_DIM}◆  {model_short}  ·  {color}{effort}{_ANSI_RESET}{_ANSI_DIM}{extra}{_ANSI_RESET}",
         file=sys.stderr,
     )
     return model, effort, max_tokens

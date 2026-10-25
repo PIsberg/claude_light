@@ -1,5 +1,6 @@
 """
-Read-only workspace tools the model can call in API-key mode.
+Workspace tools the model can call in API-key mode (read-only, plus an
+allowlist-gated `shell`).
 
 In OAuth mode the Claude CLI brings its own tools; in API-key mode a turn used
 to be one Messages call with only the retrieved chunks, so the model could not
@@ -105,7 +106,30 @@ TOOLS = [
         },
         "eager_input_streaming": True,
     },
+    {
+        "name": "shell",
+        "description": (
+            "Run one shell command from the project root and return its output and exit "
+            "code. Only commands the user allowed in advance (--allow-command) run; "
+            "anything else is refused. One simple command only: no ;, &, |, <, >, "
+            "backticks, $ or newlines. Use it to run the tests after an edit."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "The command, e.g. 'python -m pytest tests/unit -q'"},
+            },
+            "required": ["command"],
+            "additionalProperties": False,
+        },
+        "eager_input_streaming": True,
+    },
 ]
+
+_SHELL_FORBIDDEN = set(";&|<>`$\n\r")
+_SHELL_HEAD_LINES = 20
+_SHELL_TAIL_LINES = 80
+_SHELL_TIMEOUT_DEFAULT = 120
 
 
 class _ToolError(Exception):
@@ -122,6 +146,8 @@ def run_tool(name, tool_input, root=None):
             return _read_file(root, tool_input), False
         if name == "fetch_chunk":
             return _fetch_chunk(tool_input), False
+        if name == "shell":
+            return _shell(root, tool_input)
         if name == "grep":
             return _grep(root, tool_input), False
         if name == "list_files":
@@ -264,6 +290,73 @@ def _fetch_chunk(tool_input):
             links.append("Called by: " + ", ".join(callers))
         parts.append("\n".join([f"## {cid}", body.strip()] + links))
     return _cap("\n\n".join(parts))
+
+
+def _shell_timeout():
+    raw = os.environ.get("CLAUDE_LIGHT_RUN_TIMEOUT", "").strip()
+    if not raw:
+        return _SHELL_TIMEOUT_DEFAULT
+    try:
+        val = float(raw)
+    except ValueError:
+        return _SHELL_TIMEOUT_DEFAULT
+    return val if val > 0 else None
+
+
+def _match_allowed(command):
+    """The CLI tool name ('Bash' or 'PowerShell') of the first allowlist entry
+    whose prefix starts `command` on a word boundary, else None."""
+    from claude_light import config
+    for entry in config.ALLOWED_COMMANDS:
+        tool, prefix = config.command_rule(entry)
+        if prefix and (command == prefix or command.startswith(prefix + " ")):
+            return tool
+    return None
+
+
+def _trim_output(raw):
+    lines = raw.splitlines()
+    if len(lines) > _SHELL_HEAD_LINES + _SHELL_TAIL_LINES:
+        omitted = len(lines) - _SHELL_HEAD_LINES - _SHELL_TAIL_LINES
+        raw = "\n".join(lines[:_SHELL_HEAD_LINES] + [f"... ({omitted} lines omitted) ..."]
+                        + lines[-_SHELL_TAIL_LINES:])
+    return _cap(raw)
+
+
+def _shell(root, tool_input):
+    """Run an allowlisted command. Returns (output, is_error); a non-zero exit
+    is reported as an error result so the model sees the run failed."""
+    import subprocess
+    command = " ".join(_str_arg(tool_input, "command").split())
+    bad = sorted(set(command) & _SHELL_FORBIDDEN)
+    if bad:
+        raise _ToolError("command may not contain " + " ".join(repr(c) for c in bad)
+                         + "; run one simple command")
+    tool = _match_allowed(command)
+    if tool is None:
+        raise _ToolError(
+            f"{command!r} is not allowed. The user must start claude_light with "
+            "--allow-command '<prefix>' to permit it.")
+    if tool == "PowerShell":
+        argv, use_shell = ["powershell", "-NoProfile", "-NonInteractive", "-Command", command], False
+    else:
+        argv, use_shell = command, True
+    timeout = _shell_timeout()
+    try:
+        proc = subprocess.run(
+            argv, shell=use_shell, cwd=str(root),
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace", timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raw = exc.stdout or ""
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="replace")
+        return f"$ {command}\n[TIMEOUT after {timeout}s, process killed]\n{_trim_output(raw)}", True
+    except OSError as exc:
+        raise _ToolError(f"failed to start: {exc}")
+    out = f"$ {command}\n(exit {proc.returncode})\n{_trim_output(proc.stdout or '')}"
+    return out, proc.returncode != 0
 
 
 def _grep(root, tool_input):
