@@ -15,6 +15,11 @@ Claude Light uses Anthropic's ephemeral caching with three strategic breakpoints
 | 2 | End of history | All but newest turn | 90% off conversation history |
 | 3 | End of chunks | Consecutive same-topic queries | 90% off retrieved context |
 
+### Effort and model changes
+
+- **Effort.** A top-level `output_config.effort` change invalidates the history cache, and on some models the skeleton cache too. Requests therefore always send `BASE_EFFORT` at the top level, and the routed effort goes in an effort-only system message after the history breakpoint (`_apply_effort()`, see [routing.md](routing.md)). `warm_cache()` sends the same top-level effort, or it would warm an entry no turn reads.
+- **Model.** The cache is scoped per model; nothing written on Sonnet is read by Haiku or Opus. `warm_cache()` warms `MODEL` (Sonnet) only, so the first Haiku or Opus turn writes that model's skeleton entry, once per hour. Routing still picks the model per turn: keeping a session on one model cost more in `tests/benchmarks/benchmark_session_cache.py` than the cache writes it saves.
+
 ### Pricing (USD per 1M tokens)
 
 Every call is priced at the model that ran it (`MODEL_PRICES` in `config.py`, list prices checked 2026-10-24). The skeleton block uses the 1-hour cache TTL, so its writes cost the 1 h rate; in OAuth mode the cost the Claude CLI reports for the turn is used as is.

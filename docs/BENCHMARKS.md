@@ -35,6 +35,7 @@ comparison, and this document now reflects that.
 | `benchmark_retrieval.py` | RAG retrieval quality (Hit@K, MRR) | No | Free* |
 | `benchmark_models.py` | Embedding models, hybrid fusion, and per-effort budgets on this repo | No | Free (models download on first run) |
 | `benchmark_router.py` | Effort tier and model the router picks for each question | No | Free (static model download on first run) |
+| `benchmark_session_cache.py` | Session cost of three routing policies under a prompt-cache model | No | Free (static model download on first run) |
 | `benchmark_cost.py` | Real-world cost savings vs naive baseline | Yes | ~$0.05–$0.50 |
 | `benchmark_claude_code.py` | Claude Code vs `claude_light` vs naive baseline | Yes | Varies with live API/tool runs |
 
@@ -456,6 +457,48 @@ The `--sweep` of gap and floors could not restore 6/6 off-topic without losing
 the gain, so the change was reverted. Re-tuning on these 41 questions would
 have been fitting the answer key. The patch is kept out of the repo; the
 mechanism is described here so the next attempt starts from the cause.
+
+---
+
+## 2c · `benchmark_session_cache.py` — Routing Policies and the Prompt Cache
+
+### Purpose
+
+Prices one session of the repo questions under three routing policies, to decide how effort and model changes should reach the API without throwing away the prompt cache (lever 1 in `TOKEN-SAVINGS.md`).
+
+### Methodology
+
+The questions in `tests/fixtures/repo_questions.json` are routed with the real `route_query()` and static embedder, then played as one session, in fixture order and in 20 shuffled orders. Each turn is priced with `MODEL_PRICES` and a cache model taken from the Claude API docs: the skeleton, tools and system prompt (measured from this repo at 4 characters per token) are cached per model for 1 hour; the history is cached per model for 5 minutes and stays readable across switches to other models; history compression rewrites it. Output tokens per effort (low 600, medium 1,500, high 3,000, max 6,000) and 400 answer tokens kept in history are assumptions, scaled with `--output-scale`.
+
+| Policy | What it models |
+|---|---|
+| `old` | Per-turn model and top-level effort; an effort change on the same model invalidates the history cache |
+| `effort` | Per-turn model, top-level effort fixed, routed effort in an effort message (`llm._apply_effort`) |
+| `pinned` | `effort`, plus the session's model only moves up a tier |
+
+Whether an effort change also invalidates the cached skeleton is model-specific and not documented per model; `--effort-in-prefix` models that case.
+
+### Running
+
+```bash
+python tests/benchmarks/benchmark_session_cache.py
+python tests/benchmarks/benchmark_session_cache.py --gap 3 --output-scale 0.3 --effort-in-prefix
+```
+
+### Results (2026-10-25)
+
+43 questions: 33 Haiku low, 8 Sonnet high, 2 Sonnet medium. Prefix 11,577 tokens. Mean of 20 shuffled sessions, change against `old`:
+
+| Gap between turns | Output | Effort in prefix | `effort` | `pinned` |
+|---|---|---|---|---|
+| 2 min | x1.0 | no | -0.4% | +62.8% |
+| 2 min | x1.0 | yes | -6.9% | +52.2% |
+| 2 min | x0.3 | no | -0.6% | +63.9% |
+| 2 min | x0.3 | yes | -10.1% | +48.3% |
+| 1 min | x1.0 | no | -0.5% | +67.4% |
+| 3 min | x1.0 | yes | -8.9% | +49.0% |
+
+The fixed top-level effort is never more expensive, and saves most when an effort change would also have invalidated the skeleton. Pinning the model loses in every case: Haiku-routed questions run on Sonnet at 20 times the output price, to save cache writes that cost Haiku almost nothing. Limits: this is a cost model, not a live run, and it does not score answers; pinning would raise answer quality on the questions it moves to Sonnet.
 
 ---
 

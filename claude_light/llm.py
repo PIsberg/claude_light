@@ -459,9 +459,18 @@ def _maybe_compress_history():
         print(f"\n  {_T_ERR}  History compression failed ({e}) — truncating.")
         state.conversation_history = state.conversation_history[-(MAX_HISTORY_TURNS * 2):]
 
-# The 1h cache TTL used in _build_system_blocks() requires this beta header;
+# Changing the top-level effort between requests invalidates the cached
+# conversation, and on some models the cached tools and system prompt too. So
+# every request sends BASE_EFFORT, and each turn's routed effort travels as an
+# effort-only system message (EFFORT_BETA), which keeps the cache. Lowering
+# effort that way is reliable, so the base is the highest level used often.
+BASE_EFFORT = "high"
+EFFORT_BETA = "mid-conversation-output-config-2026-07-01"
+
+# The 1h cache TTL used in _build_system_blocks() requires the first beta;
 # without it the API silently drops the cache_control block (no caching at all).
-_EXTENDED_CACHE_HEADERS = {"anthropic-beta": "extended-cache-ttl-2025-04-11"}
+# The second allows the effort messages above.
+_EXTENDED_CACHE_HEADERS = {"anthropic-beta": f"extended-cache-ttl-2025-04-11,{EFFORT_BETA}"}
 
 # The 5.5 models always think adaptively; depth is set by output_config.effort
 # and a thinking budget is rejected with a 400. Thinking tokens count against
@@ -471,8 +480,18 @@ _MIN_MAX_TOKENS = {"low": 8_000, "medium": 16_000, "high": 32_000, "max": 64_000
 
 
 def _apply_effort(create_kwargs: dict, effort: str) -> None:
-    create_kwargs["output_config"] = {"effort": effort}
+    """Run the request's last user turn at `effort` without changing the top-level effort."""
+    create_kwargs["output_config"] = {"effort": BASE_EFFORT}
     create_kwargs["max_tokens"] = max(create_kwargs["max_tokens"], _MIN_MAX_TOKENS[effort])
+    # The effort message goes right before the question and is not stored in
+    # the history: the history's cache breakpoint sits ahead of it, so the next
+    # turn's prefix still matches. The CLI path flattens messages to text.
+    if effort != BASE_EFFORT and AUTH_MODE != "OAUTH":
+        messages = create_kwargs["messages"]
+        create_kwargs["messages"] = messages[:-1] + [
+            {"role": "system", "content": [], "output_config": {"effort": effort}},
+            messages[-1],
+        ]
 
 
 def _build_system_blocks(skeleton):
@@ -1259,6 +1278,8 @@ def warm_cache(quiet=False):
             tools=_tools.TOOLS,
             system=_build_system_blocks(skeleton),
             messages=[{"role": "user", "content": "ok"}],
+            # Effort is rendered into the prompt; warm at the level turns send.
+            output_config={"effort": BASE_EFFORT},
             extra_headers=_EXTENDED_CACHE_HEADERS,
         )
         cost = calculate_cost(response.usage, MODEL)

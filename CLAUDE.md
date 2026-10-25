@@ -61,4 +61,5 @@ Install with `installers/install.sh`, `installers/install_macos.sh` or `installe
 - **Never load `index.pkl`.** The disk cache loads with `allow_pickle=False` because a cloned repo can ship a hostile pickle.
 - **Tests never call the real API or write the real stats file.** `tests/conftest.py` sets a mock key, `CLAUDE_LIGHT_HYBRID=0` and a temp `CLAUDE_LIGHT_STATS_FILE`. Keep those settings when you add tests.
 - **Auto-commit is the undo path.** AI edits commit as `Claude: [summary]`. `/undo` refuses unless the last commit is one of those and no file in it has changed since.
+- **The top-level effort never changes per request.** Requests send `BASE_EFFORT`; `_apply_effort()` puts the turn's effort in an effort-only system message before the question. A per-request `output_config.effort` drops the cached history.
 - **A token change needs a measurement.** Run the relevant benchmark before and after, and keep only changes that show a gain. See [docs/BENCHMARKS.md](docs/BENCHMARKS.md).

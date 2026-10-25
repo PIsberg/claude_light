@@ -28,5 +28,5 @@ The Retrieval-Augmented Generation pipeline finds and injects only relevant code
 | high | Sonnet 5.5 | 8,192 | 32,000 | 6,000 |
 | max | Opus 5.5 | 16,000 | 64,000 | 9,000 |
 
-The 5.5 models always think adaptively. The tier's effort is sent as `output_config.effort` (a thinking budget is rejected with a 400), and because thinking tokens count against `max_tokens`, `_apply_effort()` raises the cap to the "Sent" column. The router's own figure is still what the cost gate below estimates with. In OAuth mode only the model is passed to the CLI.
+The 5.5 models always think adaptively. The tier's effort is sent in an effort-only system message before the question, while the top-level `output_config.effort` stays at `BASE_EFFORT` so the cache survives effort changes (see [routing.md](routing.md)). A thinking budget is rejected with a 400. Because thinking tokens count against `max_tokens`, `_apply_effort()` raises the cap to the "Sent" column. The router's own figure is still what the cost gate below estimates with. In OAuth mode only the model is passed to the CLI.
 

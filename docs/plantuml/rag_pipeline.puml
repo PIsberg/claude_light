@@ -5,15 +5,21 @@ start
 
 :User enters query;
 partition "1. Query Routing" {
-  :Analyze query keywords;
-  if (Contains MAX signals?\n(architect, optimize, trade-off)) then (yes, 2+ hits)
-    :effort = max\nmodel = Opus\nmax_tokens = 16,000;
-  elseif (Contains HIGH signals?\n(implement, refactor, fix)) then (yes, 1+ hits)
-    :effort = high\nmodel = Sonnet\nmax_tokens = 8,192;
-  elseif (Contains LOW signals only?\n(list, show, where)) then (yes)
+  :Lexical keyword scores\n(Arch 4.0 / Logic 5.0 / Infra 0.5 each);
+  :Semantic scores via embedder\n(cosine vs intent prototypes, FLOOR=0.30);
+  :Fuse scores additively per dimension;
+  :Apply multipliers:\nfile-path +3.0, word-count, history depth;
+  if (Lookup-dominant?\n(infra > arch+logic, arch+logic < 1.0)) then (yes)
     :effort = low\nmodel = Haiku\nmax_tokens = 2,048;
-  else (default/uncertain)
+  elseif (Score >= 12.0?) then (yes)
+    :effort = max\nmodel = Opus\nmax_tokens = 16,000;
+    :Cost gate: est_cost > $0.12\nAND score < 12*1.15?\n→ demote to high;
+  elseif (Score >= 5.0?) then (yes)
+    :effort = high\nmodel = Sonnet\nmax_tokens = 8,192;
+  elseif (Score >= 1.5 or WordCount > 15?) then (yes)
     :effort = medium\nmodel = Sonnet\nmax_tokens = 4,096;
+  else (low/greeting)
+    :effort = low\nmodel = Haiku\nmax_tokens = 2,048;
   endif
   :Set retrieval budget:\nlow=1.5K, med=3K, high=6K, max=9K tokens;
 }
@@ -24,7 +30,7 @@ partition "2. Chunk Retrieval" {
   :Compute similarity scores\nscores = embeddings @ query_emb;
   
   fork
-    :Filter 1: MIN_SCORE >= 0.45\n(absolute floor);
+    :Filter 1: MIN_SCORE >= 0.35\n(absolute floor);
   fork again
     :Filter 2: score >= top_score * 0.60\n(relative floor);
   end fork
@@ -43,9 +49,7 @@ partition "3. Context Assembly" {
 }
 
 partition "4. API Call" {
-  if (effort == max) then (yes)
-    :Enable thinking mode\nbudget_tokens = 10,000;
-  endif
+  :Send output_config.effort = high\n+ effort message for the tier\nraise max_tokens for thinking;
   :Call Anthropic API\nwith streaming;
   :Stream response to terminal;
 }
