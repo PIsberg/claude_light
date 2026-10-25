@@ -14,6 +14,7 @@ partition "1. Query Routing" {
   elseif (Score >= 12.0?) then (yes)
     :effort = max\nmodel = Opus\nmax_tokens = 16,000;
     :Cost gate: est_cost > $0.12\nAND score < 12*1.15?\n→ demote to high;
+    :If still Opus, ask: Opus 5.5 / Fable 5.1 / Sonnet 5.5\n(no terminal or Esc → Sonnet 5.5);
   elseif (Score >= 5.0?) then (yes)
     :effort = high\nmodel = Sonnet\nmax_tokens = 8,192;
   elseif (Score >= 1.5 or WordCount > 15?) then (yes)

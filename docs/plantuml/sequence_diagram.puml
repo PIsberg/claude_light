@@ -28,6 +28,8 @@ Main -> LLM : chat(query)
 activate LLM
 LLM -> LLM : route_query()
 note right : Classifies effort level\n(low/medium/high/max)\nSelects model & budget
+LLM -> LLM : _finalize_route()
+note right : Budget cap, top-tier prompt\n(Opus / Fable / Sonnet),\nsession model (ROUTE_ONCE)
 
 LLM -> Retrieval : retrieve(query, budget)
 activate Retrieval

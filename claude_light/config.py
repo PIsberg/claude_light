@@ -85,6 +85,8 @@ ECONOMY_MODE = "USD" if AUTH_MODE == "API_KEY" else "TOKENS"
 MODEL_HAIKU             = "claude-haiku-5-5"
 MODEL_SONNET            = "claude-sonnet-5-5"
 MODEL_OPUS              = "claude-opus-5-5"
+# Never routed to: offered when a question routes to Opus (llm._finalize_route).
+MODEL_FABLE             = "claude-fable-5-1"
 MODEL                   = MODEL_SONNET              # default; overridden per-turn by router
 SUMMARY_MODEL           = MODEL_HAIKU               # cheap model for history compression
 HEARTBEAT_SECS          = 30
@@ -369,6 +371,8 @@ MODEL_PRICES = {
     MODEL_HAIKU:  {"input": 0.10, "write": 0.125, "write_1h": 0.20, "read": 0.01, "output": 0.50},
     MODEL_SONNET: {"input": 2.00, "write": 2.50,  "write_1h": 4.00, "read": 0.10, "output": 10.00},
     MODEL_OPUS:   {"input": 4.00, "write": 5.00,  "write_1h": 8.00, "read": 0.20, "output": 20.00},
+    # claude-api skill models.md, 2026-10-25: reads are 0.025x input, writes the usual 1.25x / 2x
+    MODEL_FABLE:  {"input": 10.00, "write": 12.50, "write_1h": 20.00, "read": 0.25, "output": 50.00},
 }
 
 

@@ -29,6 +29,7 @@ Every call is priced at the model that ran it (`MODEL_PRICES` in `config.py`, li
 | Haiku 5.5 | $0.10 | $0.125 | $0.20 | $0.01 | $0.50 |
 | Sonnet 5.5 | $2.00 | $2.50 | $4.00 | $0.10 | $10.00 |
 | Opus 5.5 | $4.00 | $5.00 | $8.00 | $0.20 | $20.00 |
+| Fable 5.1 | $10.00 | $12.50 | $20.00 | $0.25 | $50.00 |
 
 <details>
 <summary>View PlantUML Source</summary>

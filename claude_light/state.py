@@ -21,6 +21,9 @@ budget_asked = False
 # ROUTE_ONCE (on by default): the model the session's first turn routed to.
 # None until then; /clear resets it.
 session_model = None
+# "Sonnet 5.5, and don't ask again" at the top-tier prompt: later questions
+# routed to Opus run on Sonnet without asking.
+top_tier_declined = False
 session_tokens = {"input": 0, "cache_write": 0, "cache_read": 0, "output": 0, "compress_pre": 0, "compress_post": 0}
 # USD per token category, each call priced at the model that ran it
 session_costs = {"input": 0.0, "cache_write": 0.0, "cache_read": 0.0, "output": 0.0,
