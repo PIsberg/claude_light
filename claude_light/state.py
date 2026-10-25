@@ -18,7 +18,7 @@ session_cost = 0.0
 # tier. None = no cap. budget_asked: the one-time prompt has been answered.
 session_budget = None
 budget_asked = False
-# CLAUDE_LIGHT_ROUTE_ONCE=1: the model the session's first turn routed to.
+# ROUTE_ONCE (on by default): the model the session's first turn routed to.
 # None until then; /clear resets it.
 session_model = None
 session_tokens = {"input": 0, "cache_write": 0, "cache_read": 0, "output": 0, "compress_pre": 0, "compress_post": 0}

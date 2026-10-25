@@ -115,10 +115,12 @@ HYBRID_RETRIEVAL   = os.environ.get("CLAUDE_LIGHT_HYBRID", "1") != "0"
 CALL_GRAPH         = os.environ.get("CLAUDE_LIGHT_CALLGRAPH", "0") == "1"
 CALL_GRAPH_MAX     = 3     # most related chunks added per query
 # Keep the model the first turn routes to for the whole session (effort is
-# still routed per turn). Off by default: in benchmark_session_cache.py a
-# session that starts on Sonnet cost 69% more, and one that starts on Haiku
-# cost 91% less by answering every later question on Haiku. /clear re-routes.
-ROUTE_ONCE         = os.environ.get("CLAUDE_LIGHT_ROUTE_ONCE", "0") == "1"
+# still routed per turn); /clear re-routes. On by default, the developer's
+# choice: in benchmark_session_cache.py a session that opens on Sonnet cost
+# 71% more than per-turn routing, and one that opens on Haiku cost 91% less
+# by answering every later question on Haiku (quality unscored, #90).
+# CLAUDE_LIGHT_ROUTE_ONCE=0 routes the model per turn again.
+ROUTE_ONCE         = os.environ.get("CLAUDE_LIGHT_ROUTE_ONCE", "1") != "0"
 
 # Hybrid retrieval adds this many fused z-score units to chunks in files git
 # reports as modified, staged or untracked: questions are mostly about what you

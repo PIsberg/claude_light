@@ -23,7 +23,7 @@ Policies:
   pinned   effort, plus the model only moves up a tier within a session
            (measured and rejected, see TOKEN-SAVINGS.md)
   first    effort, plus the first turn's model for the whole session
-           (CLAUDE_LIGHT_ROUTE_ONCE=1, off by default); its cost depends on
+           (ROUTE_ONCE, the default); its cost depends on
            the opening question, so each question opens one session and the
            result is split by the opener's model
 

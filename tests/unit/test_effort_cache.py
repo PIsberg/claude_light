@@ -93,8 +93,10 @@ class TestPerMessageEffort(unittest.TestCase):
         self.assertEqual({r["output_config"]["effort"] for r in sent}, {llm.BASE_EFFORT})
 
     def test_routed_model_still_changes_per_turn(self):
-        # Default. Keeping the first turn's model is opt-in, see TestRouteOnce.
-        sent = self._run_turns([SONNET_MEDIUM, HAIKU_LOW])
+        # CLAUDE_LIGHT_ROUTE_ONCE=0. The default keeps the first turn's model,
+        # see TestRouteOnce.
+        with patch("claude_light.config.ROUTE_ONCE", False):
+            sent = self._run_turns([SONNET_MEDIUM, HAIKU_LOW])
         self.assertEqual([r["model"] for r in sent], [llm.MODEL_SONNET, llm.MODEL_HAIKU])
 
     def test_routed_effort_rides_in_an_effort_message(self):
@@ -169,7 +171,7 @@ class TestWarmCacheMatchesTurns(unittest.TestCase):
 
 
 class TestRouteOnce(unittest.TestCase):
-    """CLAUDE_LIGHT_ROUTE_ONCE=1: the first turn's model runs the whole session."""
+    """ROUTE_ONCE (the default): the first turn's model runs the whole session."""
 
     def setUp(self):
         self._saved = (list(state.conversation_history), state.turn_count,

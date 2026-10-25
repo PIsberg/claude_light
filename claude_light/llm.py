@@ -1273,7 +1273,7 @@ def warm_cache(quiet=False):
     from claude_light import tools as _tools
     with state.lock:
         skeleton = state.skeleton_context
-        # Set only under ROUTE_ONCE, after the first turn: warm what turns read.
+        # Set after the first turn when ROUTE_ONCE is on: warm what turns read.
         model = state.session_model or MODEL
     try:
         response = client.messages.create(

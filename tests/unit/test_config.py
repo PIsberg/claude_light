@@ -130,3 +130,25 @@ class TestMeasuredRetrievalDefaults(unittest.TestCase):
             env=env, capture_output=True, text=True, cwd=str(Path(__file__).resolve().parents[2]),
         )
         self.assertEqual(out.stdout.strip(), "True", out.stderr)
+
+
+class TestRouteOnceDefault(unittest.TestCase):
+    """The first question's model is kept by default; CLAUDE_LIGHT_ROUTE_ONCE=0
+    restores per-turn model routing."""
+
+    def _route_once(self, value=None):
+        import subprocess
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDE_LIGHT_ROUTE_ONCE"}
+        if value is not None:
+            env["CLAUDE_LIGHT_ROUTE_ONCE"] = value
+        out = subprocess.run(
+            [sys.executable, "-c", "import claude_light.config as c; print(c.ROUTE_ONCE)"],
+            env=env, capture_output=True, text=True, cwd=str(Path(__file__).resolve().parents[2]),
+        )
+        return out.stdout.strip() or out.stderr
+
+    def test_on_without_env_override(self):
+        self.assertEqual(self._route_once(), "True")
+
+    def test_zero_turns_it_off(self):
+        self.assertEqual(self._route_once("0"), "False")

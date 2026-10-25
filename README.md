@@ -204,7 +204,7 @@ The prompt appears in about half a second: the index builds in the background, a
 | Command / key | What it does |
 |---|---|
 | `/help` | Commands and keys |
-| `/clear` | Start a new conversation (with `CLAUDE_LIGHT_ROUTE_ONCE=1`, the next question also picks the model again) |
+| `/clear` | Start a new conversation; the next question also picks the model again, which the session then keeps (`CLAUDE_LIGHT_ROUTE_ONCE=0` picks it per question) |
 | `/compact` | Replace the conversation so far with a summary, so later turns send fewer tokens |
 | `/cost` | Token usage and cost for this session, and lifetime savings |
 | `/run <cmd>` | Run a shell command and ask Claude about its output |

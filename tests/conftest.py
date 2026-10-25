@@ -31,6 +31,16 @@ os.environ["CLAUDE_LIGHT_STATS_FILE"] = os.path.join(
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _fresh_session_model():
+    """ROUTE_ONCE is on by default: a model pinned by one test's first route
+    must not carry into the next test."""
+    import claude_light.state as state
+    state.session_model = None
+    yield
+    state.session_model = None
+
+
 @pytest.fixture(scope="session")
 def project_root_fixture():
     """Provide the project root directory."""

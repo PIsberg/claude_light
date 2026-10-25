@@ -475,7 +475,7 @@ The questions in `tests/fixtures/repo_questions.json` are routed with the real `
 | `old` | Per-turn model and top-level effort; an effort change on the same model invalidates the history cache |
 | `effort` | Per-turn model, top-level effort fixed, routed effort in an effort message (`llm._apply_effort`) |
 | `pinned` | `effort`, plus the session's model only moves up a tier |
-| `first` | `effort`, plus the first question's model for the whole session (`CLAUDE_LIGHT_ROUTE_ONCE=1`). Its cost depends on the opening question, so each of the 43 questions opens one session and the result is split by the opener's model |
+| `first` | `effort`, plus the first question's model for the whole session (the default, `ROUTE_ONCE`). Its cost depends on the opening question, so each of the 43 questions opens one session and the result is split by the opener's model |
 
 Whether an effort change also invalidates the cached skeleton is model-specific and not documented per model; `--effort-in-prefix` models that case.
 
@@ -509,7 +509,7 @@ The fixed top-level effort is never more expensive, and saves most when an effor
 | 2 min | x1.0 | yes | +71.1% | -91.0% |
 | 3 min | x0.3 | no | +75.0% | -90.9% |
 
-Averaged over openers in the repo mix, `first` costs about 54% less than `effort`, but all of that comes from sessions that open on Haiku and then answer the 10 Sonnet-routed questions on Haiku as well. Whichever question happens to come first decides the session's model, so it ships off by default, as an opt-in for users who want one predictable model and accept that trade.
+Averaged over openers in the repo mix, `first` costs about 54% less than `effort`, but all of that comes from sessions that open on Haiku and then answer the 10 Sonnet-routed questions on Haiku as well. Whichever question happens to come first decides the session's model. It is the default by the developer's choice, for one predictable model per session; `CLAUDE_LIGHT_ROUTE_ONCE=0` restores per-turn routing.
 
 ---
 
