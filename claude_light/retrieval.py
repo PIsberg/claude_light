@@ -186,6 +186,51 @@ def _exclude_test_chunks(fused, ids, query):
     return np.where(mask, -np.inf, fused)
 
 
+_WORKTREE_TTL = 5.0
+_worktree_cache = (0.0, frozenset())
+
+
+def _modified_paths():
+    """Normalised paths git reports as modified, staged or untracked. Cached for
+    a few seconds so one query costs at most one `git status`."""
+    global _worktree_cache
+    import time
+    now = time.monotonic()
+    if now - _worktree_cache[0] < _WORKTREE_TTL:
+        return _worktree_cache[1]
+    try:
+        from claude_light import git_manager
+        raw = git_manager.get_modified_files()
+    except Exception:
+        raw = []
+    paths = set()
+    for p in raw:
+        p = p.split(" -> ")[-1].strip().strip('"').replace("\\", "/")
+        if p:
+            paths.add(p)
+    _worktree_cache = (now, frozenset(paths))
+    return _worktree_cache[1]
+
+
+def _boost_modified_chunks(fused, ids):
+    """Raise the fused score of chunks in files being worked on, by
+    WORKTREE_BOOST z-score units. Returns a new array; -inf stays -inf."""
+    from claude_light import config
+    boost = config.WORKTREE_BOOST
+    if not boost:
+        return fused
+    modified = _modified_paths()
+    if not modified:
+        return fused
+    mask = np.array([
+        any(_chunk_id_to_file(cid).replace("\\", "/").endswith(m) or
+            (m.endswith("/") and m in _chunk_id_to_file(cid).replace("\\", "/") + "/")
+            for m in modified)
+        for cid in ids
+    ], dtype=bool)
+    return np.where(mask, fused + boost, fused)
+
+
 def _hybrid_select_pairs(ids, fused, budget, k, gap=None):
     """Chunks within HYBRID_SCORE_GAP of the top fused score, then the usual
     budget and file-diversity selection."""
@@ -392,7 +437,7 @@ def _retrieve_hybrid(query, budget, k, effort):
     fused = hybrid_scores(fast_scores, dense_scores)
     if fused is None:
         return "", []
-    fused = _exclude_test_chunks(fused, ids, query)
+    fused = _boost_modified_chunks(_exclude_test_chunks(fused, ids, query), ids)
     top_pairs = _hybrid_select_pairs(ids, fused, budget, k)
     return _finish(top_pairs, budget, effort)
 

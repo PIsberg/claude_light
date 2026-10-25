@@ -111,6 +111,11 @@ HYBRID_RETRIEVAL   = os.environ.get("CLAUDE_LIGHT_HYBRID", "1") != "0"
 # callgraph.py) while the token budget has room. CLAUDE_LIGHT_CALLGRAPH=0 turns it off.
 CALL_GRAPH         = os.environ.get("CLAUDE_LIGHT_CALLGRAPH", "1") != "0"
 CALL_GRAPH_MAX     = 3     # most related chunks added per query
+
+# Hybrid retrieval adds this many fused z-score units to chunks in files git
+# reports as modified, staged or untracked: questions are mostly about what you
+# are working on now. CLAUDE_LIGHT_WORKTREE_BOOST=0 turns it off.
+WORKTREE_BOOST     = float(os.environ.get("CLAUDE_LIGHT_WORKTREE_BOOST", "0.5"))
 FAST_EMBED_MODEL   = "sentence-transformers/static-retrieval-mrl-en-v1"
 DENSE_EMBED_MODEL  = "all-mpnet-base-v2"
 HYBRID_FAST_WEIGHT = 0.5
