@@ -3,6 +3,7 @@
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -64,11 +65,18 @@ class TestShellTool(unittest.TestCase):
         self.assertIn("(exit 3)", out)
 
     def test_timeout_kills_command(self):
-        cmd = f"{_PY} -c \"import time; time.sleep(30)\""
+        # No ';' in the command: the forbidden-character check would refuse it
+        # before the timeout path ever ran.
+        cmd = f"{_PY} -c \"__import__('time').sleep(30)\""
+        start = time.monotonic()
         with mock.patch.dict(os.environ, {"CLAUDE_LIGHT_RUN_TIMEOUT": "1"}):
             out, is_error = self.run_shell(cmd, allowed=[_PY])
+        elapsed = time.monotonic() - start
         self.assertTrue(is_error)
         self.assertIn("TIMEOUT", out)
+        # Killing only the shell leaves the child holding the pipe, and the
+        # call then waits out the 5 s grace communicate() as well (about 6 s).
+        self.assertLess(elapsed, 4)
 
     def test_missing_command_arg(self):
         out, is_error = run_tool("shell", {}, root=self.root)
