@@ -57,7 +57,6 @@ def main():
     if args.margin is not None:
         llm.ROUTER_ESCALATE_MARGIN = args.margin
     margin = llm.ROUTER_ESCALATE_MARGIN
-    config.ROUTE_ONCE = False   # measure the router, not one session's first pick
 
     tiers, models = Counter(), Counter()
     in_band = []

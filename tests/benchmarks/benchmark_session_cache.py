@@ -74,7 +74,6 @@ def route_all():
     state.EMBED_MODEL = config.FAST_EMBED_MODEL
     state.embedder = SentenceTransformer(config.FAST_EMBED_MODEL, device="cpu")
     state.embedder_ready.set()
-    config.ROUTE_ONCE = False   # route every question; simulate() applies the policies
     questions = [q["question"] for q in json.loads(FIXTURE.read_text(encoding="utf-8"))["questions"]]
     routes = []
     with contextlib.redirect_stderr(io.StringIO()):   # route_query prints the route line
