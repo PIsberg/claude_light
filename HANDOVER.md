@@ -59,7 +59,7 @@ A rule like "stay on the previous model to keep the cache warm" cannot be checke
    git add claude_light tests/unit tests/integration HANDOVER.md
    git commit -m "Add fetch_chunk, call graph, worktree boost, shell tool, /budget, affected tests"
    ```
-4. Update the docs, which do not yet mention any of this: `docs/CONFIG.md` (`CALL_GRAPH`, `CALL_GRAPH_MAX`, `WORKTREE_BOOST`, `CLAUDE_LIGHT_CALLGRAPH`, `CLAUDE_LIGHT_WORKTREE_BOOST`, `CLAUDE_LIGHT_RUN_TIMEOUT`) and `CLAUDE.md` (new tools, `/budget`, affected-tests behaviour).
+4. ~~Update the docs~~ Done (not committed): `docs/CONFIG.md` and `CLAUDE.md` now cover the new settings, tools, `/budget` and affected tests. Add both files to the `git add` in step 3.
 
 ## Measurements still owed
 

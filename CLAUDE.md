@@ -38,6 +38,13 @@ python3 claude_light.py --test-mode small        # 5 files, 10 methods each
 pytest
 ```
 
+### Tools, `/budget` and affected tests
+
+- **`fetch_chunk(id)`**: returns up to 5 method bodies by `path::symbol` or bare name, with callers and callees. It needs the index to be ready.
+- **`shell`**: runs one command from the project root, only if it starts with an `--allow-command` prefix. Commands containing `; & | < > `` ` `` $` or a newline are rejected. It is always in `TOOLS`, so the cached prompt prefix stays stable.
+- **`/budget`**: `/budget 2.50` sets a spend cap, `/budget off` removes it, `/budget` shows cap and spend. At the cap, routing drops to Haiku at low effort. While a budget is set, the route line shows a per-turn estimate.
+- **Affected tests**: after an auto-commit, if a pytest command is allowed, the tests that mention the edited module run. On failure it offers to revert the commit and never reverts on its own. It does not run after OAuth-agent edits.
+
 Run from the root of the project you want to query. Exits with an error if no authentication is found, unless `--test-mode` is used.
 
 Authentication, in order: `ANTHROPIC_API_KEY`; `~/.anthropic` or `./.env`; `~/.claude_light_automation_token` (recommended on Windows); `~/.claude/.credentials.json` from `claude auth login`. An API key bills per token; a Pro subscription is flat-rate. The mode follows the credential found.
