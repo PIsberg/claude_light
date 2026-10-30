@@ -124,6 +124,22 @@ class TestSaveAndRestore(_SessionTest):
         self.assertNotEqual(a, b)
         self.assertEqual(a, session.session_file(Path("/work/a")))
 
+    @unittest.skipUnless(os.name == "posix", "POSIX permission bits; Windows ignores them")
+    def test_only_the_user_can_read_saved_conversations(self):
+        # They quote the user's code. With the usual umask 022 the file and
+        # directory would otherwise be readable by every local account.
+        sessions = self.dir / "fresh"
+        with patch.object(config, "SESSION_DIR", sessions):
+            old = os.umask(0o022)
+            try:
+                self._fill_state()
+                session.save()
+            finally:
+                os.umask(old)
+            path = session.session_file()
+        self.assertEqual(sessions.stat().st_mode & 0o077, 0)
+        self.assertEqual(path.stat().st_mode & 0o077, 0)
+
     def test_save_failure_does_not_raise(self):
         self._fill_state()
         with patch.object(config, "SESSION_DIR", self.dir / "file"):
