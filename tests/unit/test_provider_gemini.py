@@ -400,8 +400,39 @@ def test_t027_done_forbidden_tool_with_its_kind_denied_does_not_raise(tool, kind
     assert reply == "a fine answer"
 
 
-@pytest.mark.parametrize("tool", ["search_web", "read_file"])
-def test_t027_other_tools_do_not_raise(tool):
+_ALLOWED = ["search_web", "read_file", "view_file", "list_dir", "find_by_name", "grep_search"]
+
+
+@pytest.mark.parametrize("tool", _ALLOWED)
+def test_t027_allowlisted_read_only_tools_do_not_raise(tool):
     out = _ndjson({"event": "init"}, _tool_step(tool), _result("a fine answer"))
+    (reply, _u, _p), _, _ = _complete(out)
+    assert reply == "a fine answer"
+
+
+_NOT_ALLOWED = ["execute_browser_javascript", "browser_input", "invoke_subagent",
+                "run_workflow", "schedule", "generate_image", "define_subagent",
+                "some_new_tool"]
+
+
+@pytest.mark.parametrize("tool", _NOT_ALLOWED)
+def test_t027_done_tool_outside_the_allowlist_raises_even_with_a_response(tool):
+    out = _ndjson({"event": "init"}, _tool_step(tool), _result("a fine answer"))
+    with pytest.raises(ProviderError) as exc:
+        _complete(out)
+    assert f"agy ran {tool}, which claude_light forbids" in str(exc.value)
+
+
+def test_t027_two_done_commands_with_one_command_denial_raises():
+    out = _ndjson({"event": "init"}, _tool_step("run_command"), _tool_step("run_command"),
+                  _result("a fine answer", denied_actions=_denied("command", "RunCommand")))
+    with pytest.raises(ProviderError) as exc:
+        _complete(out)
+    assert "agy ran run_command, which claude_light forbids" in str(exc.value)
+
+
+def test_t027_one_done_command_with_one_command_denial_does_not_raise():
+    out = _ndjson({"event": "init"}, _tool_step("run_command"),
+                  _result("a fine answer", denied_actions=_denied("command", "RunCommand")))
     (reply, _u, _p), _, _ = _complete(out)
     assert reply == "a fine answer"
