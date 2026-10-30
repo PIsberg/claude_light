@@ -31,6 +31,9 @@ _FORBIDDEN = {
     "write_to_file": "file", "replace_file_content": "file",
     "multi_replace_file_content": "file", "sed_file": "file", "notebook_edit": "file",
 }
+# Read-only tools that may finish without a denial (search_web still runs: known limit).
+_ALLOWED_TOOLS = frozenset({"search_web", "read_file", "view_file", "list_dir",
+                            "find_by_name", "grep_search"})
 
 
 def _stdin_line(text: str) -> str:
@@ -39,18 +42,29 @@ def _stdin_line(text: str) -> str:
 
 
 def _check_tools(stdout: str, result: dict) -> None:
-    """Fail closed: a finished forbidden tool call whose kind agy did not deny is an error."""
+    """Fail closed: a finished tool call passes only if it is read-only, or agy denied it.
+
+    A tool outside the allowlist and the `_FORBIDDEN` kinds raises. A forbidden tool passes only
+    while the DONE steps of its kind do not outnumber the `denied_actions` records of that kind.
+    """
     denied = result.get("denied_actions")
-    kinds = ({a.get("action") for a in denied if isinstance(a, dict)}
-             if isinstance(denied, list) else set())
+    denials: dict = {}
+    for a in denied if isinstance(denied, list) else []:
+        if isinstance(a, dict):
+            denials[a.get("action")] = denials.get(a.get("action"), 0) + 1
+    done: dict = {}
     for event in json_events(stdout):
         step = event.get("step_update") if event.get("event") == "step_update" else None
         if (not isinstance(step, dict) or step.get("step_type") != "tool"
                 or step.get("state") != "DONE"):
             continue
         tool = step.get("tool_name")
+        if tool in _ALLOWED_TOOLS:
+            continue
         kind = _FORBIDDEN.get(tool)
-        if kind and kind not in kinds:
+        if kind:
+            done[kind] = done.get(kind, 0) + 1
+        if not kind or done[kind] > denials.get(kind, 0):
             raise ProviderError(f"agy ran {tool}, which claude_light forbids")
 
 
