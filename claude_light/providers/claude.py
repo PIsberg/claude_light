@@ -3,7 +3,29 @@ import sys
 
 from claude_light import config
 from claude_light.providers import base
-from claude_light.providers.base import Provider
+from claude_light.providers.base import NotLoggedIn, Provider
+
+# T016 stub placeholders: the transport moves here from llm.py in T018.
+client = None
+AUTH_MODE = None
+_CLI_IDLE_TIMEOUT_SECS = 0
+_CLI_MAX_SECS = 0
+
+
+class ClaudeNotLoggedIn(NotLoggedIn):
+    """The claude CLI needs `claude auth login`."""
+
+
+def stream_chat_response(*args, **kwargs):
+    raise NotImplementedError("claude.stream_chat_response")
+
+
+def _make_streaming_api_call(*args, **kwargs):
+    raise NotImplementedError("claude._make_streaming_api_call")
+
+
+def _make_cli_subprocess_call(*args, **kwargs):
+    raise NotImplementedError("claude._make_cli_subprocess_call")
 
 
 class ClaudeProvider(Provider):
