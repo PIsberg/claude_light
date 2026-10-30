@@ -37,7 +37,7 @@ Claude Code is a powerful general-purpose agentic tool and the cost difference r
 
 claude_light makes different trade-offs: pre-indexes the codebase offline, routes simple queries to Haiku, and injects only ~2–3K targeted tokens per query.
 
-> **How to reproduce:** `python benchmark_claude_code.py` — see [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) for full methodology.
+> **How to reproduce:** `python tests/benchmarks/benchmark_cost.py --json > cl_results.json`, then `python tests/benchmarks/benchmark_claude_code.py --claude-light-results cl_results.json`. Both make live API calls, and the second needs Claude Code installed. See [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) section 4 for the methodology.
 
 ---
 
