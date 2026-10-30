@@ -8,13 +8,13 @@ T026). It is not part of CI (constitution I). Record every command and its outpu
 ## 0. Preconditions
 
 ```bash
-gemini --version          # 0.44.1 here
+command -v agy            # agy 1.4.11 here, behind --provider gemini (D10)
 codex --version           # codex-cli 0.162.1 here
 codex login status        # "Logged in using ChatGPT" here
 ```
 
-A tool that is not logged in gets `not run` and its remaining steps are skipped. Gemini on this
-machine is logged in but rejected by Google (`research.md` R3); its verdict follows D9.
+A tool that is not logged in gets `not run` and its remaining steps are skipped. agy keeps no
+credential file, so a missing agy sign-in shows first in step 2's error (`research.md` R3).
 
 ## 1. Scratch project
 
@@ -22,7 +22,7 @@ A small git project in a scratch directory, with a committed clean tree and `git
 user.email`/`user.name` set. The spec's question names `OrderService`; if the project has no such
 class, ask about one it has and record the substitution.
 
-## 2. Question (US1, SC-001), per provider `<p>` in `gemini codex`
+## 2. Question (US1, SC-001), per provider `<p>` in `gemini codex` (`gemini` runs agy)
 
 ```bash
 time python3 /c/dev/private/claude_light/claude_light.py --provider <p> "What does OrderService do?"

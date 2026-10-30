@@ -6,7 +6,7 @@ data-model.md, research.md, quickstart.md
 **Tests**: required by constitution II; each implementation task follows the tests that cover it.
 
 **Organization**: phases are build rounds of up to 4 slices; a slice is its stub (if any), its
-tests, then its implementation. Written as the answers recorded in plan.md D1-D9 make it.
+tests, then its implementation. Written as the answers recorded in plan.md D1-D10 make it.
 
 Shared by every test task: no real CLI or API (constitution I), `tests/conftest.py` settings kept,
 the active provider set with `monkeypatch.setattr(state, "provider", ...)`. A "fake provider" is a
@@ -87,9 +87,20 @@ arguments of `complete` and `summarize` and returns canned values.
 
 - [X] T026 [P] [US5] Run `quickstart.md` steps 0-5 and record each command, its output and a verdict per tool in `specs/001-gemini-codex-providers/verification.md`; Gemini's verdict is `fail` with its output (plan.md D9).
 
+## Phase 5 (Rounds 5-6): Gemini via agy (D10)
+
+### Slice S13: Gemini adapter on agy (US1 scenario 1, US2 scenarios 1-2, FR-007, FR-010, FR-011, plan.md D10)
+
+- [ ] T027 [US1] Rewrite `tests/unit/test_provider_gemini.py` for the agy contract in `contracts/provider.md` (Gemini adapter), keeping its IDs and helpers (`_request`, `_complete`, `clean_env`, `gemini_turn`, `_capture_cwd_run`; `claude_light.providers.gemini.run_cli` patched). Not settled elsewhere: argv equals the contract's list exactly, `-p=` last and `--settings` followed by `json.loads`-equal `SETTINGS`; stdin is one line plus `"\n"` whose `json.loads` is the contract's user event with `content` = `transcript(request)` joined by `"\n\n"` (`summarize`: the summary prefix); canned stdout is NDJSON (`init`, `step_update`, `result`) for SUCCESS (reply returned, usage `None`), a non-SUCCESS status (`ProviderError` text holds `result.error` and `run agy once and sign in`), no `result` event (`ProviderError`), and non-JSON lines between events (skipped); `gemini_turn`'s SEARCH/REPLACE reply arrives as `result.response`; the empty-temp-cwd test kept; `require_auth` passes with only `claude_light.providers.gemini.shutil.which` returning a path (no env var, no credential file) and exits 1 with `agy not found. Install the Antigravity CLI.` when it returns `None`; the env-var and credentials-file tests are deleted; `GeminiProvider.header()` returns the label `"agy CLI"` (`contracts/provider.md`, `header()` row). In `tests/unit/test_provider_runner.py`, add a test that `claude_light/providers/runner.py: run_cli` on a non-zero exit names `Path(argv[0]).stem` in the remedy when it differs from the `provider` argument (`contracts/provider.md`, non-zero exit row).
+- [ ] T028 [US1] Implement in `claude_light/providers/gemini.py`: `BINARY = "agy"`, `SETTINGS: str` (the contract JSON, `json.dumps` of a dict), `_ARGV_TAIL` per the contract, `_stdin_line(text: str) -> str` and `_result_reply(stdout: str) -> str` (raises `claude_light/providers/base.py: ProviderError`; parse pattern: `claude_light/providers/codex.py: _agent_reply`); `GeminiProvider._run`, `complete`, `summarize` use them through `claude_light/providers/runner.py: run_cli` and `empty_temp_dir`; `require_auth` checks `shutil.which(BINARY)` only and `_AUTH_ENV` goes; `GeminiProvider.header()` returns `(_LABEL, "agy CLI")`. In `claude_light/providers/runner.py: run_cli`, the non-zero-exit remedy names `Path(argv[0]).stem` instead of `provider`. Update the Gemini rows: `README.md` (Other providers: Gemini and Codex), `CLAUDE.md` (Commands `--provider` comment, Authentication), `docs/CONFIG.md` (`TIMEOUT_SECS` row), `HARNESS.md` (`claude_light/providers/` entry) and `docs/architecture/components.md` (lines 38-40, gemini CLI auth and flags) to agy, its install message, and the `search_web` limit from `contracts/provider.md`.
+
+### Slice S14: real agy run (US5, FR-015, SC-001, SC-004)
+
+- [ ] T029 [US5] Run `quickstart.md` steps 2-4 with `--provider gemini` on agy (the question, 3 edit-and-undo trials, the shell probe) and record each command, its output and a verdict in a new section of `specs/001-gemini-codex-providers/verification.md`.
+
 ## Dependencies
 
-Round 1 → Round 2 → Round 3 → Round 4. Inside Round 1, greens run in the order T003, T006, T008,
+Round 1 → Round 2 → Round 3 → Round 4 → Round 5 (S13) → Round 6 (S14). Inside Round 1, greens run in the order T003, T006, T008,
 T010 (T006 and T010 edit `llm.py` after T003). Inside Round 2, S3 and S4 touch disjoint files;
 T018 then T020 (both edit `llm.py`, `main.py` and `providers/claude.py`), and T019 passes only
 after both. Inside Round 3, T022 then T024 (both edit `llm.py` and `main.py`).

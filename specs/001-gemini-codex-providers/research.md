@@ -7,18 +7,14 @@ Checked 2026-10-30 on the maintainer's machine. "Help" means the installed CLI's
 
 | Flag | Source | Use |
 |---|---|---|
-| `gemini -p <text>` | help (0.44.1): "non-interactive (headless) mode ... Appended to input on stdin" | prompt on stdin, short instruction in `-p` |
-| `gemini -o text` | help: choices text, json, stream-json | stdout is the answer; no JSON schema to trust (R3) |
-| `gemini --approval-mode plan` | help: "plan (read-only mode)" | no edits, no shell (D1) |
-| `gemini --allowed-mcp-server-names` | help: "Allowed MCP server names" | a name no server has, so user MCP servers (a shell-capable one is configured here) load none |
+| agy (Gemini, D10) | probe, R3 | every agy flag and why |
 | `codex exec ... -` | help (0.162.1): "if `-` is used, instructions are read from stdin" | prompt on stdin; avoids the Windows 8,191-character command line |
 | `codex exec --json` | help + probe: `thread.started`, `turn.started`, `item.completed` (`item.type == "agent_message"`, `text`), `turn.completed` (`usage`) | reply = last agent message |
 | `--ephemeral`, `--skip-git-repo-check` | help | no session files; claude_light also runs outside git |
 | `--ignore-user-config` | help + probe | drops `~/.codex/config.toml`, and with it user MCP servers; auth still works (probe answered) |
 | `--sandbox read-only`, `--disable shell_tool`, `--disable unified_exec`, `--disable apps` | help; `codex features list` shows `shell_tool`, `unified_exec`, `apps` | no shell, no writes, no connectors |
 
-Decision: the argv in `contracts/provider.md`. Alternative rejected: `gemini -o json`, whose field
-names could not be checked (R3).
+Decision: the Codex argv in `contracts/provider.md`; Gemini's in R3.
 
 ## R2. Codex shell is disabled only with user config ignored
 
@@ -29,15 +25,36 @@ Probe 2, adding `--ignore-user-config --disable apps`, asked to write `marker2.t
 file appeared. Decision: all four restrictions together (FR-010, constitution V). Consequence:
 the user's configured Codex model is ignored too, so Codex runs its built-in default (D3).
 
-## R3. Gemini could not be run here
+## R3. Gemini runs through agy, the Antigravity CLI (D10)
 
-`gemini -p ... -o json` exited 1 with stdout empty and stderr `Error authenticating:
-IneligibleTierError: This client is no longer supported for Gemini Code Assist for individuals`.
-The account is logged in (`oauth-personal`, `~/.gemini/oauth_creds.json` exists) but rejected.
-So the Gemini argv rests on help text only: whether `--approval-mode plan` blocks every shell
-path is unverified until a run with a working account (`quickstart.md` step 4; verdict rule D9).
-What the probe does show: a failure is exit 1 plus an stderr line, which `runner.run_cli` turns
-into the FR-011 message.
+Why: the `gemini` CLI exited 1 for this account with `IneligibleTierError: This client is no
+longer supported for Gemini Code Assist for individuals ... migrate to Antigravity` (verdict rule
+D9).
+
+Probed with agy 1.4.11 (native `agy.exe`). Its default model here is Gemini 3.8 Flash (High), from
+the user's agy settings; the argv passes no `--model` (D3).
+
+- Input: `--input-format stream-json` reads NDJSON from stdin; the user line is
+  `{"event":"user","message":{"role":"user","content":...}}`, found by probing. `"message"` must
+  be an object: a string fails with `cannot unmarshal string into ... StreamInputUserMessage`. A
+  plain-text prompt on stdin is not read: the model tries a shell command to read stdin, headless
+  mode denies it, and agy prints nothing.
+- `-p=`: the empty attached form is required; a bare `-p` swallows the next flag as its prompt and
+  agy exits 2.
+- Output: `--output-format stream-json` emits `init`, `step_update` and `result` events; the reply
+  is `result.response` when `result.status == "SUCCESS"`, and `result.usage` holds input, output,
+  thinking, cache-read and total tokens (unused, D5). Exit 3 on a model or agent error, 2 on a
+  usage error.
+- Permissions: run with the user's own settings, agy executed the globally allowed
+  `mcp(lean-ctx/ctx_shell)`. With `--settings` set to
+  `{"permissions":{"allow":[],"deny":["command","mcp","file"]},"allowNonWorkspaceAccess":false}`
+  the same call failed with `permission check failed for mcp "lean-ctx/ctx_shell": user denied
+  permission`. Decision: that override plus `--mode plan` (FR-010, constitution V).
+- Limit: `search_web` still ran (three searches) under the override, and no permission kind was
+  found that stops it. With the empty cwd and `allowNonWorkspaceAccess` false, what it can send is
+  the prompt claude_light gives it.
+- Auth: agy keeps no credential file under `~/.gemini/antigravity-cli`, so `require_auth` checks
+  only that `agy` is on PATH.
 
 ## R4. Starting a CLI on Windows
 

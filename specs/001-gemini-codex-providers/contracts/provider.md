@@ -1,7 +1,7 @@
 # Contract: providers
 
 The one shared contract of FR-005, the `--provider` flag of FR-001, and the user-visible text of
-FR-008, FR-010, FR-011, FR-012 and FR-016. Written as the answers recorded in `plan.md` D1-D9
+FR-008, FR-010, FR-011, FR-012 and FR-016. Written as the answers recorded in `plan.md` D1-D10
 make it.
 
 ## Package `claude_light/providers/`
@@ -56,21 +56,55 @@ instance.
 |---|---|---|---|
 | capabilities | all seven | none | none |
 | `model_label(m)` | `m` | `"CLI default model"` | `"CLI default model"` |
-| `header()` | `None` | `("CLI default model", "gemini CLI")` | `("CLI default model", "codex CLI")` |
+| `header()` | `None` | `("CLI default model", "agy CLI")` | `("CLI default model", "codex CLI")` |
 | `complete` | `_make_streaming_api_call(**request)`, moved from `llm` | `run_cli` of the argv below | `run_cli` of the argv below |
-| `summarize` | the two Claude branches of today's `llm._summarize_turns` | same argv, stdin `"You summarize conversations.\n\n" + instructions` | as Gemini |
+| `summarize` | the two Claude branches of today's `llm._summarize_turns` | same argv and stdin line, its `content` `"You summarize conversations.\n\n" + instructions` | same argv, stdin `"You summarize conversations.\n\n" + instructions` |
 | `warm` | the body of today's `llm.warm_cache` (returns under OAUTH) | base no-op | base no-op |
-| `require_auth` | body of today's `llm.require_auth` | `shutil.which("gemini")`; `GEMINI_API_KEY`, `GOOGLE_API_KEY` or `GOOGLE_GENAI_USE_VERTEXAI` set, or `~/.gemini/oauth_creds.json` exists | `shutil.which("codex")`; `$CODEX_HOME/auth.json` (default `~/.codex/auth.json`) exists |
-| also owns | moved from `llm` (D2): `client`, `ClaudeNotLoggedIn(NotLoggedIn)`, `_make_cli_subprocess_call`, `_api_tool_loop` and their helpers; `offer_login` (from `main.start_chat`) | `BINARY = "gemini"` | `BINARY = "codex"` |
+| `require_auth` | body of today's `llm.require_auth` | `shutil.which("agy")` only: agy keeps no credential file to check (none under `~/.gemini/antigravity-cli`), so a missing login surfaces from the run | `shutil.which("codex")`; `$CODEX_HOME/auth.json` (default `~/.codex/auth.json`) exists |
+| also owns | moved from `llm` (D2): `client`, `ClaudeNotLoggedIn(NotLoggedIn)`, `_make_cli_subprocess_call`, `_api_tool_loop` and their helpers; `offer_login` (from `main.start_chat`) | `BINARY = "agy"` (native `agy.exe`, no npm shim), `SETTINGS` | `BINARY = "codex"` |
 
-Gemini argv, stdin = `system_text + "\n\n" + prompt` from `transcript()`, reply = stripped stdout:
-`[which("gemini"), "-p", "Answer the request given on standard input.", "-o", "text", "--approval-mode", "plan", "--allowed-mcp-server-names", "__claude_light_none__"]`
+### Gemini adapter (agy, D10)
 
-Codex argv, same stdin, reply = `text` of the last JSONL line with `type == "item.completed"` and
+argv: `[which("agy"), "--input-format", "stream-json", "--output-format", "stream-json", "--mode", "plan", "--settings", SETTINGS, "-p="]`.
+The empty attached `-p=` is required: a bare `-p` swallows the next flag as its prompt and agy
+exits 2.
+
+`SETTINGS` is one JSON string:
+`{"permissions":{"allow":[],"deny":["command","mcp","file"]},"allowNonWorkspaceAccess":false}`.
+Run with the user's own settings, agy executed the user's globally allowed
+`mcp(lean-ctx/ctx_shell)`; with this override the same call failed with `permission check failed
+for mcp "lean-ctx/ctx_shell": user denied permission`.
+
+cwd: an empty temporary directory, as for every CLI provider.
+
+stdin: exactly one NDJSON line, then EOF:
+`{"event":"user","message":{"role":"user","content":<prompt text>}}`, the prompt text being
+`system_text + "\n\n" + prompt` from `transcript()`. A plain-text prompt on stdin is not read: the
+model tries a shell command to read stdin, headless mode denies it, and agy prints nothing.
+
+stdout: NDJSON events (`init`, `step_update`, `result`). Non-JSON lines are skipped.
+- reply: the `result` event's `result.response` when `result.status == "SUCCESS"`;
+- a `result` with another status: `ProviderError` naming `result.error`;
+- no `result` event: unparseable output, `ProviderError`;
+- non-zero exit: the runner's existing error (agy exits 3 on a model or agent error, 2 on a
+  usage error).
+
+usage: `result.usage` has input, output, thinking, cache-read and total tokens, but D5 stands: the
+provider reports no figures.
+
+capabilities: none; shell disabled with the existing notice.
+
+Known limit: `search_web` still runs under these settings (three searches in the probe), and no
+permission kind was found that stops it. With the empty cwd and `allowNonWorkspaceAccess` false,
+what it can send is the prompt claude_light gives it.
+
+### Codex adapter
+
+Codex argv, stdin = `system_text + "\n\n" + prompt` from `transcript()`, reply = `text` of the last JSONL line with `type == "item.completed"` and
 `item.type == "agent_message"`:
 `[which("codex"), "exec", "--json", "--ephemeral", "--skip-git-repo-check", "--ignore-user-config", "--sandbox", "read-only", "--disable", "shell_tool", "--disable", "unified_exec", "--disable", "apps", "-"]`
 
-Neither argv carries `-m` or any Claude model id (FR-007, D3). Why each flag: `research.md`.
+Neither argv carries `-m` or any Claude model id (FR-007, D3). Why each flag: `research.md` R1 (Codex), R3 (Gemini).
 
 ## Flag
 
@@ -98,10 +132,10 @@ default provider's name uses `providers.DEFAULT`.
 
 | When | Text |
 |---|---|
-| tool missing (exit 1) | `gemini CLI not found. Install it: npm install -g @google/gemini-cli` / `codex CLI not found. Install it: npm install -g @openai/codex` |
-| not logged in (exit 1) | `gemini is not logged in. Run gemini once and sign in, or set GEMINI_API_KEY.` / `codex is not logged in. Run: codex login` |
+| tool missing (exit 1) | `agy not found. Install the Antigravity CLI.` / `codex CLI not found. Install it: npm install -g @openai/codex` |
+| not logged in | Gemini: no startup check; the run's `ProviderError` (a non-`SUCCESS` result) names `result.error` and the remedy `run agy once and sign in` / Codex (exit 1): `codex is not logged in. Run: codex login` |
 | binary gone mid-session (`FileNotFoundError` in `run_cli`) | `<p> CLI not found` |
-| non-zero exit | `<p> failed (exit <n>): <last non-empty stderr line>. Run <p> on its own to see the full error.` |
+| non-zero exit | `<p> failed (exit <n>): <last non-empty stderr line>. Run <bin> on its own to see the full error.`, where `<bin>` is the binary that ran, `Path(argv[0]).stem` (Gemini: `Run agy on its own ...`) |
 | timeout | `<p> timed out after <s> s` |
 | unparseable or empty output | `<p> output could not be parsed: <reason>` |
 | route line | `◆  <p>  ·  CLI default model  ·  effort unavailable for <p>`, plus `  ·  top tier unavailable for <p>` when routed to the top tier |

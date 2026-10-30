@@ -46,15 +46,15 @@ Constitution 1.0.0. Checked before Phase 0 and again after the design: no violat
 
 | Rule | Tasks | How |
 |---|---|---|
-| I. Hermetic tests | T002, T005, T007, T009, T012, T015, T017, T019, T021, T023 | `subprocess.Popen` and `shutil.which` patched, credential files under `tmp_path`, conftest settings kept |
-| II. Tested behaviour | T003, T006, T008, T010, T013, T016, T018, T020, T022, T024, each after its tests | tests in `tests/unit/`, asserting output, files and commits |
+| I. Hermetic tests | T002, T005, T007, T009, T012, T015, T017, T019, T021, T023, T027 | `subprocess.Popen` and `shutil.which` patched, credential files under `tmp_path`, conftest settings kept |
+| II. Tested behaviour | T003, T006, T008, T010, T013, T016, T018, T020, T022, T024, T028, each after its tests | tests in `tests/unit/`, asserting output, files and commits |
 | III. Measured token changes | T003, T018, T026 | Claude's request is unchanged by design (T003 moves `transcript`, T018 the transport, byte for byte); T026 runs both CI gates against the committed baselines |
 | IV. Background threads never print | T018, T024 | `llm.warm_cache` calls the provider's `warm`, a no-op except Claude's (T018); `heartbeat` returns before any print without `caching` (T024) |
 | IV. Shared state via `state.py` | T001, T003, T018 | `state.provider`, written under `state.lock`, not re-exported; `client` moves and its `_wrap()` binding follows it (`data-model.md`) |
 | IV. `route_query()` pure | T022 | provider effects only in `_finalize_route()` |
 | IV. Top-level effort never changes | T022 | `BASE_EFFORT` untouched; only the effort-only message is skipped without `effort` |
-| V. Contained shell access | T013, T016, T024 | both CLIs run with shell off (`research.md` R1-R3); `--allow-command` prints the notice |
-| VI. Docs move with code | T025 | the five docs FR-014 names |
+| V. Contained shell access | T013, T016, T024, T028 | both CLIs run with shell off (`research.md` R1-R3); `--allow-command` prints the notice |
+| VI. Docs move with code | T025, T028 | the five docs FR-014 names |
 | Not applicable | none | IV `index.pkl`: cache untouched. IV `turn_count`: not touched. Development Workflow: delivery, the main session's |
 
 ## Design
@@ -139,9 +139,10 @@ None.
   retrieval gets a weaker answer than Claude's OAuth agent, which can open files. Edits arrive as
   SEARCH/REPLACE blocks (`config.SYSTEM_PROMPT` already asks for them), so FR-009 needs no new
   code. FR-010 is met by its second branch: shell disabled, user told (T024); US2 scenario 3 is
-  moot and scenario 4 applies. Codex's restriction was probed (`research.md` R2); Gemini's rests
-  on help text (R3). Tasks as written.
-- **B: as agents that edit files.** Gemini `--approval-mode auto_edit` plus a `--policy` file,
+  moot and scenario 4 applies. Codex's restriction was probed (`research.md` R2), Gemini's agy
+  settings override too, except `search_web` (R3, D10). Tasks as written.
+- **B: as agents that edit files.** Gemini through agy (D10) with a `--settings` override that
+  allows edits (`contracts/provider.md`),
   Codex `--sandbox workspace-write` plus execpolicy rules. Each needs its own shell guard (Codex
   hooks need `--dangerously-bypass-hook-trust`), neither mechanism verified here; both get the
   `agent` capability and go through `llm._commit_agent_edits`. Adds 2 slices (one per CLI guard)
@@ -205,8 +206,8 @@ the login flow. The `Spec:` lines below go to spec.md through the product-owner.
 
 - **A (recommended): no.** They report no usage; every figure shows the "unavailable" message
   (FR-008, edge case "shown as unavailable, not as zero"). Tasks as written.
-- **B: yes, tokens without cost.** Codex's `turn.completed.usage` is verified (R1); Gemini would
-  switch to `-o json`, whose stats schema is unverified (R3). Both gain the `usage` capability
+- **B: yes, tokens without cost.** Codex's `turn.completed.usage` is verified (R1); Gemini's agy
+  `result.usage` carries input, output, thinking, cache-read and total tokens (R3). Both gain the `usage` capability
   minus pricing; adds one slice and changes T013, T016, T010.
 
 ### D6. What prefix do Gemini and Codex commits get?
@@ -250,3 +251,11 @@ Gemini here is logged in but refused with `IneligibleTierError` (`research.md` R
 - **B: record `not run`, treating a rejected account like a missing login.** Changes T026.
   Spec: FR-015: "...; a tool that is not logged in, or whose account the tool rejects, is reported
   as "not run"."
+
+### D10. Which CLI drives the Gemini provider?
+
+**Answer (2026-10-30)**: agy (Antigravity CLI) replaces the gemini CLI in providers/gemini.py, one
+code path; agy's default model (no --model, as D3); built as a fix round on PR #117.
+
+Google refuses the gemini CLI for individual accounts (`research.md` R3). Contract:
+`contracts/provider.md` Gemini adapter; tasks T027-T029.
