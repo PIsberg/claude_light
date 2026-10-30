@@ -356,7 +356,11 @@ def test_t027_summarize_content_starts_with_preamble():
 
 
 def _tool_step(tool, state="DONE"):
-    return {"event": "step_update", "step_type": "tool", "tool_name": tool, "state": state}
+    # Real agy 1.4.11 shape: everything nests under "step_update".
+    return {"event": "step_update",
+            "step_update": {"conversation_id": "c1", "step_index": 2, "state": state,
+                            "step_type": "tool", "tool_name": tool,
+                            "tool_info": {"name": tool, "parameters": {}}}}
 
 
 def _denied(kind, name):
