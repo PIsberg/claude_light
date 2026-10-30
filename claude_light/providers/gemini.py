@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from claude_light.providers.base import Provider, ProviderError, transcript
-from claude_light.providers.runner import run_cli
+from claude_light.providers.runner import empty_temp_dir, run_cli
 
 BINARY = "gemini"
 _LABEL = "CLI default model"
@@ -45,7 +45,8 @@ class GeminiProvider(Provider):
         if not binary:
             raise ProviderError("gemini CLI not found. Install it: "
                                 "npm install -g @google/gemini-cli")
-        out = run_cli(self.name, [binary] + _ARGV_TAIL, stdin_text).strip()
+        with empty_temp_dir() as cwd:
+            out = run_cli(self.name, [binary] + _ARGV_TAIL, stdin_text, cwd=cwd).strip()
         if not out:
             raise ProviderError("gemini output could not be parsed: empty output")
         return out

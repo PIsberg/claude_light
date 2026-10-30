@@ -1,13 +1,31 @@
 """CLI subprocess runner shared by the CLI providers."""
+import contextlib
 import os
+import shutil
 import subprocess
+import tempfile
 
 from claude_light.providers.base import ProviderError
 
 TIMEOUT_SECS = 600
 
 
-def run_cli(provider: str, argv: list, stdin_text: str, timeout: float = TIMEOUT_SECS) -> str:
+@contextlib.contextmanager
+def empty_temp_dir():
+    """A fresh empty directory, removed on exit (also when the body raises).
+
+    Answer-engine CLIs run here so they cannot read a hostile repo's config
+    (hooks, discovery commands) from the project directory.
+    """
+    path = tempfile.mkdtemp(prefix="claude_light_cli_")
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def run_cli(provider: str, argv: list, stdin_text: str, timeout: float = TIMEOUT_SECS,
+            cwd=None) -> str:
     """Run a provider CLI, feed it stdin_text and return its stdout.
 
     A non-zero exit, a timeout or a missing binary raise ProviderError naming
@@ -16,7 +34,7 @@ def run_cli(provider: str, argv: list, stdin_text: str, timeout: float = TIMEOUT
     try:
         proc = subprocess.Popen(
             argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, encoding="utf-8", errors="replace")
+            text=True, encoding="utf-8", errors="replace", cwd=cwd)
     except FileNotFoundError:
         raise ProviderError(f"{provider} CLI not found. Install it and log in, "
                             f"or choose another --provider.")

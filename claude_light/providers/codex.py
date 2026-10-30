@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from claude_light.providers.base import Provider, ProviderError, transcript
-from claude_light.providers.runner import run_cli
+from claude_light.providers.runner import empty_temp_dir, run_cli
 
 BINARY = "codex"
 _LABEL = "CLI default model"
@@ -62,7 +62,9 @@ class CodexProvider(Provider):
         if not binary:
             raise ProviderError("codex CLI not found. Install it: "
                                 "npm install -g @openai/codex")
-        return _agent_reply(run_cli(self.name, [binary] + _ARGV_TAIL, stdin_text))
+        with empty_temp_dir() as cwd:
+            out = run_cli(self.name, [binary] + _ARGV_TAIL, stdin_text, cwd=cwd)
+        return _agent_reply(out)
 
     def complete(self, request: dict):
         from claude_light.ui import _Spinner
