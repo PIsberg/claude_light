@@ -19,9 +19,12 @@ from claude_light.config import (
 from claude_light.ui import (
     _T_ROUTE, _T_SYS, _T_ERR, _T_RAG, _T_CACHE, _T_EDIT,
     _ANSI_GREEN, _ANSI_CYAN, _ANSI_YELLOW, _ANSI_MAGENTA, _ANSI_BOLD, _ANSI_DIM, _ANSI_RESET, _ANSI_RED,
-    _SYM_RESP, _SYM_TOOL, print_stats, _Spinner, calculate_cost, _print_reply, ResponseView, NullView, notify, choose,
+    _SYM_RESP, _SYM_TOOL, print_stats, _Spinner, calculate_cost, _print_reply, usage_unavailable, ResponseView, NullView, notify, choose,
 )
 import claude_light.state as state
+from claude_light import providers
+from claude_light.providers.base import transcript
+from claude_light.providers.runner import kill_process_tree as _kill_process_tree
 from claude_light.skeleton import build_skeleton, _refresh_tree_only, _assemble_skeleton, _refresh_single_md
 from claude_light.indexer import index_files
 from claude_light.retrieval import retrieve, record_retrieval
@@ -33,16 +36,6 @@ class ClaudeNotLoggedIn(Exception):
     """Raised when the official Claude CLI is not logged in."""
     pass
 from claude_light.streaming import stream_chat_response, accumulate_usage_from_dict, calculate_usage_cost
-
-def require_auth():
-    """Exit if no credential was found. main() calls it once the arguments
-    are parsed, not at import, so --help works on a fresh install (#101)."""
-    if not AUTH_MODE or (AUTH_MODE == "OAUTH" and not config.AUTH_TOKEN and not API_KEY):
-        print(f"\n  {_T_ERR}  No authentication found.", file=sys.stderr)
-        print(f"  {_T_SYS}  To use your Claude Pro subscription:", file=sys.stderr)
-        print(f"          {_ANSI_CYAN}claude auth login{_ANSI_RESET}\n", file=sys.stderr)
-        print(f"  {_T_SYS}  Or set {_ANSI_BOLD}ANTHROPIC_API_KEY{_ANSI_RESET} in your environment.", file=sys.stderr)
-        sys.exit(1)
 
 if API_KEY == "sk-ant-test-mock-key":
     class MockClient:
@@ -403,6 +396,18 @@ def _accumulate_usage(usage, model=None):
     # Persist after every interaction
     state.save_global_stats()
 
+def _record_usage(usage, model) -> bool:
+    """Add one call's figures to the session totals. A provider that reports
+    none (usage is None) adds nothing; returns False so the caller can say so."""
+    if usage is None:
+        return False
+    cost = calculate_cost(usage, model)
+    _accumulate_usage(usage, model)
+    with state.lock:
+        state.session_cost += cost
+    return True
+
+
 def _accumulate_compression_stats(info: dict, model=None) -> None:
     """Record tokens saved by LLMLingua-2 in global_stats.
 
@@ -443,28 +448,7 @@ def _summarize_turns(messages: list) -> tuple:
         f"<turns>\n{dialogue}\n</turns>"
     )
 
-    if AUTH_MODE == "OAUTH":
-        # No API key in this mode: the summary goes through the CLI too.
-        text, usage, _ = _make_cli_subprocess_call(
-            instructions, model=SUMMARY_MODEL,
-            extra_flags=["--system-prompt", "You summarize conversations."],
-            render=False,
-            tools=False,  # the turns may quote repo text; nothing may act on it
-        )
-        return text.strip(), usage
-
-    @retry_with_backoff
-    def _call_api():
-        return client.messages.create(
-            model=SUMMARY_MODEL,
-            # Thinking is always on and shares this cap with the summary.
-            max_tokens=4_000,
-            output_config={"effort": "low"},
-            messages=[{"role": "user", "content": instructions}],
-        )
-    
-    response = _call_api()
-    return response.content[0].text.strip(), response.usage
+    return providers.active().summarize(instructions)
 
 def compact_history() -> int:
     """Replace the whole conversation with a summary of it (/compact).
@@ -476,9 +460,7 @@ def compact_history() -> int:
         return 0
     turns = (len(history) + 1) // 2
     summary_text, usage = _summarize_turns(list(history))
-    _accumulate_usage(usage, SUMMARY_MODEL)
-    with state.lock:
-        state.session_cost += calculate_cost(usage, SUMMARY_MODEL)
+    _record_usage(usage, SUMMARY_MODEL)
     history[:] = [
         {"role": "user",      "content": f"[Summary of earlier conversation]\n{summary_text}"},
         {"role": "assistant", "content": "Understood, I have context from our earlier discussion."},
@@ -495,9 +477,7 @@ def _maybe_compress_history():
     try:
         print(f"  {_T_SYS}  Compressing history…", end="", flush=True)
         summary_text, usage = _summarize_turns(to_summarize)
-        _accumulate_usage(usage, SUMMARY_MODEL)
-        with state.lock:
-            state.session_cost += calculate_cost(usage, SUMMARY_MODEL)
+        _record_usage(usage, SUMMARY_MODEL)
         summary_pair = [
             {"role": "user",      "content": f"[Summary of earlier conversation]\n{summary_text}"},
             {"role": "assistant", "content": "Understood, I have context from our earlier discussion."},
@@ -669,36 +649,6 @@ def _report_denied_commands(denials) -> None:
         print(f"    {_ANSI_DIM}{cmd[:100]}{_ANSI_RESET}")
     print(f"  {_ANSI_DIM}  allow a command prefix with --allow-command \"<prefix>\""
           f" or CLAUDE_LIGHT_ALLOW_COMMANDS{_ANSI_RESET}", flush=True)
-
-
-def _kill_process_tree(proc) -> None:
-    """Stop the CLI and everything it started.
-
-    On Windows the CLI runs via cmd.exe (shell=True), so proc.kill() only
-    ends the shell: claude.exe keeps running, keeps editing files, and keeps
-    the stdout pipe open so the read loop never finishes.
-    """
-    import subprocess
-    if proc.poll() is not None:
-        return
-    try:
-        if os.name == "nt":
-            subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                capture_output=True, stdin=subprocess.DEVNULL,
-            )
-        else:
-            proc.kill()
-    except Exception:
-        try:
-            proc.kill()
-        except Exception:
-            pass
-    # Reap it, so it does not linger as a zombie on POSIX.
-    try:
-        proc.wait(timeout=5)
-    except Exception:
-        pass
 
 
 # The CLI runs a full agent loop (read files, edit, re-read), so a multi-file
@@ -1135,27 +1085,9 @@ def _make_streaming_api_call(**create_kwargs):
     from claude_light.config import AUTH_MODE
 
     if AUTH_MODE == "OAUTH":
-        system_blocks = create_kwargs.get("system", [])
-        messages      = create_kwargs.get("messages", [])
-        model         = create_kwargs.get("model", MODEL)
+        model = create_kwargs.get("model", MODEL)
 
-        # Every turn: pass the full system prompt via --system-prompt and
-        # serialize our own conversation history into the prompt body. We
-        # used to use --resume <session_id> for Turn 2+ to reuse CLI-side
-        # session state, but that path hangs on large sessions and
-        # sometimes resumes an unrelated session from another project.
-        # The Anthropic cache still hits on the re-sent skeleton
-        # (5-minute TTL, content-hashed), so cost is unchanged in practice.
-        def _text_of(content):
-            if isinstance(content, list):
-                return "\n".join(
-                    b.get("text", "") for b in content if b.get("type") == "text"
-                )
-            return content or ""
-
-        system_text = "\n".join(
-            b.get("text", "") for b in system_blocks if b.get("text")
-        )
+        system_text, prompt = transcript(create_kwargs)
         if config.ALLOWED_COMMANDS:
             # The agent may run the tests, so it edits with its own tools and
             # can check the result (SEARCH/REPLACE lands only after the turn).
@@ -1174,18 +1106,6 @@ def _make_streaming_api_call(**create_kwargs):
                 + ". Other commands, apart from read-only ones, will be refused."
             )
 
-        history_parts = []
-        for msg in messages[:-1]:
-            role = msg["role"].capitalize()
-            history_parts.append(f"--- {role} ---\n{_text_of(msg.get('content'))}")
-        history_text = "\n".join(history_parts)
-
-        last_user_text = _text_of(messages[-1]["content"]) if messages else ""
-
-        prompt = (
-            (f"CONVERSATION HISTORY:\n{history_text}\n\n" if history_text else "")
-            + f"USER: {last_user_text}"
-        )
         extra_flags = ["--system-prompt", system_text]
 
         try:
@@ -1505,17 +1425,14 @@ def chat(query, auto_apply=False, use_index=True):
 
     try:
         for attempt in range(3):
-            reply, usage, was_streamed = _make_streaming_api_call(**create_kwargs)
+            reply, usage, was_streamed = providers.active().complete(create_kwargs)
 
             edits = parse_edit_blocks(reply)
 
             if edits:
                 lint_errs = apply_edits(edits, check_only=True)
                 if lint_errs:
-                    cost = calculate_cost(usage, routed_model)
-                    _accumulate_usage(usage, routed_model)
-                    with state.lock:
-                        state.session_cost += cost
+                    _record_usage(usage, routed_model)
 
                     print(f"\n  {_T_ERR}  {_ANSI_RED}Syntax errors detected — requesting correction (attempt {attempt+1}/3)…{_ANSI_RESET}")
                     for err in lint_errs:
@@ -1542,11 +1459,9 @@ def chat(query, auto_apply=False, use_index=True):
                 clean_reply = reply
             state.conversation_history.append({"role": "assistant", "content": clean_reply})
 
-            cost = calculate_cost(usage, routed_model)
-            _accumulate_usage(usage, routed_model)
+            has_usage = _record_usage(usage, routed_model)
             with state.lock:
                 state.last_interaction = time.time()
-                state.session_cost += cost
 
             state.turn_count += 1
             turns = state.turn_count
@@ -1571,7 +1486,10 @@ def chat(query, auto_apply=False, use_index=True):
                     _commit_agent_edits(agent_edits, query, auto_apply=auto_apply)
 
             print()
-            print_stats(usage, label=f"Turn {turns}", model=routed_model)
+            if has_usage:
+                print_stats(usage, label=f"Turn {turns}", model=routed_model)
+            else:
+                print(f"  {_ANSI_DIM}{usage_unavailable(providers.active().name)}{_ANSI_RESET}")
             break
 
     except KeyboardInterrupt:
@@ -1668,17 +1586,14 @@ def _one_shot_turn(prompt, auto_apply, use_index):
 
     try:
         for attempt in range(3):
-            reply, usage, was_streamed = _make_streaming_api_call(**create_kwargs)
+            reply, usage, was_streamed = providers.active().complete(create_kwargs)
 
             edits = parse_edit_blocks(reply)
 
             if edits:
                 lint_errs = apply_edits(edits, check_only=True)
                 if lint_errs:
-                    cost = calculate_cost(usage, routed_model)
-                    _accumulate_usage(usage, routed_model)
-                    with state.lock:
-                        state.session_cost += cost
+                    _record_usage(usage, routed_model)
 
                     print(f"  {_T_ERR}  Syntax errors — correcting (attempt {attempt+1}/3)…", file=sys.stderr)
                     for err in lint_errs:
@@ -1708,11 +1623,11 @@ def _one_shot_turn(prompt, auto_apply, use_index):
                 if agent_edits:
                     _commit_agent_edits(agent_edits, prompt, auto_apply=auto_apply)
 
-            cost = calculate_cost(usage, routed_model)
-            _accumulate_usage(usage, routed_model)
-            with state.lock:
-                state.session_cost += cost
-            print_stats(usage, label="Stats", file=sys.stderr, model=routed_model)
+            if _record_usage(usage, routed_model):
+                print_stats(usage, label="Stats", file=sys.stderr, model=routed_model)
+            else:
+                print(f"  {_ANSI_DIM}{usage_unavailable(providers.active().name)}{_ANSI_RESET}",
+                      file=sys.stderr)
             break
 
     except Exception as e:

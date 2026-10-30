@@ -233,7 +233,21 @@ def print_stats(usage, label="Stats", file=sys.stdout, model=None):
     )
 
 
+def usage_unavailable(name: str) -> str:
+    return f"tokens, cost and caching unavailable for {name}"
+
+
+def _lacks_usage() -> bool:
+    from claude_light import providers
+    from claude_light.providers.base import USAGE
+    return not providers.active().has(USAGE)
+
+
 def print_session_summary():
+    if _lacks_usage():
+        from claude_light import providers
+        print(f"  {_ANSI_DIM}{usage_unavailable(providers.active().name)}{_ANSI_RESET}")
+        return
     with state.lock:
         inp          = state.session_tokens["input"]
         cw           = state.session_tokens["cache_write"]
@@ -333,6 +347,10 @@ def print_session_summary():
 
 def print_session_footer():
     """One line on exit: turns, tokens, cache hits, cost. /cost has the tables."""
+    if _lacks_usage():
+        from claude_light import providers
+        print(f"\n  {_ANSI_DIM}{_SYM_MARK} {usage_unavailable(providers.active().name)}{_ANSI_RESET}")
+        return
     with state.lock:
         inp, cw = state.session_tokens["input"], state.session_tokens["cache_write"]
         cr, out = state.session_tokens["cache_read"], state.session_tokens["output"]
@@ -595,10 +613,6 @@ def _plain_choice(question, options):
 
 
 NOTICE_SECS = 8
-
-
-def usage_unavailable(name: str) -> str:
-    raise NotImplementedError("usage_unavailable")
 
 
 def notify(text: str, error: bool = False) -> None:

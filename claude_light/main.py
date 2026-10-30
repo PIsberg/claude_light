@@ -20,14 +20,15 @@ from pathlib import Path
 from watchdog.observers import Observer
 
 import claude_light.state as state
-from claude_light import session
+from claude_light import providers, session
+from claude_light.providers.base import USAGE
 from claude_light.config import MODEL, CACHE_DIR, HEARTBEAT_SECS, CACHE_TTL_SECS, AUTH_MODE, ECONOMY_MODE, API_KEY_SOURCE
 from claude_light.ui import (
     _ANSI_BOLD, _ANSI_RESET, _ANSI_CYAN, _ANSI_DIM, _ANSI_GREEN, _ANSI_RED, _T_SYS, _T_ERR,
     _UNICODE, access_label, choose, current_notice, print_session_summary, print_session_footer, print_startup_header,
-    ToolExecutionManager,
+    ToolExecutionManager, usage_unavailable,
 )
-from claude_light.llm import full_refresh, chat, one_shot, warm_cache, compact_history, ClaudeNotLoggedIn, require_auth
+from claude_light.llm import full_refresh, chat, one_shot, warm_cache, compact_history, ClaudeNotLoggedIn
 from claude_light.indexer import SourceHandler
 from claude_light.compressor import start_background_load as _start_llmlingua_load
 
@@ -92,6 +93,8 @@ def _status_text(columns: int | None = None) -> str:
     # (plain text, style) pieces; the style wraps the escaped text.
     if not state.indexing_done.is_set():
         status = [(project, ""), ("indexing…", "ansiyellow")]
+    elif not providers.active().has(USAGE):
+        status = [(project, ""), (usage_unavailable(providers.active().name), "")]
     else:
         with state.lock:
             total_in = state.session_tokens["input"] + state.session_tokens["cache_write"] + state.session_tokens["cache_read"]
@@ -460,6 +463,8 @@ def main():
                              "CLAUDE_LIGHT_ALLOW_COMMANDS=\"a; powershell: b\".")
     parser.add_argument("-c", "--continue", dest="resume", action="store_true",
                         help="Resume this project's previous interactive conversation.")
+    parser.add_argument("--provider", choices=providers.NAMES, default=providers.DEFAULT,
+                        help="Which agent answers: " + ", ".join(providers.NAMES) + " (default: %(default)s).")
     parser.add_argument("query", nargs="*", help="Optional query for one-shot mode.")
     args, unknown = parser.parse_known_args()
 
@@ -483,7 +488,7 @@ def main():
     if args.resume and not interactive:
         # A one-shot turn sends no history, so there is nothing to resume into.
         parser.error("--continue resumes an interactive session; it cannot take a question")
-    require_auth()
+    providers.select(args.provider).require_auth()
     if interactive:
         start_chat(auto_apply=args.yes, resume=args.resume)
         return
