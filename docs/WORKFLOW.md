@@ -24,7 +24,7 @@ Which of these are required to merge is a repository setting, not something the 
 Runs on Python 3.12 on `ubuntu-latest`. Steps, in order:
 
 1. **Harden the runner**, then **checkout** and **set up Python 3.12**.
-2. **Install dependencies.** Installs its own package list, not `requirements.txt`, including `sentence-transformers`, `datasets`, `pytest-timeout` and the tree-sitter grammars for Java, Python, Go, Rust, JavaScript and TypeScript. Keep this list in step with `requirements.txt` by hand.
+2. **Install dependencies.** `pip install -r requirements.txt` plus `pytest` and `pytest-timeout`, so the suite runs on the dependencies the installers give a user (#72). `datasets` is not installed: only the live SWE-bench mode of `benchmark_retrieval.py` needs it, and CI runs the offline fixture.
 3. **Run unit tests.** Three commands:
    - `tests/unit/test_editor.py` first, with a 60 s per-test timeout. It runs before `MockManager` patches `Path`.
    - `tests/unit/test_config.py`, same reason, same timeout.
@@ -41,7 +41,7 @@ Local equivalent: the unit commands and the integration and utilities command ab
 
 ## `fuzz.yml`: Fuzz Testing
 
-Python 3.12. Installs `hypothesis` and the tree-sitter Python grammar, then runs `python -m pytest tests/test_fuzz.py -v --tb=short` with `HYPOTHESIS_MAX_EXAMPLES=500` and `HYPOTHESIS_DEADLINE=2000` (2 s per example). `fail-fast` is off. The weekly schedule catches inputs the push-time run did not generate.
+Python 3.12. Installs `requirements.txt` (which includes `hypothesis`) and `pytest`, then runs `python -m pytest tests/test_fuzz.py -v --tb=short` with `HYPOTHESIS_MAX_EXAMPLES=500` and `HYPOTHESIS_DEADLINE=2000` (2 s per example). `fail-fast` is off. The weekly schedule catches inputs the push-time run did not generate.
 
 Local equivalent: the same pytest command, with the two environment variables.
 

@@ -36,7 +36,8 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install pytest hypothesis sentence-transformers numpy watchdog anthropic prompt_toolkit rich tree-sitter tree-sitter-python
+        # Same list as the installers and test.yml (#72); it includes hypothesis.
+        pip install -r requirements.txt "pytest>=9.2.0"
 
     - name: Run fuzz tests
       run: |
