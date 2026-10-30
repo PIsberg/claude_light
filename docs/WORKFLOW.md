@@ -2,7 +2,7 @@
 
 Every workflow lives in `.github/workflows/`. This page lists what each one runs, in order, and the command to run the same step locally. Read the YAML for the exact versions and pinned action SHAs, which change often.
 
-Every job starts with the same `step-security/harden-runner` step in `audit` mode, which records outbound calls without blocking them. Permissions are read-only at the workflow level (`read-all` or `contents: read`). Two jobs grant more: `scorecards.yml` asks for `id-token: write` to publish its results, and the `sbom` job in `sbom.yml` asks for `contents: write`, which its release-upload step needs. A job's own `permissions` block replaces the workflow-level one, so a job-level grant must list every permission the job uses.
+Every job starts with the same `step-security/harden-runner` step in `audit` mode (in `installers.yml`, on the Linux job only), which records outbound calls without blocking them. Permissions are read-only at the workflow level (`read-all` or `contents: read`). Two jobs grant more: `scorecards.yml` asks for `id-token: write` to publish its results, and the `sbom` job in `sbom.yml` asks for `contents: write`, which its release-upload step needs. A job's own `permissions` block replaces the workflow-level one, so a job-level grant must list every permission the job uses.
 
 ## At a glance
 
@@ -15,6 +15,7 @@ Every job starts with the same `step-security/harden-runner` step in `audit` mod
 | `codeql.yml` | CodeQL | push and PR to `main`, weekly Monday 00:00 UTC | Static security analysis |
 | `scorecards.yml` | Scorecard supply-chain security | push to `main`, weekly Tuesday 07:20 UTC, branch-protection change | OpenSSF Scorecard |
 | `dependency-review.yml` | Dependency Review | every PR | Flags vulnerable or disallowed dependencies a PR adds |
+| `installers.yml` | Installers | push and PR to `main` that change `installers/**` or `requirements.txt`, weekly Wednesday 06:40 UTC, manual | Runs each installer on a clean Linux, macOS and Windows runner and starts the installed tool |
 
 Which of these are required to merge is a repository setting, not something the YAML states. This page does not verify it.
 
@@ -91,6 +92,24 @@ Runs on a schedule (Tuesday 07:20 UTC), on push to `main`, and when branch prote
 ## `dependency-review.yml`: Dependency Review
 
 On every pull request: checks out the repo and runs `actions/dependency-review-action`. It compares the dependency changes in the PR with the base branch and fails the check if the PR adds a dependency with a known vulnerability. Use it to see why a PR's dependency change turns red.
+
+## `installers.yml`: Installers
+
+Runs each installer end to end on a clean GitHub-hosted runner for its OS, then starts the installed tool (#75). Before this workflow the installers were only syntax-checked. It installs PyTorch (about 1.5 GB) on every OS, so it runs only when `installers/**`, `requirements.txt` or the workflow itself changes, weekly on Wednesday at 06:40 UTC (a new PyPI release can break resolution without a change here), and on demand.
+
+One job per OS, `fail-fast: false` so one failure does not hide the others:
+
+| Runner | Installer | Python |
+|---|---|---|
+| `ubuntu-latest` | `bash installers/install.sh` | 3.12 from `setup-python` |
+| `macos-latest` | `bash installers/install_macos.sh` | whatever the installer finds (Homebrew first), as on a user's machine; it creates `.venv` and `run.sh` |
+| `windows-latest` | `.\installers\install.ps1` under Windows PowerShell 5.1 | 3.12 from `setup-python` |
+
+Then **Start the installed tool** runs `claude_light.py --help` (`./run.sh --help` on macOS) and imports every dependency from `requirements.txt` with the interpreter the installer used. It sets a dummy `ANTHROPIC_API_KEY`, because the auth check runs before `--help` is parsed (#101); no request is made.
+
+The harden-runner step runs on the Linux job only.
+
+Local equivalent: run the installer for your OS in a clean checkout, then `python claude_light.py --help`.
 
 ## Adding or changing a workflow
 
