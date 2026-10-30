@@ -17,6 +17,14 @@ _ARGV_TAIL = [
 ]
 
 
+def _stdin_line(text: str) -> str:
+    raise NotImplementedError("_stdin_line")
+
+
+def _result_reply(stdout: str) -> str:
+    raise NotImplementedError("_result_reply")
+
+
 class GeminiProvider(Provider):
     name = "gemini"
     capabilities = frozenset()

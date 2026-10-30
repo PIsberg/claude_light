@@ -1,4 +1,5 @@
 """Shared provider interface."""
+from typing import Iterator
 
 CACHING, EFFORT, TOP_TIER, USD_BUDGET, USAGE, AGENT, SHELL = (
     "caching", "effort", "top_tier", "usd_budget", "usage", "agent", "shell")
@@ -39,6 +40,10 @@ class Provider:
 
     def warm(self, quiet: bool = False) -> None:
         return None
+
+
+def json_events(stdout: str) -> Iterator[dict]:
+    raise NotImplementedError("json_events")
 
 
 def _text_of(content) -> str:
