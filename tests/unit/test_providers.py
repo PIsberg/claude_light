@@ -276,6 +276,15 @@ def test_fr006_package_client_stub_reaches_warm_cache(monkeypatch, clean_state):
     stub = MagicMock()
     monkeypatch.setattr(state, "provider", None, raising=False)
     monkeypatch.setattr(state, "session_cost", 0.0, raising=False)
+    # _accumulate_usage mutates these dicts in place; patch with copies so the
+    # mock usage never leaks into later tests.
+    # The package wrapper re-binds state.session_tokens from claude_light.session_tokens
+    # on every call, so that binding has to be patched as well.
+    tokens = dict(state.session_tokens)
+    monkeypatch.setattr(state, "session_tokens", tokens)
+    monkeypatch.setattr(claude_light, "session_tokens", tokens)
+    monkeypatch.setattr(state, "session_costs", dict(state.session_costs))
+    monkeypatch.setattr(state, "global_stats", dict(state.global_stats))
     monkeypatch.setattr(claude_mod, "AUTH_MODE", "API_KEY")
     monkeypatch.setattr(claude_light, "client", stub)
     try:
