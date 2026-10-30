@@ -21,14 +21,14 @@ from watchdog.observers import Observer
 
 import claude_light.state as state
 from claude_light import providers, session
-from claude_light.providers.base import USAGE
+from claude_light.providers.base import USAGE, NotLoggedIn
 from claude_light.config import MODEL, CACHE_DIR, HEARTBEAT_SECS, CACHE_TTL_SECS, AUTH_MODE, ECONOMY_MODE, API_KEY_SOURCE
 from claude_light.ui import (
     _ANSI_BOLD, _ANSI_RESET, _ANSI_CYAN, _ANSI_DIM, _ANSI_GREEN, _ANSI_RED, _T_SYS, _T_ERR,
     _UNICODE, access_label, choose, current_notice, print_session_summary, print_session_footer, print_startup_header,
     ToolExecutionManager, usage_unavailable,
 )
-from claude_light.llm import full_refresh, chat, one_shot, warm_cache, compact_history, ClaudeNotLoggedIn
+from claude_light.llm import full_refresh, chat, one_shot, warm_cache, compact_history
 from claude_light.indexer import SourceHandler
 from claude_light.compressor import start_background_load as _start_llmlingua_load
 
@@ -404,38 +404,11 @@ def start_chat(auto_apply=False, resume=False):
             try:
                 chat(query, auto_apply=auto_apply, use_index=use_index)
                 session.save()
-            except ClaudeNotLoggedIn:
-                print(f"\n  {_T_ERR}  Claude CLI is not logged in.")
-                choice = choose("Set up a long-lived automation token?",
-                                [("yes", "Yes, run claude setup-token"), ("no", "No")])
-                if choice == "yes":
-                    import subprocess
-                    import shutil
-                    from pathlib import Path
-                    claude_bin = shutil.which("claude")
-                    if claude_bin:
-                        print(f"  {_T_SYS}  Launching 'claude setup-token'…")
-                        print(f"  {_ANSI_DIM}Follow the browser prompt, then paste the token below.{_ANSI_RESET}")
-                        subprocess.run([claude_bin, "setup-token"])
-                        print(f"\n  Automation Token: ", end="", flush=True)
-                        try:
-                            new_token = input().strip()
-                            if new_token.startswith("sk-ant-oat01"):
-                                token_path = Path.home() / ".claude_light_automation_token"
-                                token_path.write_text(new_token, encoding="utf-8")
-                                print(f"  {_T_SYS}  Token saved to {token_path}")
-                                from claude_light import config
-                                config.API_KEY, config.AUTH_MODE, config.API_KEY_SOURCE, config.AUTH_TOKEN = config._resolve_api_key()
-                                full_refresh()
-                                chat(query, auto_apply=auto_apply, use_index=use_index)
-                            else:
-                                print(f"  {_T_ERR}  Token must start with 'sk-ant-oat01'.")
-                        except (KeyboardInterrupt, EOFError):
-                            print(f"\n  {_T_SYS}  Cancelled.")
-                    else:
-                        print(f"  {_T_ERR}  Claude CLI not found. Install with: npm install -g @anthropic-ai/claude-code")
-                else:
-                    print(f"  {_T_SYS}  Proceeding without auth. Requests will likely fail.")
+            except NotLoggedIn:
+                def _retry(query=query, auto_apply=auto_apply, use_index=use_index):
+                    full_refresh()
+                    chat(query, auto_apply=auto_apply, use_index=use_index)
+                providers.active().offer_login(_retry)
     except KeyboardInterrupt:
         pass
     finally:
