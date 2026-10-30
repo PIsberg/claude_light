@@ -28,6 +28,10 @@ _MISSING = "agy not found. Install the Antigravity CLI: https://antigravity.goog
 
 _SETTINGS = {"permissions": {"allow": [], "deny": ["command", "mcp", "file"]},
              "allowNonWorkspaceAccess": False}
+# T027 third pass: without it Gemini calls run_command, is denied, and returns "".
+_PREAMBLE = ("You have no tools in this session: do not call any tool, run any command or read "
+             "any file. Everything you can use is in this message. For an edit, write "
+             "SEARCH/REPLACE blocks from the code shown here.\n\n")
 _EXPECTED_ARGV_HEAD = [_AGY, "--input-format", "stream-json", "--output-format", "stream-json",
                        "--mode", "plan", "--settings"]
 
@@ -114,7 +118,7 @@ def test_us1s1_stdin_is_one_user_event_line_with_the_transcript():
     stdin = run.call_args[0][2]
     assert stdin.endswith("\n") and stdin.count("\n") == 1
     assert json.loads(stdin) == {"event": "user", "message": {
-        "role": "user", "content": system_text + "\n\n" + prompt}}
+        "role": "user", "content": _PREAMBLE + system_text + "\n\n" + prompt}}
     assert run.call_args[0][0] == "gemini"
 
 
@@ -189,7 +193,7 @@ def test_summarize_uses_same_argv_with_summary_prefix_and_no_usage():
     assert json.loads(args[1][-2]) == _SETTINGS
     assert args[1][-1] == "-p="
     assert json.loads(args[2]) == {"event": "user", "message": {
-        "role": "user", "content": "You summarize conversations.\n\nSummarize: X"}}
+        "role": "user", "content": _PREAMBLE + "You summarize conversations.\n\nSummarize: X"}}
 
 
 # --- require_auth (FR-011, edge cases) ---------------------------------------
@@ -331,3 +335,69 @@ def test_fr010_cli_runs_in_fresh_empty_temp_dir_removed_afterwards(method, fail)
     assert seen["listing"] == []
     assert os.path.realpath(cwd) != os.path.realpath(os.getcwd())
     assert not os.path.exists(cwd)
+
+
+# --- no-tools preamble, denied attempts, fail closed (T027 third pass) ---------
+
+def test_t027_complete_content_starts_with_preamble_then_unchanged_transcript():
+    _, run, req = _complete()
+    system_text, prompt = transcript(req)
+    content = json.loads(run.call_args[0][2])["message"]["content"]
+    assert content.startswith(_PREAMBLE)
+    assert content[len(_PREAMBLE):] == system_text + "\n\n" + prompt
+
+
+def test_t027_summarize_content_starts_with_preamble():
+    with patch(_WHICH, return_value=_AGY), patch(_RUN, return_value=_stdout("s")) as run:
+        gemini.PROVIDER.summarize("Summarize: X")
+    content = json.loads(run.call_args[0][2])["message"]["content"]
+    assert content.startswith(_PREAMBLE)
+    assert content[len(_PREAMBLE):] == "You summarize conversations.\n\nSummarize: X"
+
+
+def _tool_step(tool, state="DONE"):
+    return {"event": "step_update", "step_type": "tool", "tool_name": tool, "state": state}
+
+
+def _denied(kind, name):
+    return [{"action": kind, "display_name": name}]
+
+
+def test_t027_denied_attempt_with_empty_response_names_the_action():
+    out = _ndjson({"event": "init"}, _tool_step("run_command"),
+                  _result("", denied_actions=_denied("command", "RunCommand")))
+    with pytest.raises(ProviderError) as exc:
+        _complete(out)
+    msg = str(exc.value)
+    assert "RunCommand" in msg
+    assert "denies" in msg
+    assert "output could not be parsed" not in msg
+
+
+_FORBIDDEN = [("run_command", "command"), ("send_command_input", "command"),
+              ("call_mcp_tool", "mcp"), ("write_to_file", "file"),
+              ("replace_file_content", "file"), ("multi_replace_file_content", "file"),
+              ("sed_file", "file"), ("notebook_edit", "file")]
+
+
+@pytest.mark.parametrize("tool,kind", _FORBIDDEN)
+def test_t027_done_forbidden_tool_without_denial_raises_even_with_a_response(tool, kind):
+    out = _ndjson({"event": "init"}, _tool_step(tool), _result("a fine answer"))
+    with pytest.raises(ProviderError) as exc:
+        _complete(out)
+    assert f"agy ran {tool}, which claude_light forbids" in str(exc.value)
+
+
+@pytest.mark.parametrize("tool,kind", _FORBIDDEN)
+def test_t027_done_forbidden_tool_with_its_kind_denied_does_not_raise(tool, kind):
+    out = _ndjson({"event": "init"}, _tool_step(tool),
+                  _result("a fine answer", denied_actions=_denied(kind, "X")))
+    (reply, _u, _p), _, _ = _complete(out)
+    assert reply == "a fine answer"
+
+
+@pytest.mark.parametrize("tool", ["search_web", "read_file"])
+def test_t027_other_tools_do_not_raise(tool):
+    out = _ndjson({"event": "init"}, _tool_step(tool), _result("a fine answer"))
+    (reply, _u, _p), _, _ = _complete(out)
+    assert reply == "a fine answer"
