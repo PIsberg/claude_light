@@ -1,0 +1,92 @@
+name: Installers
+
+# Runs each installer end to end on a clean runner for its OS, then starts the
+# installed tool. The installers were only ever syntax-checked (#75); a broken
+# requirements.txt or installer step now fails here instead of on a user's
+# machine. Each run downloads PyTorch (~1.5 GB) per OS, so it runs only when an
+# installer or the dependency list changes, weekly, and on demand.
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - "installers/**"
+      - "requirements.txt"
+      - ".github/workflows/installers.yml"
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - "installers/**"
+      - "requirements.txt"
+      - ".github/workflows/installers.yml"
+  schedule:
+    - cron: "40 6 * * 3"  # weekly: a new release on PyPI can break resolution
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  install:
+    name: ${{ matrix.installer }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            installer: install.sh
+          - os: macos-latest
+            installer: install_macos.sh
+          - os: windows-latest
+            installer: install.ps1
+
+    steps:
+    - name: Harden the runner (Audit all outbound calls)
+      if: runner.os == 'Linux'
+      uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+      with:
+        egress-policy: audit
+
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+    # install.sh and install.ps1 use the first Python 3.12+ on PATH. The macOS
+    # installer is left to find its own (Homebrew first), as it would for a user.
+    - name: Set up Python 3.12
+      if: runner.os != 'macOS'
+      uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      with:
+        python-version: "3.12"
+
+    - name: Run install.sh
+      if: matrix.installer == 'install.sh'
+      run: bash installers/install.sh
+
+    - name: Run install_macos.sh
+      if: matrix.installer == 'install_macos.sh'
+      run: bash installers/install_macos.sh
+
+    - name: Run install.ps1
+      if: matrix.installer == 'install.ps1'
+      shell: powershell  # Windows PowerShell 5.1, the version the script targets
+      run: |
+        Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+        .\installers\install.ps1
+        if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+    # The installers do not add a venv or PATH entry except on macOS, where
+    # run.sh wraps the venv; use the interpreter each one installed into.
+    - name: Start the installed tool
+      shell: bash
+      env:
+        # The auth check runs at import, before --help is parsed (#101). No
+        # request is made, so a dummy key is enough.
+        ANTHROPIC_API_KEY: sk-ant-ci-dummy-not-a-key
+      run: |
+        if [ "${{ runner.os }}" = "macOS" ]; then
+          ./run.sh --help
+          PY=.venv/bin/python
+        else
+          python claude_light.py --help
+          PY=python
+        fi
+        "$PY" -c "import anthropic, watchdog, prompt_toolkit, rich, numpy, einops, sentence_transformers, llmlingua, hypothesis, tree_sitter, tree_sitter_java, tree_sitter_python, tree_sitter_go, tree_sitter_rust, tree_sitter_javascript, tree_sitter_typescript; print('all dependencies import')"

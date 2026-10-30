@@ -239,7 +239,7 @@ Once both are ready, each chunk's similarity to the question is z-scored per mod
 
 To ensure supply chain transparency and prevent dependency confusion, `claude_light` uses:
 
-*   **Version floors:** `requirements.txt` and `pyproject.toml` set each dependency's minimum to the newest release that installs on Python 3.12. The installers read `requirements.txt`, so there is one list to keep current.
+*   **Version floors:** `requirements.txt` and `pyproject.toml` set each dependency's minimum to the newest release that installs on Python 3.12. The installers read `requirements.txt`, so there is one list to keep current. The `Installers` workflow runs all three on clean Linux, macOS and Windows runners whenever an installer or `requirements.txt` changes, and weekly.
 *   **SBOM (Software Bill of Materials):** The project maintains an industry-standard SBOM in [CycloneDX](https://cyclonedx.org/) format.
 
 #### Continuous Inventory
