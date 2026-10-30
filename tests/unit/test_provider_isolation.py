@@ -23,7 +23,7 @@ SDKS = {
     "gemini": ("google.genai", "google.generativeai"),
     "codex": ("openai",),
 }
-NAME_RE = re.compile(r"(?<![\w./-])(claude|gemini|codex)(\.exe|\.cmd)?(?![\w.-]| light)")
+NAME_RE = re.compile(r"(?<![\w./-])(claude|gemini|codex|agy)(\.exe|\.cmd)?(?![\w.-]| light)")
 
 
 def _exempt(path: Path, name: str) -> bool:
@@ -66,7 +66,8 @@ def _violations():
                 if (isinstance(node, ast.Constant) and isinstance(node.value, str)
                         and id(node) not in docstrings):
                     for m in NAME_RE.finditer(node.value):
-                        if m.group(1) == name:
+                        owner = "gemini" if m.group(1) == "agy" else m.group(1)
+                        if owner == name:
                             found.append(f"{rel}:{node.lineno}: string {node.value!r} "
                                          f"matches {m.group(0)!r} ({name})")
     return found
@@ -78,7 +79,8 @@ def test_fr004_sc003_us4s1_no_provider_names_or_sdks_outside_their_modules():
 
 
 @pytest.mark.parametrize("text", ["claude", "codex.cmd", "claude setup-token",
-                                  "gemini", "which codex", "claude.exe"])
+                                  "gemini", "which codex", "claude.exe", "agy",
+                                  'which("agy")'])
 def test_fr004_regex_matches_the_binary_forms(text):
     assert NAME_RE.search(text), text
 

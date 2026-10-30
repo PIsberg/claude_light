@@ -3,9 +3,10 @@ Tests for claude_light.providers.gemini (specs/001-gemini-codex-providers: T012)
 
 Covers US1 scenario 1, US2 scenarios 1-2, US4, FR-007, FR-010, FR-011 and the
 missing-tool and not-logged-in edge cases. argv and messages come from
-contracts/provider.md. The real gemini CLI is never started: run_cli is patched.
+contracts/provider.md. The real agy CLI is never started: run_cli is patched.
 """
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -22,13 +23,13 @@ from claude_light.providers.base import ProviderError, transcript
 
 _RUN = "claude_light.providers.gemini.run_cli"
 _WHICH = "claude_light.providers.gemini.shutil.which"
-_ENV_VARS = ("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI")
+_AGY = "/bin/agy"
+_MISSING = "agy not found. Install the Antigravity CLI: https://antigravity.google"
 
-_EXPECTED_ARGV_TAIL = [
-    "-p", "Answer the request given on standard input.",
-    "-o", "text", "--approval-mode", "plan",
-    "--allowed-mcp-server-names", "__claude_light_none__",
-]
+_SETTINGS = {"permissions": {"allow": [], "deny": ["command", "mcp", "file"]},
+             "allowNonWorkspaceAccess": False}
+_EXPECTED_ARGV_HEAD = [_AGY, "--input-format", "stream-json", "--output-format", "stream-json",
+                       "--mode", "plan", "--settings"]
 
 
 def _request():
@@ -44,20 +45,40 @@ def _request():
     }
 
 
-def _complete(stdout="  an answer \n", request=None):
+def _ndjson(*events, junk=False):
+    lines = []
+    for e in events:
+        if junk:
+            lines.append("agy: warming up")
+        lines.append(json.dumps(e))
+    return "\n".join(lines) + "\n"
+
+
+def _result(response="an answer", status="SUCCESS", **extra):
+    res = {"status": status, "response": response}
+    res.update(extra)
+    return {"event": "result", "result": res}
+
+
+def _stdout(response="an answer"):
+    return _ndjson({"event": "init"}, {"event": "step_update", "step": 1}, _result(response))
+
+
+def _complete(stdout=None, request=None):
     req = request or _request()
-    with patch(_WHICH, return_value="/bin/gemini"), patch(_RUN, return_value=stdout) as run:
+    out = _stdout() if stdout is None else stdout
+    with patch(_WHICH, return_value=_AGY), patch(_RUN, return_value=out) as run:
         result = gemini.PROVIDER.complete(req)
     return result, run, req
 
 
 @pytest.fixture
 def clean_env(monkeypatch, tmp_path):
-    for var in _ENV_VARS:
-        monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("HOME", str(tmp_path))
+    for var in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI"):
+        monkeypatch.delenv(var, raising=False)
     return tmp_path
 
 
@@ -65,34 +86,46 @@ def clean_env(monkeypatch, tmp_path):
 
 def test_us1s1_gemini_identity_and_label():
     p = gemini.PROVIDER
-    assert gemini.BINARY == "gemini"
+    assert gemini.BINARY == "agy"
     assert p.name == "gemini"
     assert set(p.capabilities) == set()
     assert p.model_label("claude-opus-4") == "CLI default model"
-    assert p.header() == ("CLI default model", "gemini CLI")
+    assert p.header() == ("CLI default model", "agy CLI")
 
 
 # --- complete: argv, stdin, reply (US1 s1, FR-007, FR-010) --------------------
 
-def test_us1s1_complete_returns_stripped_stdout_with_no_usage_and_not_printed():
-    (reply, usage, printed), _, _ = _complete("  an answer \n")
+def test_us1s1_complete_returns_the_result_response_with_no_usage_and_not_printed():
+    (reply, usage, printed), _, _ = _complete()
     assert reply == "an answer"
     assert usage is None
     assert printed is False
 
 
-def test_us1s1_complete_stdin_is_the_transcript_joined_by_blank_line():
+def test_us1s1_non_json_lines_between_events_are_skipped():
+    out = _ndjson({"event": "init"}, {"event": "step_update"}, _result("fine"), junk=True)
+    (reply, _u, _p), _, _ = _complete(out)
+    assert reply == "fine"
+
+
+def test_us1s1_stdin_is_one_user_event_line_with_the_transcript():
     _, run, req = _complete()
     system_text, prompt = transcript(req)
-    args, _kw = run.call_args
-    assert args[0] == "gemini"
-    assert args[2] == system_text + "\n\n" + prompt
+    stdin = run.call_args[0][2]
+    assert stdin.endswith("\n") and stdin.count("\n") == 1
+    assert json.loads(stdin) == {"event": "user", "message": {
+        "role": "user", "content": system_text + "\n\n" + prompt}}
+    assert run.call_args[0][0] == "gemini"
 
 
 def test_fr010_argv_is_the_contract_argv():
     _, run, _ = _complete()
     argv = run.call_args[0][1]
-    assert argv == ["/bin/gemini"] + _EXPECTED_ARGV_TAIL
+    assert argv[:-2] == _EXPECTED_ARGV_HEAD
+    assert json.loads(argv[-2]) == _SETTINGS
+    assert json.loads(gemini.SETTINGS) == _SETTINGS
+    assert argv[-1] == "-p="
+    assert len(argv) == len(_EXPECTED_ARGV_HEAD) + 2
 
 
 def test_fr007_argv_has_no_model_flag_and_no_claude_model_id():
@@ -103,16 +136,41 @@ def test_fr007_argv_has_no_model_flag_and_no_claude_model_id():
     assert "claude-sonnet-4-6" not in run.call_args[0][2]
 
 
-def test_fr011_empty_stdout_raises_provider_error_naming_gemini():
+def test_fr011_non_success_result_raises_with_error_and_sign_in_remedy():
+    out = _ndjson({"event": "init"}, _result(None, status="ERROR", error="quota exhausted"))
+    with pytest.raises(ProviderError) as exc:
+        _complete(out)
+    assert "quota exhausted" in str(exc.value)
+    assert "run agy once and sign in" in str(exc.value)
+
+
+def test_fr011_no_result_event_raises_provider_error():
+    out = _ndjson({"event": "init"}, {"event": "step_update"})
+    with pytest.raises(ProviderError) as exc:
+        _complete(out)
+    assert "output could not be parsed" in str(exc.value)
+
+
+def test_fr011_empty_stdout_raises_provider_error():
     with pytest.raises(ProviderError) as exc:
         _complete("   \n")
-    assert "gemini" in str(exc.value)
+    assert "output could not be parsed" in str(exc.value)
+
+
+@pytest.mark.parametrize("response", [None, "", "   \n"])
+def test_fr011_u2_success_with_missing_or_blank_response_raises(response):
+    res = {"status": "SUCCESS"}
+    if response is not None:
+        res["response"] = response
+    out = _ndjson({"event": "init"}, {"event": "result", "result": res})
+    with pytest.raises(ProviderError) as exc:
+        _complete(out)
     assert "output could not be parsed" in str(exc.value)
 
 
 def test_fr011_run_cli_error_passes_through_unchanged():
-    err = ProviderError("gemini failed (exit 1): boom. Run gemini on its own to see the full error.")
-    with patch(_WHICH, return_value="/bin/gemini"), patch(_RUN, side_effect=err):
+    err = ProviderError("gemini failed (exit 3): boom. Run agy on its own to see the full error.")
+    with patch(_WHICH, return_value=_AGY), patch(_RUN, side_effect=err):
         with pytest.raises(ProviderError) as exc:
             gemini.PROVIDER.complete(_request())
     assert exc.value is err
@@ -121,14 +179,17 @@ def test_fr011_run_cli_error_passes_through_unchanged():
 # --- summarize (contract table) ----------------------------------------------
 
 def test_summarize_uses_same_argv_with_summary_prefix_and_no_usage():
-    with patch(_WHICH, return_value="/bin/gemini"), \
-         patch(_RUN, return_value=" the summary \n") as run:
+    with patch(_WHICH, return_value=_AGY), \
+         patch(_RUN, return_value=_stdout("the summary")) as run:
         text, usage = gemini.PROVIDER.summarize("Summarize: X")
     assert text == "the summary"
     assert usage is None
     args, _kw = run.call_args
-    assert args[1] == ["/bin/gemini"] + _EXPECTED_ARGV_TAIL
-    assert args[2] == "You summarize conversations.\n\nSummarize: X"
+    assert args[1][:-2] == _EXPECTED_ARGV_HEAD
+    assert json.loads(args[1][-2]) == _SETTINGS
+    assert args[1][-1] == "-p="
+    assert json.loads(args[2]) == {"event": "user", "message": {
+        "role": "user", "content": "You summarize conversations.\n\nSummarize: X"}}
 
 
 # --- require_auth (FR-011, edge cases) ---------------------------------------
@@ -139,30 +200,19 @@ def test_edge_missing_tool_exits_1_with_install_message(clean_env, capsys):
             gemini.PROVIDER.require_auth()
     assert exc.value.code == 1
     out = capsys.readouterr()
-    assert "gemini CLI not found. Install it: npm install -g @google/gemini-cli" in out.err + out.out
+    assert _MISSING in out.err + out.out
 
 
-def test_edge_not_logged_in_exits_1_with_login_message(clean_env, capsys):
-    with patch(_WHICH, return_value="/bin/gemini"):
-        with pytest.raises(SystemExit) as exc:
-            gemini.PROVIDER.require_auth()
-    assert exc.value.code == 1
-    out = capsys.readouterr()
-    assert "gemini is not logged in. Run gemini once and sign in, or set GEMINI_API_KEY." in out.err + out.out
+def test_edge_missing_tool_at_complete_raises_the_same_message():
+    with patch(_WHICH, return_value=None), patch(_RUN) as run:
+        with pytest.raises(ProviderError) as exc:
+            gemini.PROVIDER.complete(_request())
+    assert _MISSING in str(exc.value)
+    run.assert_not_called()
 
 
-@pytest.mark.parametrize("var", _ENV_VARS)
-def test_fr011_each_env_var_alone_passes_require_auth(clean_env, monkeypatch, var):
-    monkeypatch.setenv(var, "1")
-    with patch(_WHICH, return_value="/bin/gemini"):
-        gemini.PROVIDER.require_auth()
-
-
-def test_fr011_credentials_file_alone_passes_require_auth(clean_env):
-    creds = clean_env / ".gemini" / "oauth_creds.json"
-    creds.parent.mkdir(parents=True)
-    creds.write_text("{}", encoding="utf-8")
-    with patch(_WHICH, return_value="/bin/gemini"):
+def test_fr011_agy_on_path_alone_passes_require_auth(clean_env):
+    with patch(_WHICH, return_value=_AGY):
         gemini.PROVIDER.require_auth()
 
 
@@ -214,7 +264,7 @@ _EDIT_REPLY = (
 
 
 def _edit_turn():
-    with patch(_WHICH, return_value="/bin/gemini"), patch(_RUN, return_value=_EDIT_REPLY):
+    with patch(_WHICH, return_value=_AGY), patch(_RUN, return_value=_stdout(_EDIT_REPLY)):
         llm.chat("change x to 2", auto_apply=True)
 
 
@@ -266,10 +316,10 @@ def _capture_cwd_run(seen, error=None, stdout=None):
 def test_fr010_cli_runs_in_fresh_empty_temp_dir_removed_afterwards(method, fail):
     import os
     seen = {}
-    out = "x"
+    out = _stdout("x")
     err = ProviderError("boom") if fail else None
     fake = _capture_cwd_run(seen, error=err, stdout=out)
-    with patch(_WHICH, return_value="/bin/gemini"), patch(_RUN, side_effect=fake):
+    with patch(_WHICH, return_value=_AGY), patch(_RUN, side_effect=fake):
         call = (lambda: gemini.PROVIDER.complete(_request())) if method == "complete"             else (lambda: gemini.PROVIDER.summarize("Summarize: X"))
         if fail:
             with pytest.raises(ProviderError):

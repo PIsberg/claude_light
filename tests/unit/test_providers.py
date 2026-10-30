@@ -307,3 +307,15 @@ def test_us4_import_succeeds_with_the_claude_provider_module_blocked():
     proc = subprocess.run([sys.executable, "-c", code], cwd=repo, capture_output=True,
                           text=True, timeout=120)
     assert proc.returncode == 0, proc.stderr[-800:]
+
+
+# --- base.json_events (T027, contracts/provider.md) ---------------------------
+
+def test_json_events_keeps_dict_lines_in_order():
+    out = '{"a": 1}\n{"b": 2}\n{"c": 3}\n'
+    assert list(base.json_events(out)) == [{"a": 1}, {"b": 2}, {"c": 3}]
+
+
+def test_json_events_skips_blank_non_json_and_non_dict_lines():
+    out = '\n{"a": 1}\n   \nnot json at all\n[1, 2]\n42\n"text"\n{broken\n{"b": 2}\n'
+    assert list(base.json_events(out)) == [{"a": 1}, {"b": 2}]

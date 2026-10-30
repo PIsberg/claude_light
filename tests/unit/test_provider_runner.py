@@ -178,3 +178,34 @@ def test_fr010_cwd_is_passed_to_popen(tmp_path):
     _, error, popen, _ = _run(proc, cwd=str(tmp_path))
     assert error is None
     assert popen.call_args.kwargs.get("cwd") == str(tmp_path)
+
+
+_AGY_ARGV = ["C:/tools/agy.exe", "-p="]
+
+
+def _run_agy(proc=None, popen_error=None, **kwargs):
+    with patch(_POPEN, return_value=proc, side_effect=popen_error), patch(_KILL):
+        try:
+            runner.run_cli("gemini", _AGY_ARGV, "x", **kwargs)
+        except base.ProviderError as e:
+            return str(e)
+    return None
+
+
+def test_fr011_u1_nonzero_exit_remedy_names_the_binary_not_the_provider():
+    msg = _run_agy(FakeProc(stderr="boom\n", returncode=3))
+    assert msg == "gemini failed (exit 3): boom. Run agy on its own to see the full error."
+
+
+def test_fr011_u1_timeout_remedy_names_the_binary_not_the_provider():
+    msg = _run_agy(FakeProc(communicate_error=subprocess.TimeoutExpired(cmd="agy", timeout=5)),
+                   timeout=5)
+    assert "gemini timed out after 5 s" in msg
+    assert "Run agy on its own to see why" in msg
+    assert "Run gemini" not in msg
+
+
+def test_fr011_u1_binary_gone_names_the_binary_not_the_provider():
+    msg = _run_agy(popen_error=FileNotFoundError("agy"))
+    assert "agy CLI not found" in msg
+    assert "gemini CLI not found" not in msg
