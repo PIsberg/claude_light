@@ -86,7 +86,9 @@ class MockManager:
             def is_dir(self): return not self.is_file()
             def exists(self): return self.path in files or self.path in (".", ".claude_light_cache") or self.path.startswith("src")
             def stat(self):
-                class Stat: st_size = len(files.get(self.path, ""))
+                class Stat:  # skeleton._stat_tuple() reads both
+                    st_size = len(files.get(self.path, ""))
+                    st_mtime = 0.0
                 return Stat()
             def relative_to(self, other): return MockPath(self.path)
             def mkdir(self, *args, **kwargs): pass
@@ -141,7 +143,8 @@ class MockManager:
                 
         class MockMessage:
             def __init__(self, text, usage):
-                class Content:
+                class Content:  # llm._extract_text() keeps type == "text" only
+                    type = "text"
                     def __init__(self, t): self.text = t
                 self.content = [Content(text)]
                 self.usage = usage
@@ -158,8 +161,8 @@ class MockManager:
                 return np.random.rand(len(sentences), dim).astype(np.float32)
         return MockEmbedder()
         
-    def _mock_print_stats(self, usage, label="Stats", file=sys.stdout):
-        self.orig_print_stats(usage, label, file)
+    def _mock_print_stats(self, usage, label="Stats", file=sys.stdout, model=None):
+        self.orig_print_stats(usage, label, file, model=model)
         
         full_tokens = getattr(usage, "_full_codebase_tokens", self.total_tokens)
         injected = getattr(usage, "_injected_tokens", getattr(usage, "input_tokens", 0) + getattr(usage, "cache_read_input_tokens", 0))
