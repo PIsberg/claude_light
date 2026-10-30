@@ -152,7 +152,9 @@ def test_unknown_provider_flag_exits_2_listing_valid_names(monkeypatch, capsys):
     assert exc.value.code == 2
     err = capsys.readouterr().err
     assert "invalid choice: 'x'" in err
-    assert "claude, gemini, codex" in err
+    # argparse quotes the choices on 3.11 and not on 3.12: check each name only.
+    for name in providers.NAMES:
+        assert name in err
 
 
 # --- FR-003: same request for every provider ---------------------------------
