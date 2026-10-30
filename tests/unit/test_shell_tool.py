@@ -47,6 +47,23 @@ class TestShellTool(unittest.TestCase):
             self.assertTrue(is_error, cmd)
             self.assertIn("may not contain", out)
 
+    def test_powershell_subexpressions_refused(self):
+        # In PowerShell an argument in ( ), @( ) or { } is evaluated:
+        # `Write-Output (New-Item x)` creates x with none of the characters
+        # above (verified with Windows PowerShell 5.1).
+        for cmd in ("Write-Output (New-Item -ItemType File x)",
+                    "Write-Output @(New-Item x)", "Get-ChildItem -Filter {x}"):
+            out, is_error = self.run_shell(cmd, allowed=["powershell: Write-Output",
+                                                         "powershell: Get-ChildItem"])
+            self.assertTrue(is_error, cmd)
+            self.assertIn("may not contain", out)
+
+    def test_parentheses_still_allowed_for_bash(self):
+        # Bash only runs ( ) as a subshell at the start of a command, which
+        # the prefix rules out; quoted parentheses in arguments are common.
+        out, is_error = self.run_shell("echo 'f(x)'", allowed=["echo"])
+        self.assertFalse(is_error, out)
+
     def test_newline_refused_before_whitespace_is_collapsed(self):
         out, is_error = self.run_shell("echo a\necho b", allowed=["echo"])
         self.assertTrue(is_error)

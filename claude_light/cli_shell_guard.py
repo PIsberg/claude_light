@@ -17,17 +17,27 @@ import json
 import sys
 
 SHELL_FORBIDDEN = frozenset(";&|<>`$\n\r")
+# PowerShell evaluates an argument written in ( ), @( ) or { }, so
+# `Write-Output (New-Item x)` creates x without any character above.
+_POWERSHELL_FORBIDDEN = SHELL_FORBIDDEN | frozenset("(){}@")
+
+
+def forbidden_chars(tool: str) -> frozenset:
+    """Characters refused in a command for the CLI tool `tool`. Anything but
+    Bash gets the PowerShell set, the stricter one."""
+    return SHELL_FORBIDDEN if tool == "Bash" else _POWERSHELL_FORBIDDEN
 
 
 def check(payload: str) -> str | None:
     """The reason to block the call described by `payload`, or None to let it run."""
     try:
-        command = json.loads(payload)["tool_input"]["command"]
-    except (ValueError, TypeError, KeyError):
+        data = json.loads(payload)
+        command, tool = data["tool_input"]["command"], data.get("tool_name")
+    except (ValueError, TypeError, KeyError, AttributeError):
         return "claude_light could not read the command; it was not run"
     if not isinstance(command, str):
         return "claude_light could not read the command; it was not run"
-    bad = sorted(set(command) & SHELL_FORBIDDEN)
+    bad = sorted(set(command) & forbidden_chars(tool))
     if bad:
         return ("command may not contain " + " ".join(repr(c) for c in bad)
                 + "; run one simple command per call")

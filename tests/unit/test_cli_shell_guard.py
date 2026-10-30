@@ -57,10 +57,28 @@ class TestCliShellGuard(unittest.TestCase):
         code, _ = _run_hook(_bash("Get-ChildItem -Name . ; New-Item marker_b.txt", "PowerShell"))
         self.assertEqual(code, 2)
 
+    def test_powershell_subexpressions_are_blocked(self):
+        print("\n  ▶ TestCliShellGuard.test_powershell_subexpressions_are_blocked")
+        # PowerShell evaluates an argument in ( ), @( ) or { }:
+        # `Write-Output (New-Item x)` creates x with no chaining character.
+        for command in ("Write-Output (New-Item -ItemType File marker_ps1.txt).Name",
+                        "Write-Output @(New-Item marker_ps2.txt)",
+                        "Get-ChildItem -Filter {x}"):
+            code, _ = _run_hook(_bash(command, "PowerShell"))
+            self.assertEqual(code, 2, command)
+
+    def test_unknown_tool_gets_the_strictest_rule(self):
+        print("\n  ▶ TestCliShellGuard.test_unknown_tool_gets_the_strictest_rule")
+        code, _ = _run_hook(_bash("Write-Output (New-Item x)", "SomeFutureShell"))
+        self.assertEqual(code, 2)
+
     def test_a_single_command_passes(self):
         print("\n  ▶ TestCliShellGuard.test_a_single_command_passes")
-        code, err = _run_hook(_bash("python -m pytest tests/unit -q"))
-        self.assertEqual((code, err), (0, ""))
+        for command, tool in (("python -m pytest tests/unit -q", "Bash"),
+                              ("python -c 'print(1)'", "Bash"),
+                              ("Invoke-Pester -Path tests", "PowerShell")):
+            code, err = _run_hook(_bash(command, tool))
+            self.assertEqual((code, err), (0, ""), command)
 
     def test_unreadable_input_fails_closed(self):
         print("\n  ▶ TestCliShellGuard.test_unreadable_input_fails_closed")
@@ -73,8 +91,8 @@ class TestCliShellGuard(unittest.TestCase):
 
     def test_same_characters_as_the_api_shell_tool(self):
         print("\n  ▶ TestCliShellGuard.test_same_characters_as_the_api_shell_tool")
-        # Both shell paths promise the same rule; one set backs both.
-        self.assertIs(tools._SHELL_FORBIDDEN, cli_shell_guard.SHELL_FORBIDDEN)
+        # Both shell paths promise the same rule; one function backs both.
+        self.assertIs(tools.forbidden_chars, cli_shell_guard.forbidden_chars)
 
 
 class TestCliSettingsInstallTheGuard(unittest.TestCase):
