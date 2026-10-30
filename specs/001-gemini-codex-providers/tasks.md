@@ -70,7 +70,7 @@ arguments of `complete` and `summarize` and returns canned values.
 ### Slice S7: route line and budget (US3 scenarios 1-2, FR-008, FR-012)
 
 - [X] T021 [US3] Tests in `tests/unit/test_provider_route.py` for US3 scenarios 1-2, FR-008 (effort, top tier, budget) and FR-012, line texts from `contracts/provider.md`. Not settled: with `llm.route_query` patched to return `llm.MODEL_OPUS`, `llm._finalize_route` under a fake provider never calls `llm.choose`, leaves `state.session_model` `None` with `config.ROUTE_ONCE` on, and returns `model_label(...)`; `llm._apply_effort` with a non-base effort and `llm.AUTH_MODE` patched to `"API_KEY"` adds no system message; every `/budget` form via `main._budget_command` returns the message and leaves `state.session_budget` `None`.
-- [ ] T022 [US3] Implement in `claude_light/llm.py: _finalize_route` (without `TOP_TIER`: skip `_top_tier_model` and the `ROUTE_ONCE` pinning, model from `model_label`, contract route line), `claude_light/llm.py: _apply_effort` (effort-only message only with `EFFORT`) and `claude_light/main.py: _budget_command` (without `USD_BUDGET`: the message). `route_query` unchanged.
+- [x] T022 [US3] Implement in `claude_light/llm.py: _finalize_route` (without `TOP_TIER`: skip `_top_tier_model` and the `ROUTE_ONCE` pinning, model from `model_label`, contract route line), `claude_light/llm.py: _apply_effort` (effort-only message only with `EFFORT`) and `claude_light/main.py: _budget_command` (without `USD_BUDGET`: the message). `route_query` unchanged.
 
 ### Slice S9: startup and background work (US1 scenario 4, US2 scenario 4, FR-003, FR-010)
 
