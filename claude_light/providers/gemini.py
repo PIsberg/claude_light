@@ -21,8 +21,37 @@ _ARGV_TAIL = [
 ]
 
 
+# Without it agy calls run_command (3 of 3 real runs), is denied, and returns an empty response.
+_PREAMBLE = ("You have no tools in this session: do not call any tool, run any command or read "
+             "any file. Everything you can use is in this message. For an edit, write "
+             "SEARCH/REPLACE blocks from the code shown here.\n\n")
+# Tools the deny settings forbid, and the denied_actions kind that covers each.
+_FORBIDDEN = {
+    "run_command": "command", "send_command_input": "command", "call_mcp_tool": "mcp",
+    "write_to_file": "file", "replace_file_content": "file",
+    "multi_replace_file_content": "file", "sed_file": "file", "notebook_edit": "file",
+}
+
+
 def _stdin_line(text: str) -> str:
-    return json.dumps({"event": "user", "message": {"role": "user", "content": text}}) + "\n"
+    content = _PREAMBLE + text
+    return json.dumps({"event": "user", "message": {"role": "user", "content": content}}) + "\n"
+
+
+def _check_tools(stdout: str, result: dict) -> None:
+    """Fail closed: a finished forbidden tool call whose kind agy did not deny is an error."""
+    denied = result.get("denied_actions")
+    kinds = ({a.get("action") for a in denied if isinstance(a, dict)}
+             if isinstance(denied, list) else set())
+    for event in json_events(stdout):
+        step = event.get("step_update") if event.get("event") == "step_update" else None
+        if (not isinstance(step, dict) or step.get("step_type") != "tool"
+                or step.get("state") != "DONE"):
+            continue
+        tool = step.get("tool_name")
+        kind = _FORBIDDEN.get(tool)
+        if kind and kind not in kinds:
+            raise ProviderError(f"agy ran {tool}, which claude_light forbids")
 
 
 def _result_reply(stdout: str) -> str:
@@ -36,8 +65,14 @@ def _result_reply(stdout: str) -> str:
     if result.get("status") != "SUCCESS":
         raise ProviderError(f"agy failed: {result.get('error') or result.get('status')}. "
                             f"If you are not signed in, run agy once and sign in.")
+    _check_tools(stdout, result)
     reply = result.get("response")
     if not isinstance(reply, str) or not reply.strip():
+        denied = result.get("denied_actions")
+        if isinstance(denied, list) and denied and isinstance(denied[0], dict):
+            name = denied[0].get("display_name") or denied[0].get("action")
+            raise ProviderError(f"agy tried {name} and returned nothing: claude_light denies "
+                                f"agy's tools, so the request cannot be answered.")
         raise ProviderError("agy output could not be parsed: empty response")
     return reply.strip()
 

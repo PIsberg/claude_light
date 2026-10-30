@@ -96,7 +96,7 @@ arguments of `complete` and `summarize` and returns canned values.
 
 ### Slice S14: real agy run (US5, FR-015, SC-001, SC-004)
 
-- [ ] T029 [US5] Run `quickstart.md` steps 2-4 with `--provider gemini` on agy (the question, 3 edit-and-undo trials, the shell probe with its outside-cwd marker) and record each command, its output, agy's `step_update` tool calls with their state, and a verdict in a new section of `specs/001-gemini-codex-providers/verification.md`.
+- [X] T029 [US5] Run `quickstart.md` steps 2-4 with `--provider gemini` on agy (the question, 3 edit-and-undo trials, the shell probe with its outside-cwd marker) and record each command, its output, agy's `step_update` tool calls with their state, and a verdict in a new section of `specs/001-gemini-codex-providers/verification.md`.
 
 ## Dependencies
 

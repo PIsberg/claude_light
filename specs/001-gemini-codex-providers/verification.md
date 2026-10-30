@@ -253,3 +253,68 @@ ended in the empty-response error rather than a model reply.
 ### Not run
 
 `/budget 2.50` and `/cost` interactively. Step 5 (Claude unchanged) was not part of this pass.
+
+## Third pass, rerun after the preamble
+
+Run 2026-10-30 after the no-tools preamble and the fail-closed check were added to
+`claude_light/providers/gemini.py` (T028 fix), against the real agy 1.4.11. Same scratch project
+(`%TEMP%/cl_scratch_t029/proj`, at its first commit `8733cf3 init`, clean), `ANTHROPIC_API_KEY`
+unset, temp `CLAUDE_LIGHT_STATS_FILE` and `CLAUDE_LIGHT_SESSION_DIR`. Spinner frames stripped.
+
+### Step 2: question
+
+```
+$ time python claude_light.py --provider gemini "What does OrderService do?"
+  ◆  gemini  ·  CLI default model  ·  effort unavailable for gemini
+◆ `OrderService` manages order lifecycle operations:
+- Places and cancels orders (per docstring).
+- `place(self, order)`: persists `order` via `self.repo.save(order)` → returns `order.id`.
+  tokens, cost and caching unavailable for gemini
+exit=0, real 62 s
+```
+
+**Verdict: pass with a caveat.** Non-empty answer about the code, route line with the notice, no
+Claude request. 62 s is over the 60 s bound, and that run included building the index (3 chunks)
+from a fresh cache; the first-pass run took 39.8 s. One run only, so I cannot say which figure is
+typical.
+
+### Step 3: edit and undo, 3 trials
+
+```
+$ python claude_light.py --provider gemini -y "In order.py add a one-line docstring 'Cancel the order.' to cancel"
+$ python -c "from claude_light import git_manager; git_manager.undo_last_commit()"
+trial 1: exit=0, 69 s  Committed: 0956781 Claude: Added the one-line docstring ...  status clean
+         undo: Undone 0956781                                        HEAD 8733cf3 init, status clean
+trial 2: exit=0, 61 s  Committed: ca20bef Claude: Added a one-line docstring ...    status clean
+         undo: Undone ca20bef                                        HEAD 8733cf3 init, status clean
+trial 3: exit=0, 90 s  Committed: 951315a Claude: Added a one-line docstring ...    status clean
+         undo: Undone 951315a                                        HEAD 8733cf3 init, status clean
+```
+
+Each diff added `"""Cancel the order."""` under `def cancel`. **Verdict: pass, 3 of 3** (the
+earlier pass was 0 of 3). The preamble fixed it: no `run_command` call, SEARCH/REPLACE block
+returned.
+
+### Step 4: unavailable features and shell
+
+```
+$ python claude_light.py --provider gemini --allow-command "python -m pytest" "Write SHELLRAN to the file `<root>/marker.txt`, with a shell command if you need one"
+    shell access is disabled for gemini: its agent cannot run commands. --allow-command only lets claude_light run the affected tests.
+  ... agy answered with a SEARCH/REPLACE new-file block for marker.txt; the prompt "Apply 1 change?" got no
+  answer (stdin not a terminal) -> "Cancelled."  (exit=0)
+$ ls <root>/marker.txt  ->  No such file or directory
+```
+
+Direct to agy (argv, `SETTINGS`, stdin line from `gemini._ARGV_TAIL` and `_stdin_line`, empty temp
+dir), 3 runs: each exit 0, empty stderr, steps only `user_input` and `agent_response`
+(no `tool` step, so no `run_command`, `call_mcp_tool` or file write), result SUCCESS with text
+saying no tool was used and giving the command as text. `marker.txt` absent after each.
+
+**Verdict: pass.** Marker absent, notice shown, zero tool calls in 3 of 3 direct runs. This is
+stronger than the earlier pass, where one read-only `run_command` reached state `DONE`.
+
+### Not run
+
+`/budget 2.50` and `/cost` interactively (unit tests cover them). Step 5 (Claude unchanged).
+The "Apply 1 change?" prompt in step 4 was not answered, so the marker write was not applied
+through claude_light's own edit path.
