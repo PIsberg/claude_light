@@ -340,11 +340,26 @@ answer against medium. Above high, the budget adds tokens without adding
 answers on these questions, but none of the 41 questions routes to max, so
 this result says nothing about the max tier's own questions.
 
+Re-run 2026-10-30 on the current index (43 questions, 1,633 chunks, same
+command):
+
+| Effort (budget) | Identifier | Paraphrase | Off-topic got nothing | Tokens sent, median | Tokens sent, mean |
+|---|---|---|---|---|---|
+| low (1,500) | 13/25 | 10/12 | 6/6 | 1,121 | 996 |
+| medium (3,000) | 20/25 | 11/12 | 6/6 | 1,933 | 1,811 |
+| high (6,000) | 20/25 | 11/12 | 6/6 | 2,301 | 2,842 |
+| max (9,000) | 22/25 | 11/12 | 6/6 | 2,301 | 3,667 |
+
+Low still loses answers against medium. High no longer adds any over medium
+and sends 57% more mean tokens; max now adds two identifier answers over high.
+Both shifts rest on one or two questions; whether to lower high is open in #77.
+
 ### Router replay (2026-10-24, `benchmark_router.py`)
 
 | Queries | Low | Medium | High | Max | Scores in the escalation band |
 |---|---|---|---|---|---|
 | 41 (repo questions) | 32 (78%) | 2 | 7 | 0 | 0 at margin 0.15, 0.30 and 0.50 |
+| 43 (re-run 2026-10-30) | 33 (77%) | 2 | 8 | 0 | 0 at margin 0.15, 0.30 and 0.50 |
 
 The Opus cost gate only changes a query's tier when its score is between 12.0
 and 12.0 × (1 + margin). No query falls there, so the escalation margin has no
