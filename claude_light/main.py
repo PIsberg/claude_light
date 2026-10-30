@@ -27,7 +27,7 @@ from claude_light.ui import (
     _UNICODE, access_label, choose, current_notice, print_session_summary, print_session_footer, print_startup_header,
     ToolExecutionManager,
 )
-from claude_light.llm import full_refresh, chat, one_shot, warm_cache, compact_history, ClaudeNotLoggedIn
+from claude_light.llm import full_refresh, chat, one_shot, warm_cache, compact_history, ClaudeNotLoggedIn, require_auth
 from claude_light.indexer import SourceHandler
 from claude_light.compressor import start_background_load as _start_llmlingua_load
 
@@ -483,6 +483,7 @@ def main():
     if args.resume and not interactive:
         # A one-shot turn sends no history, so there is nothing to resume into.
         parser.error("--continue resumes an interactive session; it cannot take a question")
+    require_auth()
     if interactive:
         start_chat(auto_apply=args.yes, resume=args.resume)
         return

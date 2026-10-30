@@ -34,13 +34,15 @@ class ClaudeNotLoggedIn(Exception):
     pass
 from claude_light.streaming import stream_chat_response, accumulate_usage_from_dict, calculate_usage_cost
 
-# Auth check — only abort if nothing was found
-if not AUTH_MODE or (AUTH_MODE == "OAUTH" and not config.AUTH_TOKEN and not API_KEY):
-    print(f"\n  {_T_ERR}  No authentication found.", file=sys.stderr)
-    print(f"  {_T_SYS}  To use your Claude Pro subscription:", file=sys.stderr)
-    print(f"          {_ANSI_CYAN}claude auth login{_ANSI_RESET}\n", file=sys.stderr)
-    print(f"  {_T_SYS}  Or set {_ANSI_BOLD}ANTHROPIC_API_KEY{_ANSI_RESET} in your environment.", file=sys.stderr)
-    sys.exit(1)
+def require_auth():
+    """Exit if no credential was found. main() calls it once the arguments
+    are parsed, not at import, so --help works on a fresh install (#101)."""
+    if not AUTH_MODE or (AUTH_MODE == "OAUTH" and not config.AUTH_TOKEN and not API_KEY):
+        print(f"\n  {_T_ERR}  No authentication found.", file=sys.stderr)
+        print(f"  {_T_SYS}  To use your Claude Pro subscription:", file=sys.stderr)
+        print(f"          {_ANSI_CYAN}claude auth login{_ANSI_RESET}\n", file=sys.stderr)
+        print(f"  {_T_SYS}  Or set {_ANSI_BOLD}ANTHROPIC_API_KEY{_ANSI_RESET} in your environment.", file=sys.stderr)
+        sys.exit(1)
 
 if API_KEY == "sk-ant-test-mock-key":
     class MockClient:
