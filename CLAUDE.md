@@ -52,7 +52,7 @@ Run from the root of the project you want to query. Exits with an error if no au
 
 Authentication, in order: `ANTHROPIC_API_KEY`; `~/.anthropic` or `./.env`; `~/.claude_light_automation_token` (recommended on Windows); `~/.claude/.credentials.json` from `claude auth login`. An API key bills per token; a Pro subscription is flat-rate. The mode follows the credential found.
 
-Install with `installers/install.sh`, `installers/install_macos.sh` or `installers/install.ps1`. Dependencies come from `requirements.txt`; the CI test job installs its own list (`.github/workflows/test.yml`), so keep the two in step by hand. Python 3.12 or newer.
+Install with `installers/install.sh`, `installers/install_macos.sh` or `installers/install.ps1`. Dependencies come from `requirements.txt`, which the installers and the CI test and fuzz jobs all install. Python 3.12 or newer.
 
 ## Invariants: check these before editing
 
