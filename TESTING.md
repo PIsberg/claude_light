@@ -41,6 +41,11 @@ CI runs the unit, integration and utilities suites, plus the two benchmark regre
 
 If you add a test that needs one of these changed, set it inside the test, not in the module.
 
+Two autouse fixtures in the same file run around every test:
+
+- `_fresh_session_model` clears `state.session_model`, so one test's route does not pin the next test's model.
+- `_no_real_llmlingua_loader` fails a test that starts the real LLMLingua loader thread. `main()` starts one, and it keeps loading after the test ends, then sets the compressor singleton under a later test (#74). A test that calls `main()` patches `claude_light.main._start_llmlingua_load`, as `TestMainRouting.setUp` does.
+
 ## Where a new test goes
 
 Add the test to the file for the module you changed, in the existing style. A test that only runs on your machine is not coverage, so do not put it in a new directory that CI does not collect.

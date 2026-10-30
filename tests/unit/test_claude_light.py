@@ -6309,6 +6309,13 @@ class TestModuleEntrypoint(unittest.TestCase):
 
 class TestMainRouting(unittest.TestCase):
 
+    def setUp(self):
+        # main() starts the real LLMLingua loader, which outlives the test.
+        import claude_light.main as main_mod
+        patcher = patch.object(main_mod, "_start_llmlingua_load")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_allow_command_flags_extend_the_allowlist(self):
         import claude_light.main as main_mod
         import claude_light.config as config
