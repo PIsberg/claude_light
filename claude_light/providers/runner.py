@@ -1,4 +1,7 @@
 """CLI subprocess runner shared by the CLI providers."""
+import os
+import subprocess
+
 
 TIMEOUT_SECS = 600
 

@@ -597,6 +597,10 @@ def _plain_choice(question, options):
 NOTICE_SECS = 8
 
 
+def usage_unavailable(name: str) -> str:
+    raise NotImplementedError("usage_unavailable")
+
+
 def notify(text: str, error: bool = False) -> None:
     """Post a notice from a background thread; the toolbar shows it for
     NOTICE_SECS. It never prints: a print from another thread lands inside
