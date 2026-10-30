@@ -4,6 +4,8 @@ Constants live in `claude_light/config.py`. Environment variables override the d
 
 | Variable | Purpose |
 |---|---|
+| `--provider {claude,gemini,codex}` | Command-line flag, default `claude`. Selects the agent (`claude_light/providers/__init__.py: NAMES`, `DEFAULT`) |
+| `providers/runner.py: TIMEOUT_SECS` | Seconds a Gemini or Codex run may take before its process tree is killed (default 600) |
 | `TARGET_RETRIEVED_TOKENS` | Token budget for retrieved context per query (default 6 000) |
 | `MIN_SCORE` | Absolute cosine similarity floor to include a chunk (default 0.35; 0.45 dropped most natural-language questions) |
 | `RELATIVE_SCORE_FLOOR` | Drop chunks below this fraction of the top chunk's score (default 0.60) |

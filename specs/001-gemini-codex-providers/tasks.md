@@ -81,7 +81,7 @@ arguments of `complete` and `summarize` and returns canned values.
 
 ### Slice S10: docs (FR-014, constitution VI)
 
-- [ ] T025 [P] Update `README.md`, `CLAUDE.md` (Commands: `--provider`; Authentication: per provider; Invariants: neutral code reaches providers only through `claude_light/providers/`), `docs/CONFIG.md` (`--provider`, `providers/runner.py: TIMEOUT_SECS`), `docs/architecture/ARCHITECTURE.md` (the package, its capabilities, and Claude's client and transports now in `providers/claude.py`) and `HARNESS.md` (the six modules and nine test files of plan.md's Project Structure), describing selection, per-provider authentication and per-provider unavailable features from `contracts/provider.md`; remove any text this feature makes wrong, including mentions of the transport functions under `llm`.
+- [X] T025 [P] Update `README.md`, `CLAUDE.md` (Commands: `--provider`; Authentication: per provider; Invariants: neutral code reaches providers only through `claude_light/providers/`), `docs/CONFIG.md` (`--provider`, `providers/runner.py: TIMEOUT_SECS`), `docs/architecture/ARCHITECTURE.md` (the package, its capabilities, and Claude's client and transports now in `providers/claude.py`) and `HARNESS.md` (the six modules and nine test files of plan.md's Project Structure), describing selection, per-provider authentication and per-provider unavailable features from `contracts/provider.md`; remove any text this feature makes wrong, including mentions of the transport functions under `llm`.
 
 ### Slice S11: manual verification and token gates (US5, FR-015, SC-001, SC-004, SC-007, constitution III)
 
