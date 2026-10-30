@@ -96,6 +96,43 @@ def test_fr011_nonzero_exit_names_provider_exit_code_and_last_stderr_line():
                           "Run gemini on its own to see the full error.")
 
 
+_GEMINI_STDERR = (
+    "Loaded cached credentials.\n"
+    "An unexpected critical error occurred:IneligibleTierError: This client is no "
+    "longer supported for Gemini Code Assist for individuals.\n"
+    "    at throwIneligibleOrProjectIdError (file:///x/setup.js:1:1)\n"
+    "    at async setupUser (file:///x/setup.js:2:2)\n"
+    "\n"
+    "    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n"
+)
+
+
+def test_fr011_nonzero_exit_skips_stack_frames_and_names_the_error_line():
+    proc = FakeProc(stderr=_GEMINI_STDERR, returncode=1)
+    _, error, _, _ = _run(proc)
+    msg = str(error)
+    assert "IneligibleTierError: This client is no longer supported" in msg
+    assert "processTicksAndRejections" not in msg
+    assert msg.startswith("gemini failed (exit 1): ")
+    assert msg.endswith("Run gemini on its own to see the full error.")
+
+
+def test_fr011_nonzero_exit_prefers_last_error_line_over_later_plain_line():
+    proc = FakeProc(stderr="Error: first\nTypeError: second\nshutting down\n", returncode=2)
+    _, error, _, _ = _run(proc)
+    assert str(error) == ("gemini failed (exit 2): TypeError: second. "
+                          "Run gemini on its own to see the full error.")
+
+
+def test_fr011_nonzero_exit_with_only_frames_gives_no_error_output():
+    proc = FakeProc(stderr="    at a (x.js:1:1)\n    at b (x.js:2:2)\n", returncode=1)
+    _, error, _, _ = _run(proc)
+    msg = str(error)
+    assert "at a (x.js" not in msg and "at b (x.js" not in msg
+    assert msg == ("gemini failed (exit 1): no error output. "
+                   "Run gemini on its own to see the full error.")
+
+
 def test_fr011_timeout_kills_the_tree_and_names_the_provider_and_seconds():
     proc = FakeProc(communicate_error=subprocess.TimeoutExpired(cmd="gemini", timeout=5))
     _, error, _, kill = _run(proc, timeout=5)
