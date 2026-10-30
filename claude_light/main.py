@@ -21,7 +21,7 @@ from watchdog.observers import Observer
 
 import claude_light.state as state
 from claude_light import providers, session
-from claude_light.providers.base import USAGE, NotLoggedIn
+from claude_light.providers.base import USAGE, NotLoggedIn, AGENT, CACHING, SHELL, USD_BUDGET
 from claude_light.config import MODEL, CACHE_DIR, HEARTBEAT_SECS, CACHE_TTL_SECS, AUTH_MODE, ECONOMY_MODE, API_KEY_SOURCE
 from claude_light.ui import (
     _ANSI_BOLD, _ANSI_RESET, _ANSI_CYAN, _ANSI_DIM, _ANSI_GREEN, _ANSI_RED, _T_SYS, _T_ERR,
@@ -133,6 +133,9 @@ def _status_text(columns: int | None = None) -> str:
 
 def _budget_command(arg: str) -> str:
     """Handle `/budget [dollars|off]`; returns the line to show."""
+    provider = providers.active()
+    if not provider.has(USD_BUDGET):
+        return f"Budget unavailable for {provider.name}: it has no dollar pricing. No cap set."
     if not arg:
         if state.session_budget is None:
             return "No budget set. /budget <dollars> sets one."
@@ -177,7 +180,7 @@ def _print_help():
 
 
 def heartbeat():
-    if AUTH_MODE == "OAUTH":
+    if AUTH_MODE == "OAUTH" or not providers.active().has(CACHING):
         return
     while not state.stop_event.is_set():
         state.stop_event.wait(HEARTBEAT_SECS)
@@ -217,7 +220,7 @@ def _index_ready_for_query() -> bool:
     """
     if state.indexing_done.is_set():
         return True
-    if AUTH_MODE == "OAUTH":
+    if AUTH_MODE == "OAUTH" and providers.active().has(AGENT):
         return False
     print(f"  {_T_SYS}  Indexing…", flush=True)
     state.indexing_done.wait()
@@ -225,7 +228,7 @@ def _index_ready_for_query() -> bool:
 
 
 def start_chat(auto_apply=False, resume=False):
-    print_startup_header(MODEL, access_label(API_KEY_SOURCE))
+    print_startup_header(*(providers.active().header() or (MODEL, access_label(API_KEY_SOURCE))))
     if resume:
         print(f"  {_T_SYS}  {session.restore()}")
     _setup_signal_handlers()
@@ -257,7 +260,7 @@ def start_chat(auto_apply=False, resume=False):
     except Exception as e:
         print(f"{_T_ERR} Failed to start file watcher: {e}", file=sys.stderr)
 
-    if AUTH_MODE == "API_KEY":
+    if AUTH_MODE == "API_KEY" and providers.active().has(CACHING):
         threading.Thread(target=heartbeat, daemon=True).start()
 
     if _PROMPTTK_AVAILABLE:
@@ -461,7 +464,11 @@ def main():
     if args.resume and not interactive:
         # A one-shot turn sends no history, so there is nothing to resume into.
         parser.error("--continue resumes an interactive session; it cannot take a question")
-    providers.select(args.provider).require_auth()
+    provider = providers.select(args.provider)
+    provider.require_auth()
+    if _config.ALLOWED_COMMANDS and not provider.has(SHELL):
+        print(f"  {_T_SYS}  shell access is disabled for {provider.name}: its agent cannot run commands. "
+              "--allow-command only lets claude_light run the affected tests.", file=sys.stderr)
     if interactive:
         start_chat(auto_apply=args.yes, resume=args.resume)
         return

@@ -23,7 +23,7 @@ from claude_light.ui import (
 )
 import claude_light.state as state
 from claude_light import providers
-from claude_light.providers.base import NotLoggedIn
+from claude_light.providers.base import NotLoggedIn, AGENT, EFFORT, TOP_TIER
 from claude_light.skeleton import build_skeleton, _refresh_tree_only, _assemble_skeleton, _refresh_single_md
 from claude_light.indexer import index_files
 from claude_light.retrieval import retrieve, record_retrieval
@@ -300,6 +300,15 @@ def _finalize_route(model, effort, max_tokens) -> tuple[str, str, int]:
         "high":   _ANSI_YELLOW,
         "max":    _ANSI_MAGENTA,
     }
+    provider = providers.active()
+    if not provider.has(TOP_TIER):
+        # The provider's tool picks the model: nothing to pin, prompt for or price.
+        label = provider.model_label(model)
+        note = "" if provider.has(EFFORT) else f"  ·  effort unavailable for {provider.name}"
+        if model == MODEL_OPUS:
+            note += f"  ·  top tier unavailable for {provider.name}"
+        print(f"  {_ANSI_DIM}◆  {provider.name}  ·  {label}{note}{_ANSI_RESET}", file=sys.stderr)
+        return label, effort, max_tokens
     budget = state.session_budget
     over_budget = budget is not None and state.session_cost >= budget
     if over_budget:
@@ -481,6 +490,11 @@ _EXTENDED_CACHE_HEADERS = {"anthropic-beta": f"extended-cache-ttl-2025-04-11,{EF
 _MIN_MAX_TOKENS = {"low": 8_000, "medium": 16_000, "high": 32_000, "max": 64_000}
 
 
+def _agent_oauth() -> bool:
+    """True when a CLI agent (not the SDK) answers and can edit files itself."""
+    return AUTH_MODE == "OAUTH" and providers.active().has(AGENT)
+
+
 def _apply_effort(create_kwargs: dict, effort: str) -> None:
     """Run the request's last user turn at `effort` without changing the top-level effort."""
     create_kwargs["output_config"] = {"effort": BASE_EFFORT}
@@ -488,7 +502,7 @@ def _apply_effort(create_kwargs: dict, effort: str) -> None:
     # The effort message goes right before the question and is not stored in
     # the history: the history's cache breakpoint sits ahead of it, so the next
     # turn's prefix still matches. The CLI path flattens messages to text.
-    if effort != BASE_EFFORT and AUTH_MODE != "OAUTH":
+    if effort != BASE_EFFORT and providers.active().has(EFFORT) and not _agent_oauth():
         messages = create_kwargs["messages"]
         create_kwargs["messages"] = messages[:-1] + [
             {"role": "system", "content": [], "output_config": {"effort": effort}},
@@ -740,7 +754,7 @@ def chat(query, auto_apply=False, use_index=True):
     # Snapshot dirty files BEFORE the API call so we can distinguish agent
     # edits (OAUTH mode: the CLI's own Read/Edit/Bash tools aren't actually
     # blocked by --tools "") from changes the user had pending.
-    pre_modified = _git_modified_snapshot() if AUTH_MODE == "OAUTH" else set()
+    pre_modified = _git_modified_snapshot() if _agent_oauth() else set()
 
     try:
         for attempt in range(3):
@@ -792,7 +806,7 @@ def chat(query, auto_apply=False, use_index=True):
                 sys.stdout.flush()
             if edits:
                 apply_edits(edits, explanation=explanation, auto_apply=auto_apply)
-            elif AUTH_MODE == "OAUTH":
+            elif _agent_oauth():
                 # No SEARCH/REPLACE block but the CLI agent may have edited
                 # files itself. Diff against the pre-call snapshot; commit
                 # anything new so /undo can revert it. Use the user's
@@ -813,7 +827,7 @@ def chat(query, auto_apply=False, use_index=True):
 
     except KeyboardInterrupt:
         note = (" The agent was stopped; files it already changed are left"
-                " uncommitted in the working tree.") if AUTH_MODE == "OAUTH" else ""
+                " uncommitted in the working tree.") if _agent_oauth() else ""
         print(f"\n  {_T_ERR}  Interrupted.{note}")
     except NotLoggedIn:
         # Re-raise so main.py can handle the interactive login trigger
@@ -830,7 +844,7 @@ def one_shot(prompt, auto_apply=False):
     print(f"{_T_SYS} Building context...", file=sys.stderr)
     _update_skeleton()
 
-    if AUTH_MODE != "OAUTH":
+    if not _agent_oauth():
         # Retrieval is the model's starting point here, so wait for the index.
         # dense="skip": one-shot exits before a background pass could finish;
         # dense vectors already cached are still used.
@@ -901,7 +915,7 @@ def _one_shot_turn(prompt, auto_apply, use_index):
     _apply_effort(create_kwargs, effort)
 
     # See chat() for rationale — snapshot to detect agent edits in OAUTH mode.
-    pre_modified = _git_modified_snapshot() if AUTH_MODE == "OAUTH" else set()
+    pre_modified = _git_modified_snapshot() if _agent_oauth() else set()
 
     try:
         for attempt in range(3):
@@ -935,7 +949,7 @@ def _one_shot_turn(prompt, auto_apply, use_index):
                 sys.stdout.flush()
             if edits:
                 apply_edits(edits, explanation=explanation, auto_apply=auto_apply)
-            elif AUTH_MODE == "OAUTH":
+            elif _agent_oauth():
                 # See chat() — use the prompt, not the agent's narration.
                 post_modified = _git_modified_snapshot()
                 agent_edits = post_modified - pre_modified
