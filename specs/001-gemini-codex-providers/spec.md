@@ -15,6 +15,8 @@
 - Q: What happens when `--continue` resumes a session saved with a different provider? → A: claude_light warns, naming both providers, and starts a fresh conversation; the old session file is left untouched.
 - Q: Where does Claude's transport live after the move behind the shared contract (D2)? → A: Fully in `providers/claude.py`; existing Claude tests change only their patch targets, from `claude_light.llm` to `claude_light.providers.claude`.
 - Q: What does the route line show per provider (D3)? → A: With Gemini or Codex, the provider and its model, or "CLI default model" when the provider's tool picks it; with Claude, chosen or by default, the route line is unchanged.
+- Q: How does Gemini behave when its tool is installed but not signed in, given agy keeps no credential claude_light can check? → A: No startup probe; the first question fails with an error naming agy and the remedy "run agy once and sign in", and the session does not end (user decision 2026-10-30, amends the not-logged-in edge case).
+- Q: Which tool does the Gemini provider run, and which version is assumed? → A: Google's Antigravity CLI `agy` (1.4.11 at the time of writing; decision D10), because Google no longer accepts the `gemini` CLI for individual accounts (user decision 2026-10-30).
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -100,7 +102,7 @@ Before the work is called done, the maintainer runs claude_light against the rea
 ### Edge Cases
 
 - The chosen provider's tool is not installed: claude_light exits before the first question with a message naming the missing tool and how to get it.
-- The tool is installed but not logged in: the same early exit, naming the login step; no partial answer is printed.
+- The tool is installed but not logged in: the same early exit, naming the login step; no partial answer is printed. Exception, Gemini: its tool, agy (decision D10), keeps no credential claude_light can check, so a missing sign-in surfaces on the first question as an error naming agy with the remedy 'run agy once and sign in'; the session does not end.
 - The tool fails or times out mid-answer: the user sees an error naming the provider, the session stays usable, and no auto-commit is made for a failed turn.
 - The tool's output cannot be parsed: the user sees an error naming the provider and the turn is not recorded as answered.
 - Two providers' credentials are both present: only the chosen provider's is used.
@@ -151,7 +153,8 @@ Before the work is called done, the maintainer runs claude_light against the rea
 
 ## Assumptions
 
-- The Gemini and Codex tools are already installed (Gemini 0.44.1, Codex 0.162.1 on the maintainer's machine); claude_light does not install them or log users in.
+- The Gemini provider runs Google's Antigravity CLI `agy` (1.4.11 at the time of writing; decision D10), because Google no longer accepts the `gemini` CLI for individual accounts.
+- The Gemini and Codex tools are already installed (agy 1.4.11, Codex 0.162.1 on the maintainer's machine); claude_light does not install them or log users in.
 - Providers are chosen per launch; switching provider inside a running session is out of scope.
 - Gemini and Codex are driven through their installed command-line tools, not through vendor SDKs, in this version.
 - Prompt caching, per-turn effort, and dollar budgets stay Claude-only; equivalents for other providers are out of scope.

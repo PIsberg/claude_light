@@ -37,6 +37,10 @@ class Provider:
 def transcript(request: dict) -> tuple[str, str]
     # (system_text, prompt): the flattening llm._make_streaming_api_call's OAUTH branch does today
     # (system block texts joined by "\n"; "CONVERSATION HISTORY:" + "--- Role ---" parts; "USER: <last>")
+def json_events(stdout: str) -> Iterator[dict]
+    # each line of NDJSON stdout that json.loads parses to a dict, in order; blank lines, non-JSON
+    # lines and JSON that is not an object are skipped. Codex's _agent_reply and Gemini's
+    # _result_reply only select their event from it.
 
 # claude_light/providers/runner.py
 TIMEOUT_SECS: int = 600
@@ -60,7 +64,7 @@ instance.
 | `complete` | `_make_streaming_api_call(**request)`, moved from `llm` | `run_cli` of the argv below | `run_cli` of the argv below |
 | `summarize` | the two Claude branches of today's `llm._summarize_turns` | same argv and stdin line, its `content` `"You summarize conversations.\n\n" + instructions` | same argv, stdin `"You summarize conversations.\n\n" + instructions` |
 | `warm` | the body of today's `llm.warm_cache` (returns under OAUTH) | base no-op | base no-op |
-| `require_auth` | body of today's `llm.require_auth` | `shutil.which("agy")` only: agy keeps no credential file to check (none under `~/.gemini/antigravity-cli`), so a missing login surfaces from the run | `shutil.which("codex")`; `$CODEX_HOME/auth.json` (default `~/.codex/auth.json`) exists |
+| `require_auth` | body of today's `llm.require_auth` | `shutil.which("agy")` only: agy keeps no credential file to check (none under `~/.gemini/antigravity-cli`), so a missing sign-in surfaces on the first question, not at startup (Messages, not logged in) | `shutil.which("codex")`; `$CODEX_HOME/auth.json` (default `~/.codex/auth.json`) exists |
 | also owns | moved from `llm` (D2): `client`, `ClaudeNotLoggedIn(NotLoggedIn)`, `_make_cli_subprocess_call`, `_api_tool_loop` and their helpers; `offer_login` (from `main.start_chat`) | `BINARY = "agy"` (native `agy.exe`, no npm shim), `SETTINGS` | `BINARY = "codex"` |
 
 ### Gemini adapter (agy, D10)
@@ -82,7 +86,8 @@ stdin: exactly one NDJSON line, then EOF:
 `system_text + "\n\n" + prompt` from `transcript()`. A plain-text prompt on stdin is not read: the
 model tries a shell command to read stdin, headless mode denies it, and agy prints nothing.
 
-stdout: NDJSON events (`init`, `step_update`, `result`). Non-JSON lines are skipped.
+stdout: NDJSON events (`init`, `step_update`, `result`), read through `base.json_events`;
+`_result_reply` selects the `result` event from it.
 - reply: the `result` event's `result.response` when `result.status == "SUCCESS"`;
 - a `result` with another status: `ProviderError` naming `result.error`;
 - no `result` event: unparseable output, `ProviderError`;
@@ -100,8 +105,8 @@ what it can send is the prompt claude_light gives it.
 
 ### Codex adapter
 
-Codex argv, stdin = `system_text + "\n\n" + prompt` from `transcript()`, reply = `text` of the last JSONL line with `type == "item.completed"` and
-`item.type == "agent_message"`:
+Codex argv, stdin = `system_text + "\n\n" + prompt` from `transcript()`, reply = `text` of the last event from `base.json_events` with `type == "item.completed"` and
+`item.type == "agent_message"` (`_agent_reply`):
 `[which("codex"), "exec", "--json", "--ephemeral", "--skip-git-repo-check", "--ignore-user-config", "--sandbox", "read-only", "--disable", "shell_tool", "--disable", "unified_exec", "--disable", "apps", "-"]`
 
 Neither argv carries `-m` or any Claude model id (FR-007, D3). Why each flag: `research.md` R1 (Codex), R3 (Gemini).
@@ -118,8 +123,9 @@ For every `claude_light/**/*.py` except `providers/<name>.py` and the registry
 no SDK and runs nothing): no `import`/`from` of that provider's SDK (`anthropic` for claude;
 `google.genai`, `google.generativeai` for gemini; `openai` for codex), and no string constant,
 docstrings excluded, matching
-`(?<![\w./-])(claude|gemini|codex)(\.exe|\.cmd)?(?![\w.-]| light)` for that name. f-string parts
-count as constants. The rule matches the binary as a bare name (`"claude"`, `which("codex")`) or
+`(?<![\w./-])(claude|gemini|codex|agy)(\.exe|\.cmd)?(?![\w.-]| light)` for that name (`agy` is
+gemini's binary, D10). f-string parts
+count as constants. The rule matches the binary as a bare name (`"claude"`, `"agy"`, `which("agy")`) or
 as the first word of a command line (`"claude setup-token"`); it does not match a file name with
 a suffix (`"claude.md"` in `claude_light/skeleton.py: _FULL_MD_NAMES`, the project doc every
 provider's skeleton keeps under FR-003), the product name `claude light` (`claude_light/ui.py`
@@ -132,7 +138,7 @@ default provider's name uses `providers.DEFAULT`.
 
 | When | Text |
 |---|---|
-| tool missing (exit 1) | `agy not found. Install the Antigravity CLI.` / `codex CLI not found. Install it: npm install -g @openai/codex` |
+| tool missing (exit 1; Gemini's also from `_run`) | `agy not found. Install the Antigravity CLI: https://antigravity.google` / `codex CLI not found. Install it: npm install -g @openai/codex` |
 | not logged in | Gemini: no startup check; the run's `ProviderError` (a non-`SUCCESS` result) names `result.error` and the remedy `run agy once and sign in` / Codex (exit 1): `codex is not logged in. Run: codex login` |
 | binary gone mid-session (`FileNotFoundError` in `run_cli`) | `<p> CLI not found` |
 | non-zero exit | `<p> failed (exit <n>): <last non-empty stderr line>. Run <bin> on its own to see the full error.`, where `<bin>` is the binary that ran, `Path(argv[0]).stem` (Gemini: `Run agy on its own ...`) |

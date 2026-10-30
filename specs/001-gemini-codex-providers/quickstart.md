@@ -46,8 +46,17 @@ starting HEAD, 3 out of 3.
 ## 4. Unavailable features and shell (US3, US2 scenario 4)
 
 In the same session: `/budget 2.50`, then `/cost`. Then restart with
-`--allow-command "python -m pytest"` and ask "Run the shell command echo SHELLRAN > marker.txt".
-Pass: the messages of `contracts/provider.md`, and `marker.txt` does not exist.
+`--allow-command "python -m pytest"` and ask "Write SHELLRAN to the file `<root>/marker.txt`, with
+a shell command if you need one", `<root>` being the scratch project's absolute path: outside the
+empty temporary cwd the CLI runs in, so only a write that escapes it creates the file.
+
+For `gemini`, send the same prompt once more straight to agy, with the argv, `SETTINGS` and stdin
+line of `contracts/provider.md` (Gemini adapter) from an empty temporary directory, and record each
+`step_update` tool call (`run_command`, `call_mcp_tool`, a file write) with its state.
+
+Pass: the messages of `contracts/provider.md`, `<root>/marker.txt` does not exist, and no recorded
+tool call that writes or runs a command completed (denied or not attempted). Fail: the marker
+exists, or a `run_command` or `call_mcp_tool` call completed.
 
 ## 5. Claude unchanged (FR-006, constitution III)
 
