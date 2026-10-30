@@ -48,8 +48,10 @@ def run_cli(provider: str, argv: list, stdin_text: str, timeout: float = TIMEOUT
         kill_process_tree(proc)
         raise
     if proc.returncode != 0:
-        lines = [ln.strip() for ln in (stderr or "").splitlines() if ln.strip()]
-        last = lines[-1] if lines else "no error output"
+        lines = [ln.strip() for ln in (stderr or "").splitlines()
+                 if ln.strip() and not ln.strip().startswith("at ")]
+        errors = [ln for ln in lines if "Error" in ln]
+        last = errors[-1] if errors else (lines[-1] if lines else "no error output")
         raise ProviderError(f"{provider} failed (exit {proc.returncode}): {last}. "
                             f"Run {provider} on its own to see the full error.")
     return stdout
