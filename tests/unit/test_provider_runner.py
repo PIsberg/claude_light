@@ -134,3 +134,10 @@ def test_fr011_kill_process_tree_on_posix_kills_the_process():
         runner.kill_process_tree(proc)
     proc.kill.assert_called_once_with()
     run.assert_not_called()
+
+
+def test_fr010_cwd_is_passed_to_popen(tmp_path):
+    proc = FakeProc(stdout="ok")
+    _, error, popen, _ = _run(proc, cwd=str(tmp_path))
+    assert error is None
+    assert popen.call_args.kwargs.get("cwd") == str(tmp_path)

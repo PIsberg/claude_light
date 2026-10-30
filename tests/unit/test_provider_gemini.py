@@ -241,3 +241,43 @@ def test_us4_edit_turn_runs_without_the_claude_and_codex_modules(gemini_turn, mo
     _edit_turn()
     assert (gemini_turn / "app.py").read_text(encoding="utf-8").strip() == "x = 2"
     assert _head_message(gemini_turn).startswith(git_manager.COMMIT_PREFIX)
+
+
+# FR-010 / constitution V: the CLI must not run in the user's project, where a
+# repo-shipped .gemini/ config could execute code. It runs in a fresh empty temp dir.
+def _capture_cwd_run(seen, error=None, stdout=None):
+    import os
+
+    def fake(provider, argv, stdin_text, *a, **kw):
+        cwd = kw.get("cwd")
+        seen["cwd"] = cwd
+        seen["stdin"] = stdin_text
+        assert cwd is not None, "run_cli called without cwd"
+        seen["exists"] = os.path.isdir(cwd)
+        seen["listing"] = os.listdir(cwd)
+        if error:
+            raise error
+        return stdout
+    return fake
+
+
+@pytest.mark.parametrize("method", ["complete", "summarize"])
+@pytest.mark.parametrize("fail", [False, True])
+def test_fr010_cli_runs_in_fresh_empty_temp_dir_removed_afterwards(method, fail):
+    import os
+    seen = {}
+    out = "x"
+    err = ProviderError("boom") if fail else None
+    fake = _capture_cwd_run(seen, error=err, stdout=out)
+    with patch(_WHICH, return_value="/bin/gemini"), patch(_RUN, side_effect=fake):
+        call = (lambda: gemini.PROVIDER.complete(_request())) if method == "complete"             else (lambda: gemini.PROVIDER.summarize("Summarize: X"))
+        if fail:
+            with pytest.raises(ProviderError):
+                call()
+        else:
+            call()
+    cwd = seen["cwd"]
+    assert seen["exists"] is True
+    assert seen["listing"] == []
+    assert os.path.realpath(cwd) != os.path.realpath(os.getcwd())
+    assert not os.path.exists(cwd)
