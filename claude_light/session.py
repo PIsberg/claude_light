@@ -42,9 +42,15 @@ def save() -> bool:
         if not history:
             path.unlink(missing_ok=True)
             return True
-        path.parent.mkdir(parents=True, exist_ok=True)
+        # Conversations quote the user's code: owner-only on POSIX, whatever
+        # the umask (Windows ignores these modes). An existing directory is
+        # left alone, since CLAUDE_LIGHT_SESSION_DIR may name a shared one.
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data), encoding="utf-8")
+        tmp.unlink(missing_ok=True)  # O_CREAT's mode only applies to a new file
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(data))
         os.replace(tmp, path)  # never leave a half-written file to resume
         return True
     except (OSError, TypeError, ValueError) as e:
