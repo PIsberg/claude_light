@@ -206,6 +206,12 @@ SKIP_DIRS      = {
 GLOBAL_STATS_FILE = Path(os.environ.get("CLAUDE_LIGHT_STATS_FILE")
                          or Path.home() / ".claude_light_stats.json")
 
+# Saved conversations for --continue, one file per project (session.py).
+# In the home directory, not the project, so a cloned repo cannot supply one.
+# CLAUDE_LIGHT_SESSION_DIR moves it; the test suite points it at a temp dir.
+SESSION_DIR = Path(os.environ.get("CLAUDE_LIGHT_SESSION_DIR")
+                   or Path.home() / ".claude_light_sessions")
+
 # Disk cache — stored in a hidden dir so _is_skipped() ignores it automatically
 CACHE_DIR      = Path(".claude_light_cache")
 CACHE_INDEX    = CACHE_DIR / "index.npz"   # numpy + JSON; never a pickle (see indexer._decode_index)

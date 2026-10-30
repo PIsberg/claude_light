@@ -20,6 +20,7 @@ from pathlib import Path
 from watchdog.observers import Observer
 
 import claude_light.state as state
+from claude_light import session
 from claude_light.config import MODEL, CACHE_DIR, HEARTBEAT_SECS, CACHE_TTL_SECS, AUTH_MODE, ECONOMY_MODE, API_KEY_SOURCE
 from claude_light.ui import (
     _ANSI_BOLD, _ANSI_RESET, _ANSI_CYAN, _ANSI_DIM, _ANSI_GREEN, _ANSI_RED, _T_SYS, _T_ERR,
@@ -220,8 +221,10 @@ def _index_ready_for_query() -> bool:
     return True
 
 
-def start_chat(auto_apply=False):
+def start_chat(auto_apply=False, resume=False):
     print_startup_header(MODEL, access_label(API_KEY_SOURCE))
+    if resume:
+        print(f"  {_T_SYS}  {session.restore()}")
     _setup_signal_handlers()
 
     # Kick off indexing in background so the prompt appears immediately.
@@ -317,6 +320,7 @@ def start_chat(auto_apply=False):
                 state.conversation_history.clear()
                 state.cli_session_id = None
                 state.session_model = None
+                session.clear()
                 print(f"  {_T_SYS}  Conversation cleared.")
                 continue
             if query == "/compact":
@@ -330,6 +334,7 @@ def start_chat(auto_apply=False):
                     print(f"  {_T_ERR}  Could not summarise ({e}); the conversation is unchanged.")
                     continue
                 if turns:
+                    session.save()
                     print(f"  {_T_SYS}  {turns} turn{'' if turns == 1 else 's'} replaced by a summary.")
                 else:
                     print(f"  {_T_SYS}  Nothing to compact yet.")
@@ -353,6 +358,7 @@ def start_chat(auto_apply=False):
                 transcript = _run_command(cmd)
                 chat(f"I ran the following command and got this output. Please help me understand or fix any issues:\n\n```\n{transcript}\n```",
                      auto_apply=auto_apply, use_index=_index_ready_for_query())
+                session.save()
                 continue
             if query == "/budget" or query.startswith("/budget "):
                 print(f"  {_T_SYS}  {_budget_command(query[7:].strip())}")
@@ -394,6 +400,7 @@ def start_chat(auto_apply=False):
             use_index = _index_ready_for_query()
             try:
                 chat(query, auto_apply=auto_apply, use_index=use_index)
+                session.save()
             except ClaudeNotLoggedIn:
                 print(f"\n  {_T_ERR}  Claude CLI is not logged in.")
                 choice = choose("Set up a long-lived automation token?",
@@ -451,6 +458,8 @@ def main():
                              "allow a PowerShell command, e.g. \"powershell: Invoke-Pester\"; without a tag "
                              "it is a Bash command. Repeatable. Also "
                              "CLAUDE_LIGHT_ALLOW_COMMANDS=\"a; powershell: b\".")
+    parser.add_argument("-c", "--continue", dest="resume", action="store_true",
+                        help="Resume this project's previous interactive conversation.")
     parser.add_argument("query", nargs="*", help="Optional query for one-shot mode.")
     args, unknown = parser.parse_known_args()
 
@@ -470,8 +479,12 @@ def main():
     _start_llmlingua_load()
 
     query_str = " ".join(args.query).strip()
-    if not query_str and sys.stdin.isatty():
-        start_chat(auto_apply=args.yes)
+    interactive = not query_str and sys.stdin.isatty()
+    if args.resume and not interactive:
+        # A one-shot turn sends no history, so there is nothing to resume into.
+        parser.error("--continue resumes an interactive session; it cannot take a question")
+    if interactive:
+        start_chat(auto_apply=args.yes, resume=args.resume)
         return
     try:
         one_shot(query_str or sys.stdin.read().strip(), auto_apply=args.yes)

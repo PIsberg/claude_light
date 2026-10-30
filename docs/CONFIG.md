@@ -15,6 +15,7 @@ Constants live in `claude_light/config.py`. Environment variables override the d
 | `MAX_HISTORY_TURNS` | Compress and cap when stored turns exceed this (default 6) |
 | `SUMMARIZE_BATCH` | Old turns collapsed per summary call (default 3) |
 | `GLOBAL_STATS_FILE` | Path to global savings persistence (`~/.claude_light_stats.json`; override with `CLAUDE_LIGHT_STATS_FILE`) |
+| `SESSION_DIR` | Where `session.py` saves each project's conversation for `--continue`, one file per project named by a hash of its path (`~/.claude_light_sessions`; override with `CLAUDE_LIGHT_SESSION_DIR`). In the home directory so a cloned repo cannot supply a conversation |
 | `HEARTBEAT_SECS` | How often the heartbeat thread wakes (default 30) |
 | `CACHE_TTL_SECS` | Idle seconds before the heartbeat warms the cache (default 240) |
 | `MODEL_HAIKU` / `MODEL_SONNET` / `MODEL_OPUS` | Model ID constants used by the router |
