@@ -13,6 +13,8 @@
 ### Session 2026-10-30
 
 - Q: What happens when `--continue` resumes a session saved with a different provider? → A: claude_light warns, naming both providers, and starts a fresh conversation; the old session file is left untouched.
+- Q: Where does Claude's transport live after the move behind the shared contract (D2)? → A: Fully in `providers/claude.py`; existing Claude tests change only their patch targets, from `claude_light.llm` to `claude_light.providers.claude`.
+- Q: What does the route line show per provider (D3)? → A: With Gemini or Codex, the provider and its model, or "CLI default model" when the provider's tool picks it; with Claude, chosen or by default, the route line is unchanged.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -116,13 +118,13 @@ Before the work is called done, the maintainer runs claude_light against the rea
 - **FR-003**: With Gemini or Codex chosen, a question MUST be answered from the same project skeleton and top-K retrieved chunks as for Claude.
 - **FR-004**: Each provider's code MUST live in its own module; no code outside a provider's module may import that provider's SDK or name its tool binary.
 - **FR-005**: Provider-neutral code MUST NOT branch on a provider's name; it MUST reach providers only through one shared contract.
-- **FR-006**: Moving Claude behind the shared contract MUST NOT change Claude behaviour: the existing Claude tests pass unchanged and the CI token and retrieval regression gates pass.
+- **FR-006**: Moving Claude behind the shared contract MUST NOT change Claude behaviour: the existing Claude tests pass with only their patch targets moved from `claude_light.llm` to `claude_light.providers.claude`, and the CI token and retrieval regression gates pass.
 - **FR-007**: Model ids, prices and effort levels MUST belong to their provider; Gemini and Codex MUST NOT use Claude constants.
 - **FR-008**: A feature a provider lacks (prompt caching, per-turn effort, top-tier model prompt, dollar budget) MUST produce a visible "unavailable for <provider>" message when the user uses it, and MUST NOT be silently ignored.
 - **FR-009**: Edits by any provider MUST go through the same auto-commit path so `/undo` works; the commit message prefix MUST identify the change as an AI edit.
 - **FR-010**: Shell access by Gemini or Codex MUST obey the `--allow-command` prefix rule and the metacharacter rejection; if that cannot be enforced for a tool, shell access MUST be disabled for it and the user told.
 - **FR-011**: A missing tool, a missing login, a tool failure and unparseable output MUST each produce an error naming the provider and the remedy, without crashing the session.
-- **FR-012**: The status/route line MUST show the active provider and its model.
+- **FR-012**: With Gemini or Codex chosen, the route line MUST show the provider and its model, or "CLI default model" when the provider's tool picks it. With Claude, chosen or by default, the route line is unchanged.
 - **FR-013**: Tests for all three providers MUST run without a real API, a real tool or real stats/session files, under the existing test settings.
 - **FR-014**: Documentation (README, CLAUDE.md commands and authentication, configuration reference, architecture doc, harness map) MUST describe provider selection, per-provider authentication and per-provider unavailable features in the same change.
 - **FR-015**: Before completion, claude_light MUST be run once against the real Gemini tool and once against the real Codex tool, and the commands and output recorded; a tool that is not logged in is reported as "not run".
@@ -140,7 +142,7 @@ Before the work is called done, the maintainer runs claude_light against the rea
 ### Measurable Outcomes
 
 - **SC-001**: A user with a logged-in Gemini or Codex tool gets a printed answer to a codebase question within 60 seconds on a small test project, for each of the two providers.
-- **SC-002**: 100% of the existing tests pass unchanged, and the CI token and retrieval regression gates pass with no change to Claude's measured token counts.
+- **SC-002**: 100% of the existing tests pass, changed only in their patch targets, and the CI token and retrieval regression gates pass with no change to Claude's measured token counts.
 - **SC-003**: 0 matches for provider SDK imports or tool binary names outside the owning provider's module.
 - **SC-004**: For each new provider, an edit followed by `/undo` leaves the working tree identical to its starting state in 100% of 3 trial runs.
 - **SC-005**: 100% of the listed Claude-only features (caching figures, effort, top-tier prompt, dollar budget) show an explicit "unavailable" message under each new provider.

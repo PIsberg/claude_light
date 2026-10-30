@@ -1,0 +1,101 @@
+# Tasks: Gemini and Codex Providers
+
+**Input**: `specs/001-gemini-codex-providers/` plan.md, spec.md, contracts/provider.md,
+data-model.md, research.md, quickstart.md
+
+**Tests**: required by constitution II; each implementation task follows the tests that cover it.
+
+**Organization**: phases are build rounds of up to 4 slices; a slice is its stub (if any), its
+tests, then its implementation. Written as the answers recorded in plan.md D1-D9 make it.
+
+Shared by every test task: no real CLI or API (constitution I), `tests/conftest.py` settings kept,
+the active provider set with `monkeypatch.setattr(state, "provider", ...)`. A "fake provider" is a
+`claude_light/providers/base.py: Provider` subclass defined in the test file that records the
+arguments of `complete` and `summarize` and returns canned values.
+
+## Phase 1 (Round 1): Foundational, provider contract, sessions and usage
+
+### Slice S1: selection and the Claude adapter (FR-001, FR-002, FR-003, FR-005, FR-011)
+
+- [ ] T001 [US1] Stub the package with the signatures of `contracts/provider.md`: `claude_light/providers/__init__.py` (`NAMES` final; `get`, `select`, `active` raise `NotImplementedError`), `claude_light/providers/base.py` (the seven capability constants, `ProviderError` and `NotLoggedIn(ProviderError)` final; `Provider` with `name`, `capabilities` and stub methods; `transcript` stub), `claude_light/providers/claude.py` (`ClaudeProvider(Provider)` with `name = "claude"` and all seven capabilities, stub methods; `PROVIDER = ClaudeProvider()`), and `provider = None` in `claude_light/state.py`.
+- [ ] T002 [US1] Tests in `tests/unit/test_providers.py` for FR-001, FR-002, FR-003, FR-005, FR-011, US1 scenarios 3-4 and the unknown-name edge case. Not settled elsewhere: FR-003 compares the `system` and `messages` a fake provider receives from `llm.chat` with what `claude_light.providers.claude.ClaudeProvider.complete` (patched on the class) receives under Claude for the same query, `llm.retrieve` patched to fixed chunks (pattern: `tests/unit/test_llm.py: TestChat`); US1 scenario 4 asserts `ClaudeProvider.complete` and `ClaudeProvider.summarize` (patched on the class) are never called by `llm.chat`, `llm._one_shot_turn` or `llm.compact_history` under a fake provider (its usage a `types.SimpleNamespace(input_tokens=0, output_tokens=0)`; `None` is T009's case); a `ProviderError` from `complete` leaves `state.conversation_history`, `state.turn_count` and git untouched (`editor.apply_edits`, `llm._commit_agent_edits` not called); `main.main` with `--provider gemini` calls `providers.select("gemini")` (patched) and that provider's `require_auth`, and with no flag selects `"claude"`; `providers.get("claude")` still works with `sys.modules` entries for `claude_light.providers.gemini` and `.codex` set to `None` (US4).
+- [ ] T003 [US1] Implement S1. `claude_light/providers/__init__.py`: `get` imports `claude_light.providers.<name>` with `importlib.import_module` on first use and returns its `PROVIDER`, `ValueError` naming `NAMES` otherwise; `select` sets `state.provider` under `state.lock`; `active`. `claude_light/providers/base.py`: `Provider.has`, `header` returning `None`, `offer_login` and `warm` no-ops; `transcript(request: dict) -> tuple[str, str]`, the flattening moved out of `claude_light/llm.py: _make_streaming_api_call` (OAUTH branch: `_text_of`, system text, history parts, `USER:` prompt), which then calls it and keeps its `config.ALLOWED_COMMANDS` rewrite of the system text. `claude_light/providers/claude.py: ClaudeProvider`: `model_label` returns its argument; `require_auth` is the body of `claude_light/llm.py: require_auth` reading `config.AUTH_MODE`, `config.AUTH_TOKEN`, `config.API_KEY` (delete `llm.require_auth`); `complete(request)` returns `llm._make_streaming_api_call(**request)`; `summarize(instructions) -> tuple[str, object]` holds the two Claude branches now in `claude_light/llm.py: _summarize_turns`. Both read `AUTH_MODE`, `client` and `_make_cli_subprocess_call` as attributes of `claude_light.llm`, imported inside the method, so existing patches on `llm` still reach them until T018 moves them. `claude_light/llm.py`: `_summarize_turns` builds `instructions` and returns `providers.active().summarize(instructions)`; `chat` and `_one_shot_turn` call `providers.active().complete(create_kwargs)`. `claude_light/main.py: main`: `--provider` with `choices=providers.NAMES`, default `"claude"`; `providers.select(args.provider).require_auth()` replaces `require_auth()` (drop it from the `claude_light.llm` import).
+
+### Slice S2: CLI runner (FR-011)
+
+- [ ] T004 Stub `claude_light/providers/runner.py`: `TIMEOUT_SECS = 600`, `run_cli(provider: str, argv: list[str], stdin_text: str, timeout: float = TIMEOUT_SECS) -> str`, `kill_process_tree(proc) -> None`, both raising `NotImplementedError`.
+- [ ] T005 Tests in `tests/unit/test_provider_runner.py` for FR-011 and the "tool fails or times out" edge case, messages from `contracts/provider.md`. Not settled: `subprocess.Popen` patched at `claude_light.providers.runner.subprocess.Popen` with a fake whose `communicate` returns, raises `subprocess.TimeoutExpired` or raises `KeyboardInterrupt`; on timeout and on `KeyboardInterrupt`, `claude_light.providers.runner.kill_process_tree` (patched) gets the process, and `KeyboardInterrupt` is re-raised; the failure message uses the last non-empty stderr line; `stdin_text` reaches `communicate` unchanged; `kill_process_tree` on `os.name == "nt"` runs `taskkill /F /T /PID <pid>` (pattern: `tests/unit/test_llm.py: TestCliProcessIsStopped`).
+- [ ] T006 Implement `claude_light/providers/runner.py`: `run_cli` starts `subprocess.Popen(argv, stdin=PIPE, stdout=PIPE, stderr=PIPE, text=True, encoding="utf-8", errors="replace")` and calls `communicate(stdin_text, timeout)`; `kill_process_tree` is `claude_light/llm.py: _kill_process_tree` moved unchanged, and `llm.py` imports it back as `from claude_light.providers.runner import kill_process_tree as _kill_process_tree`.
+
+### Slice S5: one session file per provider (FR-016)
+
+- [ ] T007 [P] Tests in `tests/unit/test_session_provider.py` for FR-016 and the `--continue` edge case, rules in `data-model.md`. Not settled: the active provider is set with `monkeypatch.setattr(providers, "active", lambda: types.SimpleNamespace(name=...))` on `claude_light.providers`, so the tests do not need T003; the saved Claude file's bytes are equal before and after a Gemini `restore()`; after a Gemini `save()`, Claude's `restore()` still returns its own history; with two other providers' files, the newer by `os.utime` is named. Setup pattern: `tests/unit/test_session.py: _SessionTest`.
+- [ ] T008 [P] Implement in `claude_light/session.py`: `session_file(root: Path | None = None, provider: str | None = None) -> Path` (default `providers.active().name`; `<digest>.json` for claude, `<digest>.<provider>.json` otherwise); `restore` per `data-model.md`, message from `contracts/provider.md`; call `providers.active()` through the module (`from claude_light import providers`).
+
+### Slice S8: figures a provider lacks (FR-008, SC-005, "no cost or token figures" edge case)
+
+- [ ] T009 [US3] Tests in `tests/unit/test_provider_usage.py` for FR-008 (caching figures), SC-005 and the "no cost or token figures" edge case. Not settled: a fake provider with no capabilities whose `complete` returns `(reply, None, False)` and `summarize` returns `(text, None)`; after a `llm.chat` turn, `llm._one_shot_turn`, `llm.compact_history` and `llm._maybe_compress_history` (history longer than `config.MAX_HISTORY_TURNS * 2`), `state.session_cost` and `state.session_tokens` are unchanged and `state.save_global_stats` is not called; the message replaces the turn stats, and appears in `main._status_text(200)` (with no `% cached` and no `$`), `ui.print_session_summary()` and `ui.print_session_footer()`.
+- [ ] T010 [US3] Implement S8. `claude_light/ui.py`: new `usage_unavailable(name: str) -> str` returning the contract text; `print_session_summary` and `print_session_footer` print it when `not providers.active().has(USAGE)`. `claude_light/llm.py`: in `chat`, `_one_shot_turn`, `compact_history` and `_maybe_compress_history`, when `usage is None` skip `ui.calculate_cost`, `llm._accumulate_usage` and the `state.session_cost` update, and print `usage_unavailable(...)` where `ui.print_stats` would run. `claude_light/main.py: _status_text`: after indexing, `[(project, ""), (usage_unavailable(name), "")]` when the provider lacks `usage`.
+
+**Checkpoint**: Claude runs through the contract; existing tests unchanged.
+
+## Phase 2 (Round 2): Gemini and Codex (US1, US2), Claude in its module (US4)
+
+### Slice S3: Gemini (US1 scenario 1, US2 scenarios 1-2, FR-007, FR-010, FR-011)
+
+- [ ] T011 [P] [US1] Stub `claude_light/providers/gemini.py`: `BINARY = "gemini"`, `GeminiProvider(Provider)` with `name = "gemini"`, `capabilities = frozenset()` and stub methods, `PROVIDER = GeminiProvider()`.
+- [ ] T012 [P] [US1] Tests in `tests/unit/test_provider_gemini.py` for US1 scenario 1, US2 scenarios 1-2, FR-007, FR-010, FR-011 and the missing-tool and not-logged-in edge cases, argv and messages from `contracts/provider.md`. Not settled: `claude_light.providers.gemini.run_cli` patched; stdin is `transcript(request)` joined by `"\n\n"`; argv holds no `-m` and no string starting `claude-`; `require_auth` with `claude_light.providers.gemini.shutil.which` patched, each of the three env vars or the credentials file alone passes, `Path.home` patched to `tmp_path`; empty stdout raises `ProviderError`; US2: in a temp git repo (pattern: `tests/unit/test_claude_light.py: TestGitManager.setUp`) a `llm.chat(..., auto_apply=True)` turn whose stdout is a SEARCH/REPLACE block for a committed file changes it and commits with `git_manager.COMMIT_PREFIX`, and `git_manager.undo_last_commit()` restores it (`llm.retrieve` patched); the same turn runs with `sys.modules` entries for `claude_light.providers.claude` and `.codex` set to `None` (US4).
+- [ ] T013 [P] [US1] Implement `claude_light/providers/gemini.py: GeminiProvider` per `contracts/provider.md`: `model_label`, `header`, `require_auth` (stderr message, `sys.exit(1)`), `complete` and `summarize` through `claude_light/providers/runner.py: run_cli` and `claude_light/providers/base.py: transcript`, wrapped in `claude_light/ui.py: _Spinner`; `complete` returns `(stdout.strip(), None, False)`.
+
+### Slice S4: Codex (US1 scenario 2, US2 scenarios 1-2, FR-007, FR-010, FR-011)
+
+- [ ] T014 [P] [US1] Stub `claude_light/providers/codex.py`: `BINARY = "codex"`, `CodexProvider(Provider)` with `name = "codex"`, `capabilities = frozenset()` and stub methods, `PROVIDER = CodexProvider()`.
+- [ ] T015 [P] [US1] Tests in `tests/unit/test_provider_codex.py` for the IDs of T012 with US1 scenario 2, same patterns, `claude_light.providers.codex.run_cli` patched. Not settled beyond T012: `require_auth` honours `CODEX_HOME`; the reply is the last `agent_message` when narration messages precede it (event shapes: `research.md` R1); non-JSON lines are skipped; output with no `agent_message` raises `ProviderError`.
+- [ ] T016 [P] [US1] Implement `claude_light/providers/codex.py: CodexProvider` as T013 does for Gemini, plus the JSONL parse of `contracts/provider.md`.
+
+### Slice S12: Claude's transport in its module (D2, FR-006, SC-002, US4 scenario 2)
+
+- [ ] T017 [US4] Retarget the existing tests per `research.md` R5, in the eight files it lists: patch targets only, from `claude_light.llm` to `claude_light.providers.claude`, plus the `ClaudeNotLoggedIn` import at `tests/unit/test_llm.py:774`; no assertion, input or test body changes otherwise (FR-006, SC-002). New tests in `tests/unit/test_providers.py`, not settled elsewhere: under a fake provider with no `warm` override, `llm.warm_cache()` and `llm.warm_cache(quiet=True)` print nothing, call no `claude_light.ui.notify` and no `ClaudeProvider.warm` (patched on the class) (constitution IV); under Claude, `llm.warm_cache(quiet=True)` calls `ClaudeProvider.warm` once with `quiet=True`; `claude_light.client is claude_light.providers.claude.client`, and after `claude_light.client` is set to a stub, `claude_light.warm_cache(quiet=True)` with `claude_light.providers.claude.AUTH_MODE` patched to `"API_KEY"` calls the stub's `messages.create` (binding map: `claude_light/__init__.py: _MODULE_ATTR_MAP`); a `sys.executable -c` child that sets `sys.modules["claude_light.providers.claude"] = None` before `import claude_light` exits 0 (US4).
+- [ ] T018 [US4] Implement S12 (D2). Move from `claude_light/llm.py` to `claude_light/providers/claude.py`, code unchanged: `ClaudeNotLoggedIn` (now subclassing `claude_light/providers/base.py: NotLoggedIn`), `MockClient`/`_LazyClient` and `client`, `_display_path`, `_describe_tool_call`, `_report_denied_commands`, `_CLI_IDLE_TIMEOUT_SECS`, `_ALL_CLI_TOOLS`, `_CLI_MAX_SECS`, `_make_cli_subprocess_call`, `_make_streaming_api_call`, `_API_TOOL_STEPS`, `_TurnUsage`, `_api_tool_loop`, `_run_tool_rounds`, with the imports they use, by name as `llm` imports them so the retargeted patches reach them (`claude_light/streaming.py: stream_chat_response`, `claude_light/retry.py: retry_with_backoff`, `config.ENABLE_STREAMING`, `config.AUTH_MODE`, `config.API_KEY`, `claude_light/ui.py: print_stats`, `claude_light/providers/runner.py: kill_process_tree as _kill_process_tree`, and the neutral helpers that stay in `claude_light/llm.py`: `_extract_text`, `_build_system_blocks`, `_accumulate_usage`, `_EXTENDED_CACHE_HEADERS`, `BASE_EFFORT`). `ClaudeProvider.complete` and `summarize` use the module's own names. New `ClaudeProvider.warm(self, quiet: bool = False) -> None`: the body of `claude_light/llm.py: warm_cache`, its OAUTH return included; `llm.warm_cache(quiet=False)` becomes `providers.active().warm(quiet)`. `claude_light/llm.py: chat` and `claude_light/main.py: start_chat` catch `NotLoggedIn` where they catch `ClaudeNotLoggedIn` (drop it from `main`'s `claude_light.llm` import). `claude_light/__init__.py`: the guarded import and binding entries of `data-model.md`.
+
+### Slice S6: Claude isolated in its module (US4 scenario 1, FR-004, SC-003)
+
+- [ ] T019 [US4] Tests in `tests/unit/test_provider_isolation.py` for FR-004, SC-003 and US4 scenario 1: the isolation rule of `contracts/provider.md` over every `claude_light/**/*.py` with `ast`, docstrings skipped; each failure names file, line and match.
+- [ ] T020 [US4] Implement S6 in `claude_light/providers/claude.py`: `ClaudeProvider.offer_login(retry: Callable[[], None]) -> None`, the `except NotLoggedIn` block body of `claude_light/main.py: start_chat` with its `full_refresh()` and `chat(...)` calls replaced by `retry()`, which `start_chat` now calls through `providers.active().offer_login(...)`. Move any other string T019 flags in a neutral module the same way.
+
+**Checkpoint**: both new providers answer and edit with mocked CLIs; Claude's transport lives in `providers/claude.py`.
+
+## Phase 3 (Round 3): neutral code honours capabilities (US3, US1, US2)
+
+### Slice S7: route line and budget (US3 scenarios 1-2, FR-008, FR-012)
+
+- [ ] T021 [US3] Tests in `tests/unit/test_provider_route.py` for US3 scenarios 1-2, FR-008 (effort, top tier, budget) and FR-012, line texts from `contracts/provider.md`. Not settled: with `llm.route_query` patched to return `llm.MODEL_OPUS`, `llm._finalize_route` under a fake provider never calls `llm.choose`, leaves `state.session_model` `None` with `config.ROUTE_ONCE` on, and returns `model_label(...)`; `llm._apply_effort` with a non-base effort and `llm.AUTH_MODE` patched to `"API_KEY"` adds no system message; every `/budget` form via `main._budget_command` returns the message and leaves `state.session_budget` `None`.
+- [ ] T022 [US3] Implement in `claude_light/llm.py: _finalize_route` (without `TOP_TIER`: skip `_top_tier_model` and the `ROUTE_ONCE` pinning, model from `model_label`, contract route line), `claude_light/llm.py: _apply_effort` (effort-only message only with `EFFORT`) and `claude_light/main.py: _budget_command` (without `USD_BUDGET`: the message). `route_query` unchanged.
+
+### Slice S9: startup and background work (US1 scenario 4, US2 scenario 4, FR-003, FR-010)
+
+- [ ] T023 [US1] Tests in `tests/unit/test_provider_startup.py` for US1 scenario 4, US2 scenario 4, FR-003 and FR-010, notice text from `contracts/provider.md`. Not settled, all under a fake provider with no capabilities: `main.heartbeat` returns without waiting and prints nothing (constitution IV); with `main.AUTH_MODE` and `llm.AUTH_MODE` patched to `"OAUTH"`, `main._index_ready_for_query` waits for `state.indexing_done`, `llm.one_shot` calls `llm.index_files` before the turn, and `llm.chat` calls no `llm._git_modified_snapshot`; `main.start_chat` passes `provider.header()` to `print_startup_header`; `main.main` with `--allow-command "python -m pytest"` prints the shell notice under the fake provider and not under Claude (`providers.select`, `start_chat`, `one_shot` patched).
+- [ ] T024 [US1] Implement S9: `claude_light/main.py: heartbeat` returns and `start_chat` starts no heartbeat without `CACHING`; each `AUTH_MODE == "OAUTH"` in `claude_light/llm.py: chat`, `_one_shot_turn`, `one_shot` and `claude_light/main.py: _index_ready_for_query` becomes `AUTH_MODE == "OAUTH" and providers.active().has(AGENT)` (and `!=` the negation); `start_chat` prints `providers.active().header() or (MODEL, access_label(API_KEY_SOURCE))` via `claude_light/ui.py: print_startup_header`; `main.main` prints the shell notice after `require_auth()` when `config.ALLOWED_COMMANDS` is set and the provider lacks `SHELL`.
+
+## Phase 4 (Round 4): docs and verification
+
+### Slice S10: docs (FR-014, constitution VI)
+
+- [ ] T025 [P] Update `README.md`, `CLAUDE.md` (Commands: `--provider`; Authentication: per provider; Invariants: neutral code reaches providers only through `claude_light/providers/`), `docs/CONFIG.md` (`--provider`, `providers/runner.py: TIMEOUT_SECS`), `docs/architecture/ARCHITECTURE.md` (the package, its capabilities, and Claude's client and transports now in `providers/claude.py`) and `HARNESS.md` (the six modules and nine test files of plan.md's Project Structure), describing selection, per-provider authentication and per-provider unavailable features from `contracts/provider.md`; remove any text this feature makes wrong, including mentions of the transport functions under `llm`.
+
+### Slice S11: manual verification and token gates (US5, FR-015, SC-001, SC-004, SC-007, constitution III)
+
+- [ ] T026 [P] [US5] Run `quickstart.md` steps 0-5 and record each command, its output and a verdict per tool in `specs/001-gemini-codex-providers/verification.md`; Gemini's verdict is `fail` with its output (plan.md D9).
+
+## Dependencies
+
+Round 1 → Round 2 → Round 3 → Round 4. Inside Round 1, greens run in the order T003, T006, T008,
+T010 (T006 and T010 edit `llm.py` after T003). Inside Round 2, S3 and S4 touch disjoint files;
+T018 then T020 (both edit `llm.py`, `main.py` and `providers/claude.py`), and T019 passes only
+after both. Inside Round 3, T022 then T024 (both edit `llm.py` and `main.py`).
+
+## Implementation Strategy
+
+MVP is Rounds 1-2: Claude unchanged behind the contract and moved into its module, Gemini and
+Codex answering and editing. Round 3 adds the capability messages US3 asks for; Round 4 the docs
+and the real-tool record.
