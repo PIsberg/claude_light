@@ -77,10 +77,7 @@ jobs:
     # run.sh wraps the venv; use the interpreter each one installed into.
     - name: Start the installed tool
       shell: bash
-      env:
-        # The auth check runs at import, before --help is parsed (#101). No
-        # request is made, so a dummy key is enough.
-        ANTHROPIC_API_KEY: sk-ant-ci-dummy-not-a-key
+      # No API key: --help must work on a fresh install with no credential (#101).
       run: |
         if [ "${{ runner.os }}" = "macOS" ]; then
           ./run.sh --help

@@ -105,7 +105,7 @@ One job per OS, `fail-fast: false` so one failure does not hide the others:
 | `macos-latest` | `bash installers/install_macos.sh` | whatever the installer finds (Homebrew first), as on a user's machine; it creates `.venv` and `run.sh` |
 | `windows-latest` | `.\installers\install.ps1` under Windows PowerShell 5.1 | 3.12 from `setup-python` |
 
-Then **Start the installed tool** runs `claude_light.py --help` (`./run.sh --help` on macOS) and imports every dependency from `requirements.txt` with the interpreter the installer used. It sets a dummy `ANTHROPIC_API_KEY`, because the auth check runs before `--help` is parsed (#101); no request is made.
+Then **Start the installed tool** runs `claude_light.py --help` (`./run.sh --help` on macOS) and imports every dependency from `requirements.txt` with the interpreter the installer used. It sets no API key: `--help` must work on a fresh install with no credential (#101).
 
 The harden-runner step runs on the Linux job only.
 
