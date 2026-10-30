@@ -14,12 +14,6 @@ from claude_light import compressor
 
 
 def _reset_singleton():
-    # A loader thread started by another test (main() starts one) can still be
-    # running. Once the model loads it sets the singleton after this reset, so
-    # wait for it first.
-    thread = compressor._load_thread
-    if thread is not None and thread.is_alive():
-        thread.join(timeout=120)
     compressor._compressor = None
     compressor._load_error = None
     compressor._load_attempted = False

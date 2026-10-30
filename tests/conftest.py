@@ -28,6 +28,8 @@ import tempfile as _tempfile
 os.environ["CLAUDE_LIGHT_STATS_FILE"] = os.path.join(
     _tempfile.mkdtemp(prefix="claude_light_stats_"), "stats.json")
 
+import threading
+
 import pytest
 
 
@@ -39,6 +41,26 @@ def _fresh_session_model():
     state.session_model = None
     yield
     state.session_model = None
+
+
+@pytest.fixture(autouse=True)
+def _no_real_llmlingua_loader():
+    """A test that runs main() unpatched starts the real LLMLingua loader. It
+    keeps loading after the test ends and sets the compressor singleton under
+    a later test's feet (#74). Patch _start_llmlingua_load in such tests."""
+    import claude_light.compressor as compressor
+    before = compressor._load_thread
+    yield
+    thread = compressor._load_thread
+    if thread is not before and isinstance(thread, threading.Thread):
+        thread.join(timeout=300)  # leave nothing loading for the next test
+        compressor._load_thread = None
+        compressor._load_done.clear()
+        compressor._load_attempted = False
+        compressor._compressor = None
+        compressor._load_error = None
+        pytest.fail("test started a real LLMLingua loader thread; patch "
+                    "claude_light.main._start_llmlingua_load", pytrace=False)
 
 
 @pytest.fixture(scope="session")
