@@ -157,3 +157,99 @@ an MCP server doing the same.
 
 `/budget 2.50` and `/cost` interactively (covered by `tests/unit/test_provider_route.py` and
 `tests/unit/test_provider_usage.py`); every Gemini step past the auth failure.
+
+## Third pass: Gemini via agy (D10)
+
+Run 2026-10-30 at HEAD 97186b2 (`Drive the Gemini provider through agy (T028)`), against the real
+agy 1.4.11 (logged in, default model Gemini 3.8 Flash (High)). Scratch git project
+`%TEMP%/cl_scratch_t029/proj` (outside the repo): `order.py` with `OrderService` (docstring
+"Places and cancels orders.", `__init__`, `place`, `cancel`), one commit `8733cf3 init`,
+`.claude_light_cache/` in `.git/info/exclude`. `ANTHROPIC_API_KEY` unset, temp
+`CLAUDE_LIGHT_STATS_FILE` and `CLAUDE_LIGHT_SESSION_DIR`. Spinner frames are stripped below.
+
+### Step 2: question
+
+```
+$ time python claude_light.py --provider gemini "What does OrderService do?"
+  ◆  gemini  ·  CLI default model  ·  effort unavailable for gemini
+◆ `OrderService` manages order lifecycle:
+- Purpose: places and cancels orders (docstring)
+- `place(order)`: persists `order` via `self.repo.save(order)` → returns `order.id`
+  tokens, cost and caching unavailable for gemini
+exit=0, real 39.8 s
+```
+
+**Verdict: pass** (non-empty answer about the project's code, under 60 s, route line with the
+"effort unavailable" notice, no Anthropic key so no Claude request). The answer omits `cancel`
+and `__init__`, but it is about the code. One run only.
+
+### Step 3: edit and undo, 3 trials
+
+```
+$ python claude_light.py --provider gemini -y "In order.py add a one-line docstring 'Cancel the order.' to cancel"
+trial 1: exit=1, 27 s  ✗ API call failed: agy output could not be parsed: empty response   HEAD 8733cf3, status clean
+trial 2: exit=1, 20 s  (same)                                                            HEAD 8733cf3, status clean
+trial 3: exit=1, 24 s  (same)                                                            HEAD 8733cf3, status clean
+(2 further runs, one with the raw output captured: exit=1, same error)
+$ python -c "from claude_light import git_manager; git_manager.undo_last_commit()"
+✗ Last commit was not made by Claude; nothing undone        (HEAD 8733cf3, status clean)
+```
+
+(In the three trial loops the `undo` line printed `ModuleNotFoundError: No module named
+'claude_light'` because the scratch cwd is not the repo; rerun once with `PYTHONPATH` set, it gave
+the line above.) No edit was ever produced, so there was no commit with the `Claude: ` prefix and
+nothing for `/undo` to undo. 0 of 3 trials completed.
+
+Cause, from the raw agy stdout of the captured run (`init`, `step_update`, `result` events):
+the model answers the edit prompt by calling a tool first. Step 2 was `run_command`
+`Get-ChildItem -Path .`, state `ERROR`, message `permission check failed for command ... user denied
+permission`. The `result` event is then `status: SUCCESS`, `response: ""`, `num_turns: 1`,
+`denied_actions: [{"action":"command","display_name":"RunCommand"}]`. `gemini._result_reply`
+turns the empty response into `ProviderError("agy output could not be parsed: empty response")`.
+So the deny settings work, but the model, finding no way to read `order.py` (its context only has
+the retrieved chunk of `cancel`), tries a shell listing and ends its turn with no text.
+
+**Verdict: fail** (SC-004 under Gemini via agy: 0 of 3).
+
+### Step 4: unavailable features and shell
+
+`/budget 2.50` and `/cost` were not run (interactive; covered by unit tests, as in the first pass).
+
+```
+$ python claude_light.py --provider gemini --allow-command "python -m pytest" "Write SHELLRAN to the file `<root>/marker.txt`, with a shell command if you need one"
+  ◆  shell access is disabled for gemini: its agent cannot run commands. --allow-command only lets claude_light run the affected tests.
+  ...
+✗ API call failed: agy output could not be parsed: empty response       (exit=1)
+$ ls <root>/marker.txt      ->  No such file or directory
+```
+
+Direct probe: argv `[agy, --input-format stream-json, --output-format stream-json, --mode plan,
+--settings SETTINGS, -p=]` from an empty temporary directory, stdin the one NDJSON user line with
+the same prompt (`<root>` = `C:/Users/isber/AppData/Local/Temp/cl_scratch_t029/proj`), run 3 times
+(`MSYS_NO_PATHCONV` not needed: no argument starts with `/`). Identical each time:
+
+```
+exit 0, stderr: jetski: no output produced — a tool required the "command" permission that headless
+  mode cannot prompt for, so it was auto-denied. ...
+step_update user_input DONE
+step_update agent_response DONE
+step_update tool run_command ACTIVE  {"CommandLine": "Test-Path \"<root>\""}
+step_update tool run_command DONE    (duration 0.026 s, no tool_info.output, no tool_info.error)
+result: status SUCCESS, response "", denied_actions [{"action":"command","display_name":"RunCommand"}]
+$ ls <root>/marker.txt  ->  No such file or directory
+```
+
+No file-write tool and no `call_mcp_tool` was called. The one `run_command` was a read-only
+`Test-Path`, and the model never got as far as a write. Its step state is `DONE`, not `ERROR`
+(the `Get-ChildItem` call in step 3 was `ERROR` with the permission message), but agy's stderr and
+`result.denied_actions` both say the command was auto-denied, and 26 ms with no output is not an
+execution. Read literally, the quickstart's fail rule ("a `run_command` call completed") is
+ambiguous here: the step reached state `DONE`. My reading is that the command was denied.
+
+**Verdict: pass, with that caveat.** Marker absent in claude_light's run and in all three direct
+runs, shell-disabled notice shown, no write or MCP tool call. The claude_light run itself still
+ended in the empty-response error rather than a model reply.
+
+### Not run
+
+`/budget 2.50` and `/cost` interactively. Step 5 (Claude unchanged) was not part of this pass.
