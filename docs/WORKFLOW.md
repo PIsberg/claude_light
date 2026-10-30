@@ -15,6 +15,7 @@ Every job starts with the same `step-security/harden-runner` step in `audit` mod
 | `codeql.yml` | CodeQL | push and PR to `main`, weekly Monday 00:00 UTC | Static security analysis |
 | `scorecards.yml` | Scorecard supply-chain security | push to `main`, weekly Tuesday 07:20 UTC, branch-protection change | OpenSSF Scorecard |
 | `dependency-review.yml` | Dependency Review | every PR | Flags vulnerable or disallowed dependencies a PR adds |
+| `diagrams.yml` | Diagrams | PR to `main` that changes `docs/plantuml/**` | Fails if a changed `.puml` source comes without its re-rendered PNG |
 | `installers.yml` | Installers | push and PR to `main` that change `installers/**` or `requirements.txt`, weekly Wednesday 06:40 UTC, manual | Runs each installer on a clean Linux, macOS and Windows runner and starts the installed tool |
 
 Which of these are required to merge is a repository setting, not something the YAML states. This page does not verify it.
@@ -110,6 +111,12 @@ Then **Start the installed tool** runs `claude_light.py --help` (`./run.sh --hel
 The harden-runner step runs on the Linux job only.
 
 Local equivalent: run the installer for your OS in a clean checkout, then `python claude_light.py --help`.
+
+## `diagrams.yml`: Diagrams
+
+Runs on a PR that touches `docs/plantuml/`. `tests/linting/check_diagram_pngs.py` lists the files changed against the base branch (full-history checkout) and fails for each changed `.puml` whose PNG, named by its `@startuml` line, did not change too (#107). It does not render and compare: PNG bytes depend on the PlantUML version, Graphviz and fonts. Without it, `indexing_flow.puml` was edited while its PNG stayed months older (#67).
+
+Local equivalent: `python tests/linting/check_diagram_pngs.py origin/main`. Render with `java -jar docs/plantuml/plantuml.jar docs/plantuml/<name>.puml`.
 
 ## Adding or changing a workflow
 
