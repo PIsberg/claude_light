@@ -791,10 +791,20 @@ def _make_cli_subprocess_call(
         real_user_md = (
             os.path.expanduser("~").replace("\\", "/") + "/.claude/CLAUDE.md"
         )
+        settings = {"claudeMdExcludes": [real_user_md]}
+        if tools and config.ALLOWED_COMMANDS:
+            # An allow rule covers only a command's first statement, so
+            # `echo a && touch b` ran under Bash(echo:*) (issue #70). The
+            # guard blocks chaining for both shells before the rule is read.
+            from claude_light import cli_shell_guard
+            guard = (f'"{Path(sys.executable).as_posix()}" -I '
+                     f'"{Path(cli_shell_guard.__file__).as_posix()}"')
+            settings["hooks"] = {"PreToolUse": [{
+                "matcher": "Bash|PowerShell",
+                "hooks": [{"type": "command", "command": guard}],
+            }]}
         settings_path = Path(isolated_home) / "claude_light_settings.json"
-        settings_path.write_text(
-            json.dumps({"claudeMdExcludes": [real_user_md]}), encoding="utf-8"
-        )
+        settings_path.write_text(json.dumps(settings), encoding="utf-8")
 
         # On Windows, ensure critical path variables are present for the Bun-based CLI to find its profile
         if current_os == 'nt':

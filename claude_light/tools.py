@@ -17,6 +17,7 @@ import os
 import re
 from pathlib import Path
 
+from claude_light.cli_shell_guard import SHELL_FORBIDDEN
 from claude_light.config import SKIP_DIRS
 
 _MAX_READ_LINES = 400
@@ -126,7 +127,8 @@ TOOLS = [
     },
 ]
 
-_SHELL_FORBIDDEN = set(";&|<>`$\n\r")
+# The OAuth CLI agent's PreToolUse hook refuses the same characters.
+_SHELL_FORBIDDEN = SHELL_FORBIDDEN
 _SHELL_HEAD_LINES = 20
 _SHELL_TAIL_LINES = 80
 _SHELL_TIMEOUT_DEFAULT = 120
