@@ -27,6 +27,8 @@ os.environ.setdefault("CLAUDE_LIGHT_HYBRID", "0")
 import tempfile as _tempfile
 os.environ["CLAUDE_LIGHT_STATS_FILE"] = os.path.join(
     _tempfile.mkdtemp(prefix="claude_light_stats_"), "stats.json")
+# Same for the conversations saved for --continue (~/.claude_light_sessions).
+os.environ["CLAUDE_LIGHT_SESSION_DIR"] = _tempfile.mkdtemp(prefix="claude_light_sessions_")
 
 import threading
 

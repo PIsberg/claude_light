@@ -22,6 +22,7 @@ This diagram shows the main components and their relationships within Claude Lig
 | `indexer.py` | File watcher, manages incremental indexing and cache |
 | `skeleton.py` | Builds compressed directory tree and markdown documentation |
 | `state.py` | Shared state module for thread-safe access to session data |
+| `session.py` | Saves the conversation, turn count and session model after each interactive turn; `--continue` restores them into `state` (the history list in place, since `_wrap()` re-binds it) |
 | `config.py` | Configuration constants and dual-mode authentication resolution |
 
 ### Authentication Modes
