@@ -21,6 +21,8 @@ from unittest.mock import patch
 os.environ.setdefault("ANTHROPIC_API_KEY", "sk-ant-dummy-test-key")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
+from claude_light.providers import claude as _claude_mod  # noqa: E402  (T017: moved transport)
+
 
 def _sse(events):
     return "".join(f"event: {e['type']}\ndata: {json.dumps(e)}\n\n" for e in events).encode()
@@ -110,9 +112,9 @@ class TestApiToolLoopThroughSdk(unittest.TestCase):
                       messages=[{"role": "user", "content": [{"type": "text", "text": "Where is retry?"}]}])
         llm._apply_effort(kwargs, "medium")
         with patch.object(config, "AUTH_MODE", "API_KEY"), \
-             patch.object(llm, "client", stub), \
+             patch.object(_claude_mod, "client", stub), \
              patch("sys.stdout", io.StringIO()):
-            reply, usage, _ = llm._make_streaming_api_call(**kwargs)
+            reply, usage, _ = _claude_mod._make_streaming_api_call(**kwargs)
 
         reqs = _StubMessagesAPI.requests
         self.assertEqual(len(reqs), 2)
@@ -144,9 +146,9 @@ class TestApiToolLoopThroughSdk(unittest.TestCase):
                       extra_headers=llm._EXTENDED_CACHE_HEADERS)
         llm._apply_effort(kwargs, "low")
         with patch.object(config, "AUTH_MODE", "API_KEY"), \
-             patch.object(llm, "client", stub), \
+             patch.object(_claude_mod, "client", stub), \
              patch("sys.stdout", io.StringIO()):
-            llm._make_streaming_api_call(**kwargs)
+            _claude_mod._make_streaming_api_call(**kwargs)
 
         effort_msg = {"role": "system", "content": [], "output_config": {"effort": "low"}}
         for body, headers in zip(_StubMessagesAPI.requests, _StubMessagesAPI.headers_seen):

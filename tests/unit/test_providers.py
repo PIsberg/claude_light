@@ -242,3 +242,54 @@ def test_fr011_provider_error_leaves_history_turns_and_git_untouched(
     apply.assert_not_called()
     commit.assert_not_called()
     assert "fake failed (exit 1)" in capsys.readouterr().out
+
+
+# --- T017: warm_cache goes through the provider (constitution IV) -------------
+
+def test_iv_warm_cache_under_a_provider_without_warm_is_silent(monkeypatch, clean_state, capsys):
+    import claude_light.ui as ui
+    monkeypatch.setattr(state, "provider", FakeProvider(), raising=False)
+    with patch.object(ui, "notify") as notify, \
+         patch.object(ClaudeProvider, "warm") as claude_warm:
+        llm.warm_cache()
+        llm.warm_cache(quiet=True)
+    out = capsys.readouterr()
+    assert out.out == "" and out.err == ""
+    notify.assert_not_called()
+    claude_warm.assert_not_called()
+
+
+def test_iv_warm_cache_under_claude_calls_claude_warm_once_with_quiet(monkeypatch, clean_state):
+    monkeypatch.setattr(state, "provider", ClaudeProvider(), raising=False)
+    with patch.object(ClaudeProvider, "warm") as warm:
+        llm.warm_cache(quiet=True)
+    warm.assert_called_once_with(quiet=True)
+
+
+def test_fr006_package_client_is_the_claude_provider_client():
+    from claude_light.providers import claude as claude_mod
+    assert claude_light.client is claude_mod.client
+
+
+def test_fr006_package_client_stub_reaches_warm_cache(monkeypatch, clean_state):
+    from claude_light.providers import claude as claude_mod
+    stub = MagicMock()
+    monkeypatch.setattr(state, "provider", None, raising=False)
+    monkeypatch.setattr(state, "session_cost", 0.0, raising=False)
+    monkeypatch.setattr(claude_mod, "AUTH_MODE", "API_KEY")
+    monkeypatch.setattr(claude_light, "client", stub)
+    try:
+        claude_light.warm_cache(quiet=True)
+    except Exception:
+        pass  # the stub's response is not a real one; only the call matters here
+    assert stub.messages.create.called, "warm_cache never reached the stub set on claude_light.client"
+
+
+def test_us4_import_succeeds_with_the_claude_provider_module_blocked():
+    import subprocess
+    repo = Path(__file__).resolve().parent.parent.parent
+    code = ("import sys; sys.modules['claude_light.providers.claude'] = None; "
+            "import claude_light")
+    proc = subprocess.run([sys.executable, "-c", code], cwd=repo, capture_output=True,
+                          text=True, timeout=120)
+    assert proc.returncode == 0, proc.stderr[-800:]
