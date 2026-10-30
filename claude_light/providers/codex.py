@@ -5,7 +5,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from claude_light.providers.base import Provider, ProviderError, transcript
+from claude_light.providers.base import Provider, ProviderError, json_events, transcript
 from claude_light.providers.runner import empty_temp_dir, run_cli
 
 BINARY = "codex"
@@ -20,12 +20,8 @@ _ARGV_TAIL = [
 def _agent_reply(stdout: str) -> str:
     """The text of the last agent_message event in codex's JSONL output."""
     reply = None
-    for line in stdout.splitlines():
-        try:
-            event = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(event, dict) or event.get("type") != "item.completed":
+    for event in json_events(stdout):
+        if event.get("type") != "item.completed":
             continue
         item = event.get("item")
         if isinstance(item, dict) and item.get("type") == "agent_message":

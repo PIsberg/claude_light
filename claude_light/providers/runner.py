@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+from pathlib import Path
 
 from claude_light.providers.base import ProviderError
 
@@ -31,19 +32,20 @@ def run_cli(provider: str, argv: list, stdin_text: str, timeout: float = TIMEOUT
     A non-zero exit, a timeout or a missing binary raise ProviderError naming
     the provider. KeyboardInterrupt stops the whole process tree and is re-raised.
     """
+    binary = Path(argv[0]).stem if argv else provider
     try:
         proc = subprocess.Popen(
             argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding="utf-8", errors="replace", cwd=cwd)
     except FileNotFoundError:
-        raise ProviderError(f"{provider} CLI not found. Install it and log in, "
+        raise ProviderError(f"{binary} CLI not found. Install it and log in, "
                             f"or choose another --provider.")
     try:
         stdout, stderr = proc.communicate(stdin_text, timeout)
     except subprocess.TimeoutExpired:
         kill_process_tree(proc)
         raise ProviderError(f"{provider} timed out after {timeout:g} s. "
-                            f"Run {provider} on its own to see why.")
+                            f"Run {binary} on its own to see why.")
     except KeyboardInterrupt:
         kill_process_tree(proc)
         raise
@@ -53,7 +55,7 @@ def run_cli(provider: str, argv: list, stdin_text: str, timeout: float = TIMEOUT
         errors = [ln for ln in lines if "Error" in ln]
         last = errors[-1] if errors else (lines[-1] if lines else "no error output")
         raise ProviderError(f"{provider} failed (exit {proc.returncode}): {last}. "
-                            f"Run {provider} on its own to see the full error.")
+                            f"Run {binary} on its own to see the full error.")
     return stdout
 
 

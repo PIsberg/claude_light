@@ -1,4 +1,5 @@
 """Shared provider interface."""
+import json
 from typing import Iterator
 
 CACHING, EFFORT, TOP_TIER, USD_BUDGET, USAGE, AGENT, SHELL = (
@@ -43,7 +44,17 @@ class Provider:
 
 
 def json_events(stdout: str) -> Iterator[dict]:
-    raise NotImplementedError("json_events")
+    """The JSON-object lines of a CLI's NDJSON output, in order.
+
+    Blank lines, non-JSON lines (warnings) and non-object values are skipped.
+    """
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict):
+            yield event
 
 
 def _text_of(content) -> str:
