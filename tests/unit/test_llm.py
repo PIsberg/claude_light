@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import numpy as np
 
+from claude_light.providers import claude as _claude_mod  # noqa: E402  (T017: moved transport)
 from claude_light.llm import (
     route_query, _extract_text, _build_system_blocks,
     _accumulate_usage, _summarize_turns, _maybe_compress_history,
@@ -364,7 +365,7 @@ class TestSummarizeTurns(unittest.TestCase):
         mock_response.content = [MagicMock(text="Summary of conversation")]
         mock_response.usage = MagicMock()
 
-        with patch("claude_light.llm.client.messages.create", return_value=mock_response):
+        with patch("claude_light.providers.claude.client.messages.create", return_value=mock_response):
             summary, usage = _summarize_turns(messages)
         self.assertEqual(summary, "Summary of conversation")
 
@@ -378,7 +379,7 @@ class TestSummarizeTurns(unittest.TestCase):
         mock_response.content = [MagicMock(text="Summary")]
         mock_response.usage = MagicMock()
 
-        with patch("claude_light.llm.client.messages.create", return_value=mock_response):
+        with patch("claude_light.providers.claude.client.messages.create", return_value=mock_response):
             summary, _ = _summarize_turns(messages)
         self.assertEqual(summary, "Summary")
 
@@ -389,10 +390,10 @@ class TestSummarizeTurns(unittest.TestCase):
         from claude_light import llm
         usage = MagicMock(input_tokens=5, output_tokens=3)
         create = MagicMock()
-        with patch.object(llm, "AUTH_MODE", "OAUTH"), \
-             patch.object(llm, "_make_cli_subprocess_call",
+        with patch.object(_claude_mod, "AUTH_MODE", "OAUTH"), \
+             patch.object(_claude_mod, "_make_cli_subprocess_call",
                           return_value=("CLI summary", usage, None)) as cli, \
-             patch("claude_light.llm.client.messages.create", create):
+             patch("claude_light.providers.claude.client.messages.create", create):
             summary, got_usage = _summarize_turns(
                 [{"role": "user", "content": "Q?"}, {"role": "assistant", "content": "A."}])
         self.assertEqual(summary, "CLI summary")
@@ -408,7 +409,7 @@ class TestSummarizeTurns(unittest.TestCase):
         mock_response = MagicMock()
         mock_response.content = [MagicMock(text="Empty summary")]
         mock_response.usage = MagicMock()
-        with patch("claude_light.llm.client.messages.create", return_value=mock_response):
+        with patch("claude_light.providers.claude.client.messages.create", return_value=mock_response):
             summary, _ = _summarize_turns([])
         self.assertEqual(summary, "Empty summary")
 
@@ -528,7 +529,7 @@ class TestChat(unittest.TestCase):
         return usage
 
     def _mock_api(self, text="Hello there!"):
-        return patch("claude_light.llm._make_streaming_api_call", return_value=(text, self._make_usage(), False))
+        return patch("claude_light.providers.claude._make_streaming_api_call", return_value=(text, self._make_usage(), False))
 
     def test_chat_simple_query(self):
         print("\n  ▶ TestChat.test_chat_simple_query")
@@ -585,7 +586,7 @@ class TestChat(unittest.TestCase):
         import claude_light as cl
         orig_hist = list(_state.conversation_history)
         try:
-            with patch("claude_light.llm._make_streaming_api_call", side_effect=KeyboardInterrupt), \
+            with patch("claude_light.providers.claude._make_streaming_api_call", side_effect=KeyboardInterrupt), \
                  self._mock_retrieve(), \
                  self._mock_compress(), \
                  patch("claude_light.llm._print_reply"), \
@@ -599,7 +600,7 @@ class TestChat(unittest.TestCase):
         import claude_light as cl
         orig_hist = list(_state.conversation_history)
         try:
-            with patch("claude_light.llm._make_streaming_api_call", side_effect=Exception("API error")), \
+            with patch("claude_light.providers.claude._make_streaming_api_call", side_effect=Exception("API error")), \
                  self._mock_retrieve(), \
                  self._mock_compress(), \
                  patch("claude_light.llm._print_reply"), \
@@ -628,14 +629,14 @@ class TestWarmCache(unittest.TestCase):
         print("\n  ▶ TestWarmCache.test_warm_cache_success")
         from claude_light import warm_cache
         resp = self._make_response()
-        with patch("claude_light.llm.client.messages.create", return_value=resp), \
+        with patch("claude_light.providers.claude.client.messages.create", return_value=resp), \
              patch("claude_light.print_stats"):
             warm_cache(quiet=True)
 
     def test_warm_cache_exception_no_crash(self):
         print("\n  ▶ TestWarmCache.test_warm_cache_exception_no_crash")
         from claude_light import warm_cache
-        with patch("claude_light.llm.client.messages.create", side_effect=Exception("net error")):
+        with patch("claude_light.providers.claude.client.messages.create", side_effect=Exception("net error")):
             warm_cache(quiet=True)
 
 
@@ -680,7 +681,7 @@ class TestCliSubprocessStreaming(unittest.TestCase):
         with patch("claude_light.llm.subprocess.Popen", return_value=mock_proc), \
              patch("shutil.which", return_value="/fake/bin/claude"), \
              patch("sys.stdout", captured), patch("sys.stderr", captured_err):
-            result = llm._make_cli_subprocess_call("hello")
+            result = _claude_mod._make_cli_subprocess_call("hello")
         self.last_stdout = captured.getvalue()
         return result, captured.getvalue() + captured_err.getvalue(), mock_proc
 
@@ -771,7 +772,7 @@ class TestCliSubprocessStreaming(unittest.TestCase):
 
     def test_not_logged_in_raises_dedicated_exception(self):
         print("\n  ▶ TestCliSubprocessStreaming.test_not_logged_in_raises_dedicated_exception")
-        from claude_light.llm import ClaudeNotLoggedIn
+        from claude_light.providers.claude import ClaudeNotLoggedIn
         with self.assertRaises(ClaudeNotLoggedIn):
             self._call_with_events(
                 [],
@@ -794,7 +795,7 @@ class TestCliSubprocessStreaming(unittest.TestCase):
         with patch("claude_light.llm.subprocess.Popen", return_value=mock_proc), \
              patch("shutil.which", return_value="/fake/bin/claude"), \
              patch("sys.stdout", captured):
-            reply, _, _ = llm._make_cli_subprocess_call("hi")
+            reply, _, _ = _claude_mod._make_cli_subprocess_call("hi")
         self.assertEqual(reply, "ok")
 
     def test_heartbeat_stopped_after_success(self):
@@ -863,7 +864,7 @@ class TestCliSubprocessStreaming(unittest.TestCase):
         with patch("claude_light.llm.subprocess.Popen", return_value=mock_proc) as popen_mock, \
              patch("shutil.which", return_value="/fake/bin/claude"), \
              patch("sys.stdout", captured):
-            llm._make_cli_subprocess_call("hi")
+            _claude_mod._make_cli_subprocess_call("hi")
 
         env = popen_mock.call_args.kwargs.get("env") or {}
         isolated_home = env.get("HOME")
@@ -901,7 +902,7 @@ class TestCliSubprocessStreaming(unittest.TestCase):
         with patch("claude_light.llm.subprocess.Popen", side_effect=fake_popen), \
              patch("shutil.which", return_value="/fake/bin/claude"), \
              patch("sys.stdout", io.StringIO()):
-            llm._make_cli_subprocess_call("hi")
+            _claude_mod._make_cli_subprocess_call("hi")
 
         real = (_os.path.expanduser("~").replace("\\", "/") + "/.claude/CLAUDE.md")
         self.assertIn(real, seen.get("claudeMdExcludes", []))
@@ -919,7 +920,7 @@ class TestCliSubprocessStreaming(unittest.TestCase):
         with patch("claude_light.llm.subprocess.Popen", return_value=mock_proc) as popen_mock, \
              patch("shutil.which", return_value="/fake/bin/claude"), \
              patch("sys.stdout", captured):
-            llm._make_cli_subprocess_call("hi")
+            _claude_mod._make_cli_subprocess_call("hi")
         # First positional arg is the command list
         cmd = popen_mock.call_args.args[0]
         self.assertIn("--output-format", cmd)
@@ -962,7 +963,7 @@ class TestCliCommandPermissions(unittest.TestCase):
              patch("claude_light.llm.subprocess.Popen", return_value=mock_proc) as popen_mock, \
              patch("shutil.which", return_value="/fake/bin/claude"), \
              patch("sys.stdout", captured):
-            llm._make_cli_subprocess_call("hi")
+            _claude_mod._make_cli_subprocess_call("hi")
         return popen_mock.call_args.args[0]
 
     def test_tool_free_call_cannot_edit_or_run_commands(self):
@@ -977,7 +978,7 @@ class TestCliCommandPermissions(unittest.TestCase):
              patch("claude_light.llm.subprocess.Popen", return_value=mock_proc) as popen_mock, \
              patch("shutil.which", return_value="/fake/bin/claude"), \
              patch("sys.stdout", io.StringIO()):
-            llm._make_cli_subprocess_call("hi", render=False, tools=False)
+            _claude_mod._make_cli_subprocess_call("hi", render=False, tools=False)
         cmd = popen_mock.call_args.args[0]
         self.assertEqual(cmd[cmd.index("--tools") + 1], "")
         self.assertNotIn("--allowedTools", cmd)
@@ -990,8 +991,8 @@ class TestCliCommandPermissions(unittest.TestCase):
         print("\n  ▶ TestCliCommandPermissions.test_summary_call_is_tool_free")
         from claude_light import llm
         usage = MagicMock()
-        with patch.object(llm, "AUTH_MODE", "OAUTH"), \
-             patch.object(llm, "_make_cli_subprocess_call", return_value=("s", usage, None)) as cli:
+        with patch.object(_claude_mod, "AUTH_MODE", "OAUTH"), \
+             patch.object(_claude_mod, "_make_cli_subprocess_call", return_value=("s", usage, None)) as cli:
             llm._summarize_turns([{"role": "user", "content": "q"}])
         self.assertIs(cli.call_args.kwargs["tools"], False)
 
@@ -1054,7 +1055,7 @@ class TestCliCommandPermissions(unittest.TestCase):
              patch("claude_light.llm.subprocess.Popen", return_value=_fake_popen([_json.dumps(result)])), \
              patch("shutil.which", return_value="/fake/bin/claude"), \
              patch("sys.stdout", out):
-            llm._make_cli_subprocess_call("hi")
+            _claude_mod._make_cli_subprocess_call("hi")
         text = out.getvalue()
         self.assertIn("npm test -- --watch=false", text)
         self.assertIn("--allow-command", text)
@@ -1081,7 +1082,7 @@ class TestCliCommandPermissions(unittest.TestCase):
         with patch.object(config, "ALLOWED_COMMANDS", []), \
              patch("claude_light.llm.subprocess.Popen", side_effect=fake_popen), \
              patch("sys.stdout", io.StringIO()):
-            llm._make_cli_subprocess_call("hi", extra_flags=["--system-prompt", "SECRET SKELETON"])
+            _claude_mod._make_cli_subprocess_call("hi", extra_flags=["--system-prompt", "SECRET SKELETON"])
         self.assertNotIn("--system-prompt", seen["cmd"])
         self.assertEqual(seen.get("text"), "SECRET SKELETON")
 
@@ -1099,8 +1100,8 @@ class TestCliCommandPermissions(unittest.TestCase):
 
         with patch.object(config, "AUTH_MODE", "OAUTH"), \
              patch.object(config, "ALLOWED_COMMANDS", allowed), \
-             patch.object(llm, "_make_cli_subprocess_call", side_effect=fake_cli):
-            llm._make_streaming_api_call(
+             patch.object(_claude_mod, "_make_cli_subprocess_call", side_effect=fake_cli):
+            _claude_mod._make_streaming_api_call(
                 model="m", max_tokens=10,
                 system=llm._build_system_blocks("SKELETON"),
                 messages=[{"role": "user", "content": "hi"}])
@@ -1252,7 +1253,7 @@ class TestChatWithoutIndex(unittest.TestCase):
 
         out = io.StringIO()
         with patch.object(llm, "retrieve") as retrieve_mock, \
-             patch.object(llm, "_make_streaming_api_call", side_effect=fake_call), \
+             patch.object(_claude_mod, "_make_streaming_api_call", side_effect=fake_call), \
              patch.object(llm, "route_query", return_value=("m", "medium", 4096)), \
              patch.object(llm, "record_retrieval"), \
              patch.object(llm, "print_stats"), \
@@ -1298,11 +1299,11 @@ class TestApiToolLoop(unittest.TestCase):
 
         run_tool = tool_impl or (lambda name, tool_input, root=None: (f"<{name} output>", False))
         with patch.object(config, "AUTH_MODE", "API_KEY"), \
-             patch.object(llm, "client", MagicMock()), \
-             patch.object(llm, "stream_chat_response", side_effect=fake_stream), \
+             patch.object(_claude_mod, "client", MagicMock()), \
+             patch.object(_claude_mod, "stream_chat_response", side_effect=fake_stream), \
              patch("claude_light.tools.run_tool", side_effect=run_tool) as tool_mock, \
              patch("sys.stdout", io.StringIO()):
-            result = llm._make_streaming_api_call(
+            result = _claude_mod._make_streaming_api_call(
                 model="claude-sonnet-5-5", max_tokens=1000, system=[],
                 messages=[{"role": "user", "content": [{"type": "text", "text": "where is X?"}]}])
         return result, calls, tool_mock
@@ -1439,7 +1440,7 @@ class TestOneShotColdIndex(unittest.TestCase):
              patch.object(llm, "index_files", side_effect=fake_index), \
              patch.object(llm, "_update_skeleton"), \
              patch.object(llm, "retrieve", return_value=("", [])) as retrieve_mock, \
-             patch.object(llm, "_make_streaming_api_call", side_effect=fake_call), \
+             patch.object(_claude_mod, "_make_streaming_api_call", side_effect=fake_call), \
              patch.object(llm, "route_query", return_value=("m", "low", 2048)), \
              patch.object(llm, "_git_modified_snapshot", return_value=set()), \
              patch.object(llm, "print_stats"), \
@@ -1510,10 +1511,10 @@ class TestCliSubprocessTimeouts(unittest.TestCase):
         proc = _PacedProc(schedule)
         with patch("claude_light.llm.subprocess.Popen", return_value=proc), \
              patch("shutil.which", return_value="/fake/bin/claude"), \
-             patch.object(llm, "_CLI_IDLE_TIMEOUT_SECS", idle), \
-             patch.object(llm, "_CLI_MAX_SECS", cap), \
+             patch.object(_claude_mod, "_CLI_IDLE_TIMEOUT_SECS", idle), \
+             patch.object(_claude_mod, "_CLI_MAX_SECS", cap), \
              patch("sys.stdout", io.StringIO()):
-            return llm._make_cli_subprocess_call("hi")
+            return _claude_mod._make_cli_subprocess_call("hi")
 
     def test_long_but_active_run_is_not_killed(self):
         print("\n  ▶ TestCliSubprocessTimeouts.test_long_but_active_run_is_not_killed")
@@ -1604,10 +1605,10 @@ class TestCliProcessIsStopped(unittest.TestCase):
         error = None
         with patch("claude_light.llm.subprocess.Popen", side_effect=fake_popen), \
              patch("shutil.which", return_value=_sys.executable), \
-             patch.object(llm, "_CLI_IDLE_TIMEOUT_SECS", idle), \
+             patch.object(_claude_mod, "_CLI_IDLE_TIMEOUT_SECS", idle), \
              patch("sys.stdout", io.StringIO()):
             try:
-                llm._make_cli_subprocess_call("hi")
+                _claude_mod._make_cli_subprocess_call("hi")
             except (KeyboardInterrupt, RuntimeError) as e:
                 error = e
         elapsed = _time.monotonic() - start

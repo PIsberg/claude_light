@@ -8,6 +8,11 @@ from watchdog.observers import Observer
 
 from . import config, editor, executor, indexer, linter, llm, main, parsing, retrieval, skeleton, state, ui
 
+try:
+    from .providers import claude as _claude_provider
+except ImportError:  # the Claude provider is optional for other providers (FR-004)
+    _claude_provider = None
+
 is_test_mode = False
 
 _ORIG_PATH_UNLINK = Path.unlink
@@ -30,7 +35,7 @@ def _refresh_exports():
         "Path": Path,
         "Observer": Observer,
         "SentenceTransformer": executor.SentenceTransformer,
-        "client": llm.client,
+        "client": getattr(_claude_provider, "client", None),
         "print_stats": ui.print_stats,
         "print_session_summary": ui.print_session_summary,
         "show_diff": ui.show_diff,
@@ -127,7 +132,7 @@ _refresh_exports()
 _MODULE_ATTR_MAP = {
     "Path": [(config, "Path"), (editor, "Path"), (indexer, "Path"), (skeleton, "Path")],
     "SentenceTransformer": [(executor, "SentenceTransformer")],
-    "client": [(llm, "client")],
+    "client": [(_claude_provider, "client")] if _claude_provider else [],
     "print_stats": [(ui, "print_stats"), (llm, "print_stats")],
     "_print_reply": [(ui, "_print_reply"), (llm, "_print_reply")],
     "_Spinner": [(ui, "_Spinner")],

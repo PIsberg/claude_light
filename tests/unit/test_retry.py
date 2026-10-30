@@ -250,7 +250,7 @@ class TestRetryIntegration(unittest.TestCase):
             resp.usage.cache_read_input_tokens = 0
             return resp
         
-        with patch("claude_light.llm.client.messages.create", side_effect=mock_create), \
+        with patch("claude_light.providers.claude.client.messages.create", side_effect=mock_create), \
              patch("claude_light.llm.ENABLE_STREAMING", False), \
              patch("claude_light.llm._update_skeleton"), \
              patch("claude_light.llm.retrieve", return_value=("", [])), \

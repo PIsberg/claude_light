@@ -19,6 +19,7 @@ from unittest.mock import MagicMock, patch
 os.environ.setdefault("ANTHROPIC_API_KEY", "sk-ant-dummy-test-key")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
+from claude_light.providers import claude as _claude_mod  # noqa: E402  (T017: moved transport)
 from claude_light import cli_shell_guard, tools
 
 
@@ -114,7 +115,7 @@ class TestCliSettingsInstallTheGuard(unittest.TestCase):
              patch("claude_light.llm.subprocess.Popen", side_effect=fake_popen), \
              patch("shutil.which", return_value="/fake/bin/claude"), \
              patch("sys.stdout", io.StringIO()):
-            llm._make_cli_subprocess_call("hi", tools=tools_on)
+            _claude_mod._make_cli_subprocess_call("hi", tools=tools_on)
         return seen
 
     def test_allowlist_installs_a_pre_tool_use_guard_for_both_shells(self):

@@ -33,6 +33,9 @@ echo "List all REST endpoints" | python3 claude_light.py
 # Resume this project's previous conversation
 python3 claude_light.py --continue
 
+# Pick the agent: claude (default), gemini or codex
+python3 claude_light.py --provider codex "What does OrderService do?"
+
 # Offline, no API key: the OAuth agent may run these commands
 python3 claude_light.py --allow-command "python -m pytest"
 python3 claude_light.py --test-mode small        # 5 files, 10 methods each
@@ -48,14 +51,15 @@ pytest
 - **`/budget`**: `/budget 2.50` sets a spend cap, `/budget off` removes it, `/budget` shows cap and spend. At the cap, routing drops to Haiku at low effort. While a budget is set, the route line shows a per-turn estimate.
 - **Affected tests**: after an auto-commit, if a pytest command is allowed, the tests that mention the edited module run. On failure it offers to revert the commit and never reverts on its own. It does not run after OAuth-agent edits.
 
-Run from the root of the project you want to query. Exits with an error if no authentication is found, unless `--test-mode` is used; `--help` works without one. The check is `llm.require_auth()`, called by `main()` after the arguments are parsed, not at import.
+Run from the root of the project you want to query. Exits with an error if no authentication is found, unless `--test-mode` is used; `--help` works without one. The check is `providers.active().require_auth()`, called by `main()` after the arguments are parsed, not at import.
 
-Authentication, in order: `ANTHROPIC_API_KEY`; `~/.anthropic` or `./.env`; `~/.claude_light_automation_token` (recommended on Windows); `~/.claude/.credentials.json` from `claude auth login`. An API key bills per token; a Pro subscription is flat-rate. The mode follows the credential found.
+Authentication, in order: `ANTHROPIC_API_KEY`; `~/.anthropic` or `./.env`; `~/.claude_light_automation_token` (recommended on Windows); `~/.claude/.credentials.json` from `claude auth login`. An API key bills per token; a Pro subscription is flat-rate. The mode follows the credential found. That order is the `claude` provider's. `--provider gemini` needs the Antigravity CLI `agy` on PATH (https://antigravity.google; it keeps no credential file, so a missing sign-in shows on the first question, and `search_web` still runs); `--provider codex` needs `codex login`. Both run in an empty temporary directory and have no caching, effort, top tier, `/budget` or shell; each says so when you use one.
 
 Install with `installers/install.sh`, `installers/install_macos.sh` or `installers/install.ps1`. Dependencies come from `requirements.txt`, which the installers and the CI test and fuzz jobs all install. Python 3.12 or newer.
 
 ## Invariants: check these before editing
 
+- **Neutral code reaches a provider only through `claude_light/providers/`.** No import of a provider's SDK and no provider binary name outside `providers/<name>.py` (`tests/unit/test_provider_isolation.py` enforces it). Use `providers.active()` and `providers.DEFAULT`.
 - **Background threads never print.** The watcher and the heartbeat call `ui.notify()`. A print lands inside a streamed reply or over the prompt being typed.
 - **Shared state goes through `state.py` under `state.lock`.** Modules import each other's globals at load time, so `__init__.py` wraps public functions in `_wrap()` to sync bindings. Do not add a new cross-module global without going through it.
 - **`EMBED_MODEL` and `TOP_K` are set at runtime by `auto_tune()`.** Do not set them by hand.

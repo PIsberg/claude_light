@@ -1425,7 +1425,7 @@ class TestSummarizeTurns(unittest.TestCase):
         mock_response.content = [MagicMock(text="Summary of conversation")]
         mock_response.usage = MagicMock()
 
-        with patch("claude_light.llm.client.messages.create", return_value=mock_response):
+        with patch("claude_light.providers.claude.client.messages.create", return_value=mock_response):
             summary, usage = _summarize_turns(messages)
         self.assertEqual(summary, "Summary of conversation")
 
@@ -1438,7 +1438,7 @@ class TestSummarizeTurns(unittest.TestCase):
         mock_response.content = [MagicMock(text="Summary")]
         mock_response.usage = MagicMock()
 
-        with patch("claude_light.llm.client.messages.create", return_value=mock_response):
+        with patch("claude_light.providers.claude.client.messages.create", return_value=mock_response):
             summary, _ = _summarize_turns(messages)
         self.assertEqual(summary, "Summary")
 
@@ -1524,8 +1524,8 @@ class TestChat(unittest.TestCase):
         import claude_light as cl
         streaming_response = self._make_streaming_response("This is the answer.")
         resp = self._make_response("This is the answer.")
-        with patch("claude_light.llm.stream_chat_response", return_value=streaming_response), \
-             patch("claude_light.llm.client.messages.create", return_value=resp), \
+        with patch("claude_light.providers.claude.stream_chat_response", return_value=streaming_response), \
+             patch("claude_light.providers.claude.client.messages.create", return_value=resp), \
              patch("claude_light._print_reply"), \
              patch("claude_light.print_stats"):
             cl.chat("What does foo do?")
@@ -1536,8 +1536,8 @@ class TestChat(unittest.TestCase):
         import claude_light as cl
         streaming_response = self._make_streaming_response("The answer is 42.")
         resp = self._make_response("The answer is 42.")
-        with patch("claude_light.llm.stream_chat_response", return_value=streaming_response), \
-             patch("claude_light.llm.client.messages.create", return_value=resp), \
+        with patch("claude_light.providers.claude.stream_chat_response", return_value=streaming_response), \
+             patch("claude_light.providers.claude.client.messages.create", return_value=resp), \
              patch("claude_light._print_reply"), \
              patch("claude_light.print_stats"):
             cl.chat("What is the answer?")
@@ -1562,8 +1562,8 @@ class TestChat(unittest.TestCase):
             "```\n"
             "Changed foo to return 1."
         )
-        with patch("claude_light.llm.stream_chat_response", return_value=streaming_response), \
-             patch("claude_light.llm.client.messages.create", return_value=resp), \
+        with patch("claude_light.providers.claude.stream_chat_response", return_value=streaming_response), \
+             patch("claude_light.providers.claude.client.messages.create", return_value=resp), \
              patch("claude_light._print_reply"), \
              patch("claude_light.print_stats"), \
              patch("claude_light.apply_edits") as mock_apply, \
@@ -1574,8 +1574,8 @@ class TestChat(unittest.TestCase):
 
     def test_chat_keyboard_interrupt(self):
         import claude_light as cl
-        with patch("claude_light.llm.stream_chat_response", side_effect=KeyboardInterrupt), \
-             patch("claude_light.llm.client.messages.create", side_effect=KeyboardInterrupt), \
+        with patch("claude_light.providers.claude.stream_chat_response", side_effect=KeyboardInterrupt), \
+             patch("claude_light.providers.claude.client.messages.create", side_effect=KeyboardInterrupt), \
              patch("claude_light._print_reply"), \
              patch("claude_light.print_stats"):
             # Should not raise
@@ -1583,8 +1583,8 @@ class TestChat(unittest.TestCase):
 
     def test_chat_api_exception(self):
         import claude_light as cl
-        with patch("claude_light.llm.stream_chat_response", side_effect=Exception("API error")), \
-             patch("claude_light.llm.client.messages.create", side_effect=Exception("API error")), \
+        with patch("claude_light.providers.claude.stream_chat_response", side_effect=Exception("API error")), \
+             patch("claude_light.providers.claude.client.messages.create", side_effect=Exception("API error")), \
              patch("claude_light._print_reply"), \
              patch("claude_light.print_stats"):
             # Should not raise
@@ -1630,8 +1630,8 @@ class TestOneShot(unittest.TestCase):
         orig_store = dict(cl.chunk_store)
         cl.chunk_store.clear()
 
-        with patch("claude_light.llm.stream_chat_response", return_value=streaming_response), \
-             patch("claude_light.llm.client.messages.create", return_value=resp), \
+        with patch("claude_light.providers.claude.stream_chat_response", return_value=streaming_response), \
+             patch("claude_light.providers.claude.client.messages.create", return_value=resp), \
              patch("claude_light._update_skeleton"), \
              patch("claude_light.index_files"), \
              patch("claude_light.print_stats"), \
@@ -1646,8 +1646,8 @@ class TestOneShot(unittest.TestCase):
         orig_store = dict(cl.chunk_store)
         cl.chunk_store.clear()
 
-        with patch("claude_light.llm.stream_chat_response", side_effect=Exception("fail")), \
-             patch("claude_light.llm.client.messages.create", side_effect=Exception("fail")), \
+        with patch("claude_light.providers.claude.stream_chat_response", side_effect=Exception("fail")), \
+             patch("claude_light.providers.claude.client.messages.create", side_effect=Exception("fail")), \
              patch("claude_light._update_skeleton"), \
              patch("claude_light.index_files"), \
              patch("builtins.print"):
@@ -1677,13 +1677,13 @@ class TestWarmCache(unittest.TestCase):
         from claude_light import warm_cache
         import claude_light as cl
         resp = self._make_response()
-        with patch("claude_light.llm.client.messages.create", return_value=resp), \
+        with patch("claude_light.providers.claude.client.messages.create", return_value=resp), \
              patch("claude_light.print_stats"):
             warm_cache(quiet=True)
 
     def test_warm_cache_exception_no_crash(self):
         from claude_light import warm_cache
-        with patch("claude_light.llm.client.messages.create", side_effect=Exception("net error")):
+        with patch("claude_light.providers.claude.client.messages.create", side_effect=Exception("net error")):
             warm_cache(quiet=True)
 
 
@@ -2361,7 +2361,7 @@ class TestSummarizeTurnsExtended(unittest.TestCase):
         mock_response = MagicMock()
         mock_response.content = [MagicMock(text="Empty summary")]
         mock_response.usage = MagicMock()
-        with patch("claude_light.llm.client.messages.create", return_value=mock_response):
+        with patch("claude_light.providers.claude.client.messages.create", return_value=mock_response):
             summary, _ = _summarize_turns([])
         self.assertEqual(summary, "Empty summary")
 
@@ -2660,8 +2660,8 @@ class TestChatAutoCorrection(unittest.TestCase):
         ]
         streaming_response = self._make_streaming_response("The answer is X.")
         resp = self._make_response("The answer is X.")
-        with patch("claude_light.llm.stream_chat_response", return_value=streaming_response), \
-             patch("claude_light.llm.client.messages.create", return_value=resp), \
+        with patch("claude_light.providers.claude.stream_chat_response", return_value=streaming_response), \
+             patch("claude_light.providers.claude.client.messages.create", return_value=resp), \
              patch("claude_light._print_reply"), \
              patch("claude_light.print_stats"):
             cl.chat("follow-up question")
@@ -2682,8 +2682,8 @@ class TestChatAutoCorrection(unittest.TestCase):
         def mock_stream(client, **kwargs):
             captured_kwargs.update(kwargs)
             return streaming_response
-        with patch("claude_light.llm.stream_chat_response", side_effect=mock_stream), \
-             patch("claude_light.llm.client.messages.create", side_effect=mock_create), \
+        with patch("claude_light.providers.claude.stream_chat_response", side_effect=mock_stream), \
+             patch("claude_light.providers.claude.client.messages.create", side_effect=mock_create), \
              patch("claude_light._print_reply"), \
              patch("claude_light.print_stats"), \
              patch("claude_light.route_query", return_value=("model", "max", 16000)):
@@ -2750,8 +2750,8 @@ class TestOneShotAutoCorrection(unittest.TestCase):
         cl.chunk_store.clear()
         resp = self._make_good_response()
         streaming_response = self._make_streaming_response(resp.content[0].text)
-        with patch("claude_light.llm.stream_chat_response", return_value=streaming_response), \
-             patch("claude_light.llm.client.messages.create", return_value=resp), \
+        with patch("claude_light.providers.claude.stream_chat_response", return_value=streaming_response), \
+             patch("claude_light.providers.claude.client.messages.create", return_value=resp), \
              patch("claude_light._update_skeleton"), \
              patch("claude_light.index_files"), \
              patch("claude_light.print_stats"), \
@@ -3528,7 +3528,7 @@ class TestWarmCacheVerbose(unittest.TestCase):
         resp.usage.output_tokens = 1
         resp.usage.cache_creation_input_tokens = 500
         resp.usage.cache_read_input_tokens = 200
-        with patch("claude_light.llm.client.messages.create", return_value=resp), \
+        with patch("claude_light.providers.claude.client.messages.create", return_value=resp), \
              patch("claude_light.print_stats"), \
              patch("builtins.print"):
             warm_cache(quiet=False)
@@ -3637,8 +3637,8 @@ class TestChatHistoryWrapping(unittest.TestCase):
             'cache_creation_tokens': 0,
             'cache_read_tokens': 0,
         })
-        with patch("claude_light.llm.stream_chat_response", return_value=streaming_response), \
-             patch("claude_light.llm.client.messages.create", return_value=resp), \
+        with patch("claude_light.providers.claude.stream_chat_response", return_value=streaming_response), \
+             patch("claude_light.providers.claude.client.messages.create", return_value=resp), \
              patch("claude_light._print_reply"), \
              patch("claude_light.print_stats"):
             cl.chat("follow up")
@@ -3663,8 +3663,8 @@ class TestChatHistoryWrapping(unittest.TestCase):
             'cache_creation_tokens': 0,
             'cache_read_tokens': 0,
         })
-        with patch("claude_light.llm.stream_chat_response", return_value=streaming_response), \
-             patch("claude_light.llm.client.messages.create", return_value=resp), \
+        with patch("claude_light.providers.claude.stream_chat_response", return_value=streaming_response), \
+             patch("claude_light.providers.claude.client.messages.create", return_value=resp), \
              patch("claude_light._print_reply"), \
              patch("claude_light.print_stats"):
             cl.chat("a question")
@@ -3947,8 +3947,8 @@ class TestChatLintRetry(unittest.TestCase):
             os.chdir(tmpdir)
             try:
                 Path("test_lint.py").write_text("x = 1\n", encoding="utf-8")
-                with patch("claude_light.llm.stream_chat_response", side_effect=mock_stream), \
-                     patch("claude_light.llm.client.messages.create", side_effect=mock_create), \
+                with patch("claude_light.providers.claude.stream_chat_response", side_effect=mock_stream), \
+                     patch("claude_light.providers.claude.client.messages.create", side_effect=mock_create), \
                      patch("claude_light._print_reply"), \
                      patch("claude_light.print_stats"), \
                      patch("sys.stdout", io.StringIO()):
@@ -4064,8 +4064,8 @@ class TestOneShotWithHits(unittest.TestCase):
         resp.usage.cache_read_input_tokens = 0
         streaming_response = self._make_streaming_response("Here is the explanation.")
 
-        with patch("claude_light.llm.stream_chat_response", return_value=streaming_response), \
-             patch("claude_light.llm.client.messages.create", return_value=resp), \
+        with patch("claude_light.providers.claude.stream_chat_response", return_value=streaming_response), \
+             patch("claude_light.providers.claude.client.messages.create", return_value=resp), \
              patch("claude_light._update_skeleton"), \
              patch("claude_light.index_files"), \
              patch("claude_light.print_stats"), \
@@ -4493,8 +4493,8 @@ class TestOneShotLintError(unittest.TestCase):
             os.chdir(tmpdir)
             try:
                 Path("bad_code.py").write_text("x = 1\n", encoding="utf-8")
-                with patch("claude_light.llm.stream_chat_response", side_effect=mock_stream), \
-                     patch("claude_light.llm.client.messages.create", side_effect=mock_create), \
+                with patch("claude_light.providers.claude.stream_chat_response", side_effect=mock_stream), \
+                     patch("claude_light.providers.claude.client.messages.create", side_effect=mock_create), \
                      patch("claude_light._update_skeleton"), \
                      patch("claude_light.index_files"), \
                      patch("claude_light.print_stats"), \
@@ -4583,8 +4583,8 @@ class TestChatEditBlockWithNoLintError(unittest.TestCase):
                     'cache_read_tokens': 0,
                 })
 
-                with patch("claude_light.llm.stream_chat_response", return_value=streaming_response), \
-                     patch("claude_light.llm.client.messages.create", return_value=resp), \
+                with patch("claude_light.providers.claude.stream_chat_response", return_value=streaming_response), \
+                     patch("claude_light.providers.claude.client.messages.create", return_value=resp), \
                      patch("claude_light._print_reply"), \
                      patch("claude_light.print_stats"), \
                      patch("sys.stdin") as mock_stdin, \
@@ -4712,8 +4712,8 @@ class TestOneShotMaxEffort(unittest.TestCase):
                 'cache_read_tokens': 0,
             }
 
-        with patch("claude_light.llm.stream_chat_response", side_effect=mock_stream), \
-             patch("claude_light.llm.client.messages.create", side_effect=mock_create), \
+        with patch("claude_light.providers.claude.stream_chat_response", side_effect=mock_stream), \
+             patch("claude_light.providers.claude.client.messages.create", side_effect=mock_create), \
              patch("claude_light._update_skeleton"), \
              patch("claude_light.index_files"), \
              patch("claude_light.print_stats"), \
@@ -4929,8 +4929,8 @@ class TestOneShotApplyEdits(unittest.TestCase):
                     'cache_read_tokens': 0,
                 })
 
-                with patch("claude_light.llm.stream_chat_response", return_value=streaming_response), \
-                     patch("claude_light.llm.client.messages.create", return_value=resp), \
+                with patch("claude_light.providers.claude.stream_chat_response", return_value=streaming_response), \
+                     patch("claude_light.providers.claude.client.messages.create", return_value=resp), \
                      patch("claude_light._update_skeleton"), \
                      patch("claude_light.index_files"), \
                      patch("claude_light.print_stats"), \
@@ -5284,8 +5284,8 @@ class TestOneShotLintCacheControlStrip(unittest.TestCase):
             os.chdir(tmpdir)
             try:
                 Path("t.py").write_text("x=1\n", encoding="utf-8")
-                with patch("claude_light.llm.stream_chat_response", side_effect=mock_stream), \
-                     patch("claude_light.llm.client.messages.create", side_effect=mock_create), \
+                with patch("claude_light.providers.claude.stream_chat_response", side_effect=mock_stream), \
+                     patch("claude_light.providers.claude.client.messages.create", side_effect=mock_create), \
                      patch("claude_light._update_skeleton"), \
                      patch("claude_light.index_files"), \
                      patch("claude_light.print_stats"), \
@@ -5479,8 +5479,8 @@ class TestOneShotLintRetryStrip(unittest.TestCase):
             os.chdir(tmpdir)
             try:
                 Path("xyz.py").write_text("a=1\n", encoding="utf-8")
-                with patch("claude_light.llm.stream_chat_response", side_effect=mock_stream), \
-                     patch("claude_light.llm.client.messages.create", side_effect=mock_create), \
+                with patch("claude_light.providers.claude.stream_chat_response", side_effect=mock_stream), \
+                     patch("claude_light.providers.claude.client.messages.create", side_effect=mock_create), \
                      patch("claude_light._update_skeleton"), \
                      patch("claude_light.index_files"), \
                      patch("claude_light.print_stats"), \
@@ -6045,8 +6045,8 @@ class TestOneShotDoubleLintRetry(unittest.TestCase):
             os.chdir(tmpdir)
             try:
                 Path("xyz2.py").write_text("a=1\n", encoding="utf-8")
-                with patch("claude_light.llm.stream_chat_response", side_effect=mock_stream), \
-                     patch("claude_light.llm.client.messages.create", side_effect=mock_create), \
+                with patch("claude_light.providers.claude.stream_chat_response", side_effect=mock_stream), \
+                     patch("claude_light.providers.claude.client.messages.create", side_effect=mock_create), \
                      patch("claude_light._update_skeleton"), \
                      patch("claude_light.index_files"), \
                      patch("claude_light.print_stats"), \

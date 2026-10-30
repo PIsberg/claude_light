@@ -169,6 +169,13 @@ Without tree-sitter, chunking falls back to whole-file mode. Without `rich`, out
 2.  **Local Dotfiles**: `.anthropic` (home dir) or `.env` (project dir)
 3.  **Claude CLI Config (OAuth)**: Automatically reads your Claude Pro session from `~/.claude/.credentials.json`.
 
+#### Other providers: Gemini and Codex
+`python3 claude_light.py --provider gemini` or `--provider codex` sends the same skeleton and retrieved chunks to that tool's CLI instead of Claude. Without `--provider` nothing changes.
+*   **Gemini**: runs Google's Antigravity CLI `agy` (install: https://antigravity.google) and sign in by running `agy` once. claude_light denies agy's shell, MCP and file tools per run, but agy's `search_web` still runs and cannot be turned off; what it can send is the prompt claude_light gives it.
+*   **Codex**: install `codex` (`npm install -g @openai/codex`) and run `codex login`.
+*   **Unavailable there**: prompt caching, effort routing, the top-tier prompt, `/budget`, token and cost figures, and shell access. Each says so when you use it. Each tool runs in an empty temporary directory, so it answers from what claude_light sends and does not read or run anything in your repo.
+*   **Sessions**: saved per provider; `--continue` with another provider's file starts fresh and names the provider to resume.
+
 #### Option A: Claude Pro Subscription (OAuth)
 If you have a **Claude Pro** or **Team** subscription and have authorized the official [Claude CLI](https://github.com/anthropics/claude-code), `claude_light` will automatically use your flat-rate subscription. 
 *   **Cost**: Included in your $20/mo subscription.

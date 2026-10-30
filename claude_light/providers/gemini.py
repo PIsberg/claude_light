@@ -1,0 +1,132 @@
+"""Gemini provider: Google's Antigravity CLI (`agy`) as a subprocess."""
+import json
+import shutil
+import sys
+
+from claude_light.providers.base import Provider, ProviderError, json_events, transcript
+from claude_light.providers.runner import empty_temp_dir, run_cli
+
+BINARY = "agy"
+_LABEL = "CLI default model"
+_MISSING = "agy not found. Install the Antigravity CLI: https://antigravity.google"
+# Deny shell, MCP and file tools: agy otherwise runs the user's globally allowed MCP shell.
+SETTINGS = json.dumps({
+    "permissions": {"allow": [], "deny": ["command", "mcp", "file"]},
+    "allowNonWorkspaceAccess": False,
+})
+# The empty attached `-p=` is required: a bare `-p` swallows the next flag as its prompt.
+_ARGV_TAIL = [
+    "--input-format", "stream-json", "--output-format", "stream-json",
+    "--mode", "plan", "--settings", SETTINGS, "-p=",
+]
+
+
+# Without it agy calls run_command (3 of 3 real runs), is denied, and returns an empty response.
+_PREAMBLE = ("You have no tools in this session: do not call any tool, run any command or read "
+             "any file. Everything you can use is in this message. For an edit, write "
+             "SEARCH/REPLACE blocks from the code shown here.\n\n")
+# Tools the deny settings forbid, and the denied_actions kind that covers each.
+_FORBIDDEN = {
+    "run_command": "command", "send_command_input": "command", "call_mcp_tool": "mcp",
+    "write_to_file": "file", "replace_file_content": "file",
+    "multi_replace_file_content": "file", "sed_file": "file", "notebook_edit": "file",
+}
+# Read-only tools that may finish without a denial (search_web still runs: known limit).
+_ALLOWED_TOOLS = frozenset({"search_web", "read_file", "view_file", "list_dir",
+                            "find_by_name", "grep_search"})
+
+
+def _stdin_line(text: str) -> str:
+    content = _PREAMBLE + text
+    return json.dumps({"event": "user", "message": {"role": "user", "content": content}}) + "\n"
+
+
+def _check_tools(stdout: str, result: dict) -> None:
+    """Fail closed: a finished tool call passes only if it is read-only, or agy denied it.
+
+    A tool outside the allowlist and the `_FORBIDDEN` kinds raises. A forbidden tool passes only
+    while the DONE steps of its kind do not outnumber the `denied_actions` records of that kind.
+    """
+    denied = result.get("denied_actions")
+    denials: dict = {}
+    for a in denied if isinstance(denied, list) else []:
+        if isinstance(a, dict):
+            denials[a.get("action")] = denials.get(a.get("action"), 0) + 1
+    done: dict = {}
+    for event in json_events(stdout):
+        step = event.get("step_update") if event.get("event") == "step_update" else None
+        if (not isinstance(step, dict) or step.get("step_type") != "tool"
+                or step.get("state") != "DONE"):
+            continue
+        tool = step.get("tool_name")
+        if tool in _ALLOWED_TOOLS:
+            continue
+        kind = _FORBIDDEN.get(tool)
+        if kind:
+            done[kind] = done.get(kind, 0) + 1
+        if not kind or done[kind] > denials.get(kind, 0):
+            raise ProviderError(f"agy ran {tool}, which claude_light forbids")
+
+
+def _result_reply(stdout: str) -> str:
+    """The response of the last `result` event; ProviderError if it is missing or failed."""
+    result = None
+    for event in json_events(stdout):
+        if event.get("event") == "result" and isinstance(event.get("result"), dict):
+            result = event["result"]
+    if result is None:
+        raise ProviderError("agy output could not be parsed: no result event in the output")
+    if result.get("status") != "SUCCESS":
+        raise ProviderError(f"agy failed: {result.get('error') or result.get('status')}. "
+                            f"If you are not signed in, run agy once and sign in.")
+    _check_tools(stdout, result)
+    reply = result.get("response")
+    if not isinstance(reply, str) or not reply.strip():
+        denied = result.get("denied_actions")
+        if isinstance(denied, list) and denied and isinstance(denied[0], dict):
+            name = denied[0].get("display_name") or denied[0].get("action")
+            raise ProviderError(f"agy tried {name} and returned nothing: claude_light denies "
+                                f"agy's tools, so the request cannot be answered.")
+        raise ProviderError("agy output could not be parsed: empty response")
+    return reply.strip()
+
+
+class GeminiProvider(Provider):
+    name = "gemini"
+    capabilities = frozenset()
+
+    def model_label(self, routed_model: str) -> str:
+        return _LABEL
+
+    def header(self):
+        return (_LABEL, "agy CLI")
+
+    def require_auth(self) -> None:
+        from claude_light.ui import _T_ERR
+        if not shutil.which(BINARY):
+            print(f"\n  {_T_ERR}  {_MISSING}", file=sys.stderr)
+            sys.exit(1)
+
+    def _run(self, stdin_text: str) -> str:
+        binary = shutil.which(BINARY)
+        if not binary:
+            raise ProviderError(_MISSING)
+        with empty_temp_dir() as cwd:
+            out = run_cli(self.name, [binary] + _ARGV_TAIL, _stdin_line(stdin_text), cwd=cwd)
+        return _result_reply(out)
+
+    def complete(self, request: dict):
+        from claude_light.ui import _Spinner
+        system_text, prompt = transcript(request)
+        with _Spinner("Waiting for gemini"):
+            reply = self._run(system_text + "\n\n" + prompt)
+        return reply, None, False
+
+    def summarize(self, instructions: str):
+        from claude_light.ui import _Spinner
+        with _Spinner("Summarizing"):
+            text = self._run("You summarize conversations.\n\n" + instructions)
+        return text, None
+
+
+PROVIDER = GeminiProvider()

@@ -71,7 +71,7 @@ def _run_turns(routes):
     queue = list(routes)
     with patch("claude_light.llm.route_query",
                side_effect=lambda q: _raw(queue.pop(0))), \
-         patch("claude_light.llm._make_streaming_api_call", side_effect=fake_call), \
+         patch("claude_light.providers.claude._make_streaming_api_call", side_effect=fake_call), \
          patch("claude_light.llm.retrieve", return_value=("", [])), \
          patch("claude_light.llm._maybe_compress_history"), \
          patch("claude_light.llm._print_reply"), \
@@ -154,7 +154,7 @@ class TestPerMessageEffort(unittest.TestCase):
 
         with patch("claude_light.llm.route_query",
                    return_value=_raw(HAIKU_LOW)), \
-             patch("claude_light.llm._make_streaming_api_call", side_effect=fake_call), \
+             patch("claude_light.providers.claude._make_streaming_api_call", side_effect=fake_call), \
              patch("claude_light.llm.retrieve", return_value=("", [])), \
              patch("claude_light.llm._print_reply"), \
              patch("claude_light.llm.print_stats"):
@@ -169,7 +169,7 @@ class TestWarmCacheMatchesTurns(unittest.TestCase):
     def test_warms_at_the_top_level_effort_turns_send(self):
         resp = MagicMock()
         resp.usage = _usage()
-        with patch("claude_light.llm.client.messages.create", return_value=resp) as create:
+        with patch("claude_light.providers.claude.client.messages.create", return_value=resp) as create:
             llm.warm_cache(quiet=True)
         kwargs = create.call_args.kwargs
         self.assertEqual(kwargs["output_config"], {"effort": llm.BASE_EFFORT})
@@ -219,7 +219,7 @@ class TestRouteOnce(unittest.TestCase):
         # it, re-warms and the heartbeat must keep the model the turns read.
         resp = MagicMock()
         resp.usage = _usage()
-        with patch("claude_light.llm.client.messages.create", return_value=resp) as create:
+        with patch("claude_light.providers.claude.client.messages.create", return_value=resp) as create:
             llm.warm_cache(quiet=True)
             state.session_model = llm.MODEL_HAIKU
             llm.warm_cache(quiet=True)

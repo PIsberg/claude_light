@@ -158,7 +158,7 @@ class TestTopTierReachesTheRequest(_SessionCase):
         try:
             with patch("claude_light.llm.route_query", return_value=route), \
                  patch("claude_light.llm.choose", return_value=answer), \
-                 patch("claude_light.llm._make_streaming_api_call", side_effect=fake_call), \
+                 patch("claude_light.providers.claude._make_streaming_api_call", side_effect=fake_call), \
                  patch("claude_light.llm.retrieve", return_value=("", [])), \
                  patch("claude_light.llm._maybe_compress_history"), \
                  patch("claude_light.llm._print_reply"), \

@@ -33,6 +33,7 @@ class MockManager:
         import claude_light.indexer
         import claude_light.editor
         import claude_light.llm
+        import claude_light.providers.claude
         import claude_light.executor
         import claude_light.config
         
@@ -46,7 +47,7 @@ class MockManager:
         self.path_patcher = self.path_patchers[0]
         for p in self.path_patchers: p.start()
         
-        self.api_patcher = patch.object(claude_light.llm.client.messages, "create", side_effect=self._mock_create_message)
+        self.api_patcher = patch.object(claude_light.providers.claude.client.messages, "create", side_effect=self._mock_create_message)
         self.api_patcher.start()
         
         self.orig_print_stats = claude_light.llm.print_stats

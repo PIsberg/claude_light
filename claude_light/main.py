@@ -20,14 +20,15 @@ from pathlib import Path
 from watchdog.observers import Observer
 
 import claude_light.state as state
-from claude_light import session
+from claude_light import providers, session
+from claude_light.providers.base import USAGE, NotLoggedIn, AGENT, CACHING, SHELL, USD_BUDGET
 from claude_light.config import MODEL, CACHE_DIR, HEARTBEAT_SECS, CACHE_TTL_SECS, AUTH_MODE, ECONOMY_MODE, API_KEY_SOURCE
 from claude_light.ui import (
     _ANSI_BOLD, _ANSI_RESET, _ANSI_CYAN, _ANSI_DIM, _ANSI_GREEN, _ANSI_RED, _T_SYS, _T_ERR,
     _UNICODE, access_label, choose, current_notice, print_session_summary, print_session_footer, print_startup_header,
-    ToolExecutionManager,
+    ToolExecutionManager, usage_unavailable,
 )
-from claude_light.llm import full_refresh, chat, one_shot, warm_cache, compact_history, ClaudeNotLoggedIn, require_auth
+from claude_light.llm import full_refresh, chat, one_shot, warm_cache, compact_history
 from claude_light.indexer import SourceHandler
 from claude_light.compressor import start_background_load as _start_llmlingua_load
 
@@ -92,6 +93,8 @@ def _status_text(columns: int | None = None) -> str:
     # (plain text, style) pieces; the style wraps the escaped text.
     if not state.indexing_done.is_set():
         status = [(project, ""), ("indexing…", "ansiyellow")]
+    elif not providers.active().has(USAGE):
+        status = [(project, ""), (usage_unavailable(providers.active().name), "")]
     else:
         with state.lock:
             total_in = state.session_tokens["input"] + state.session_tokens["cache_write"] + state.session_tokens["cache_read"]
@@ -130,6 +133,9 @@ def _status_text(columns: int | None = None) -> str:
 
 def _budget_command(arg: str) -> str:
     """Handle `/budget [dollars|off]`; returns the line to show."""
+    provider = providers.active()
+    if not provider.has(USD_BUDGET):
+        return f"Budget unavailable for {provider.name}: it has no dollar pricing. No cap set."
     if not arg:
         if state.session_budget is None:
             return "No budget set. /budget <dollars> sets one."
@@ -174,7 +180,7 @@ def _print_help():
 
 
 def heartbeat():
-    if AUTH_MODE == "OAUTH":
+    if AUTH_MODE == "OAUTH" or not providers.active().has(CACHING):
         return
     while not state.stop_event.is_set():
         state.stop_event.wait(HEARTBEAT_SECS)
@@ -214,7 +220,7 @@ def _index_ready_for_query() -> bool:
     """
     if state.indexing_done.is_set():
         return True
-    if AUTH_MODE == "OAUTH":
+    if AUTH_MODE == "OAUTH" and providers.active().has(AGENT):
         return False
     print(f"  {_T_SYS}  Indexing…", flush=True)
     state.indexing_done.wait()
@@ -222,7 +228,7 @@ def _index_ready_for_query() -> bool:
 
 
 def start_chat(auto_apply=False, resume=False):
-    print_startup_header(MODEL, access_label(API_KEY_SOURCE))
+    print_startup_header(*(providers.active().header() or (MODEL, access_label(API_KEY_SOURCE))))
     if resume:
         print(f"  {_T_SYS}  {session.restore()}")
     _setup_signal_handlers()
@@ -254,7 +260,7 @@ def start_chat(auto_apply=False, resume=False):
     except Exception as e:
         print(f"{_T_ERR} Failed to start file watcher: {e}", file=sys.stderr)
 
-    if AUTH_MODE == "API_KEY":
+    if AUTH_MODE == "API_KEY" and providers.active().has(CACHING):
         threading.Thread(target=heartbeat, daemon=True).start()
 
     if _PROMPTTK_AVAILABLE:
@@ -401,38 +407,11 @@ def start_chat(auto_apply=False, resume=False):
             try:
                 chat(query, auto_apply=auto_apply, use_index=use_index)
                 session.save()
-            except ClaudeNotLoggedIn:
-                print(f"\n  {_T_ERR}  Claude CLI is not logged in.")
-                choice = choose("Set up a long-lived automation token?",
-                                [("yes", "Yes, run claude setup-token"), ("no", "No")])
-                if choice == "yes":
-                    import subprocess
-                    import shutil
-                    from pathlib import Path
-                    claude_bin = shutil.which("claude")
-                    if claude_bin:
-                        print(f"  {_T_SYS}  Launching 'claude setup-token'…")
-                        print(f"  {_ANSI_DIM}Follow the browser prompt, then paste the token below.{_ANSI_RESET}")
-                        subprocess.run([claude_bin, "setup-token"])
-                        print(f"\n  Automation Token: ", end="", flush=True)
-                        try:
-                            new_token = input().strip()
-                            if new_token.startswith("sk-ant-oat01"):
-                                token_path = Path.home() / ".claude_light_automation_token"
-                                token_path.write_text(new_token, encoding="utf-8")
-                                print(f"  {_T_SYS}  Token saved to {token_path}")
-                                from claude_light import config
-                                config.API_KEY, config.AUTH_MODE, config.API_KEY_SOURCE, config.AUTH_TOKEN = config._resolve_api_key()
-                                full_refresh()
-                                chat(query, auto_apply=auto_apply, use_index=use_index)
-                            else:
-                                print(f"  {_T_ERR}  Token must start with 'sk-ant-oat01'.")
-                        except (KeyboardInterrupt, EOFError):
-                            print(f"\n  {_T_SYS}  Cancelled.")
-                    else:
-                        print(f"  {_T_ERR}  Claude CLI not found. Install with: npm install -g @anthropic-ai/claude-code")
-                else:
-                    print(f"  {_T_SYS}  Proceeding without auth. Requests will likely fail.")
+            except NotLoggedIn:
+                def _retry(query=query, auto_apply=auto_apply, use_index=use_index):
+                    full_refresh()
+                    chat(query, auto_apply=auto_apply, use_index=use_index)
+                providers.active().offer_login(_retry)
     except KeyboardInterrupt:
         pass
     finally:
@@ -460,6 +439,8 @@ def main():
                              "CLAUDE_LIGHT_ALLOW_COMMANDS=\"a; powershell: b\".")
     parser.add_argument("-c", "--continue", dest="resume", action="store_true",
                         help="Resume this project's previous interactive conversation.")
+    parser.add_argument("--provider", choices=providers.NAMES, default=providers.DEFAULT,
+                        help="Which agent answers: " + ", ".join(providers.NAMES) + " (default: %(default)s).")
     parser.add_argument("query", nargs="*", help="Optional query for one-shot mode.")
     args, unknown = parser.parse_known_args()
 
@@ -483,7 +464,11 @@ def main():
     if args.resume and not interactive:
         # A one-shot turn sends no history, so there is nothing to resume into.
         parser.error("--continue resumes an interactive session; it cannot take a question")
-    require_auth()
+    provider = providers.select(args.provider)
+    provider.require_auth()
+    if _config.ALLOWED_COMMANDS and not provider.has(SHELL):
+        print(f"  {_T_SYS}  shell access is disabled for {provider.name}: its agent cannot run commands. "
+              "--allow-command only lets claude_light run the affected tests.", file=sys.stderr)
     if interactive:
         start_chat(auto_apply=args.yes, resume=args.resume)
         return

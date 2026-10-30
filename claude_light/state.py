@@ -21,6 +21,7 @@ budget_asked = False
 # ROUTE_ONCE (on by default): the model the session's first turn routed to.
 # None until then; /clear resets it.
 session_model = None
+provider = None
 # "Sonnet 5.5, and don't ask again" at the top-tier prompt: later questions
 # routed to Opus run on Sonnet without asking.
 top_tier_declined = False

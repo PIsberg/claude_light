@@ -331,7 +331,17 @@ def _related_pairs(top_pairs, budget, effort):
 
 
 def _finish(top_pairs, budget, effort):
-    """Render the context for `top_pairs` plus their related chunks."""
+    """Render the context for `top_pairs` plus their related chunks.
+
+    A provider without the EFFORT capability (Gemini, Codex) runs with tools
+    off, so a summary-only low-effort context could never be followed up with
+    fetch_chunk. It gets the medium render instead.
+    """
+    if effort == "low":
+        from claude_light import providers
+        from claude_light.providers import base
+        if base.EFFORT not in providers.active().capabilities:
+            effort = "medium"
     related = _related_pairs(top_pairs, budget, effort)
     return _render_retrieved_context(top_pairs, effort, related), top_pairs + related
 
