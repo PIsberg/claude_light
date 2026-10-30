@@ -7,7 +7,11 @@ The indexing system builds and maintains an incremental cache of code embeddings
 
 ![Indexing Flow](../plantuml/Claude_Light_Indexing_Flow.png)
 
-### Auto-Tuned Models
+### Hybrid index (default)
+
+Every chunk gets two vectors (#61). `indexer._index_files_hybrid()` first embeds stale chunks with the static model `static-retrieval-mrl-en-v1` (no transformer; about 2 s for this repo), saves the cache and returns, so retrieval works from the first question. A background thread (`_complete_dense_index()`) then adds `all-mpnet-base-v2` vectors a batch at a time (about 380 s cold on a CPU) and sets `state.dense_ready`. One-shot runs pass `dense="skip"` and use only dense vectors already cached. Until the dense pass finishes, retrieval uses the static scores alone; after it, each model's scores are z-scored and averaged (see [rag-pipeline.md](rag-pipeline.md)). `CLAUDE_LIGHT_HYBRID=0` switches to the single auto-tuned model below.
+
+### Auto-Tuned Models (`CLAUDE_LIGHT_HYBRID=0`)
 
 | Repo Size | Model | Size | Use Case |
 |-----------|-------|------|----------|
@@ -52,7 +56,7 @@ text: // filepath
 
 ```plantuml
 @startuml Claude_Light_Indexing_Flow
-title Claude Light - File Indexing & Auto-Tuning
+title Claude Light - File Indexing (hybrid index)
 
 start
 
@@ -60,51 +64,84 @@ start
 :Filter by INDEXABLE_EXTENSIONS;
 :Skip directories (.git, build, etc.);
 
-partition "Auto-Tune Model" {
-  if (Files < 50) then (small)
-    :all-MiniLM-L6-v2 (22 MB);
-  elseif (Files < 200) then (medium)
-    :all-mpnet-base-v2 (420 MB);
-  else (large)
-    :nomic-embed-text-v1.5;
-  endif
-}
+if (HYBRID_RETRIEVAL?\n(default on; CLAUDE_LIGHT_HYBRID=0 turns it off)) then (yes)
 
-partition "Cache Lookup" {
-  :Load manifest.json;
-  if (model matches?) then (yes)
+  partition "Cache Lookup" {
+    :Load manifest.json + index.npz\n(allow_pickle=False);
     :Compare file hashes;
-    if (hash matches) then (hit)
-      :Load from index.npz;
-    else (miss)
-      :Mark for re-indexing;
+    :Unchanged files: reuse chunks\nand cached vectors;
+    :Changed or new files: stale;
+  }
+
+  partition "Chunking (stale files)" {
+    :Process each file in a thread pool;
+    if (tree-sitter?) then (yes)
+      :Parse AST;
+      :Extract methods;
+      :Create chunks with preamble;
+    else (no)
+      :Whole file chunk;
     endif
-  else (changed)
-    :Full re-index;
-  endif
-}
+  }
 
-partition "Chunking" {
-  :Process each file;
-  if (tree-sitter?) then (yes)
-    :Parse AST;
-    :Extract methods;
-    :Create chunks with preamble;
-  else (no)
-    :Whole file chunk;
-  endif
-}
+  partition "Static pass (blocking, ~2 s)" {
+    :static-retrieval-mrl-en-v1\nencodes chunks with no emb_fast;
+    :Store emb_fast in chunk_store;
+    :Save index.npz + manifest.json;
+    :Index ready: retrieval works now\nwith static vectors alone;
+  }
 
-partition "Embedding" {
-  :Add document prefix;
-  :Batch encode chunks;
-  :Store in chunk_store;
-}
+  partition "Dense pass (background thread)" {
+    if (Chunks still missing dense vectors?) then (yes)
+      if (dense mode) then (background)
+        :all-mpnet-base-v2 encodes\na batch at a time (~380 s cold);
+        :Store emb, save cache;
+      elseif (sync) then
+        :Same, but wait for it;
+      else (skip: one-shot run)
+        :Use only cached dense vectors;
+      endif
+    else (no)
+      :Load the dense model\nfor query encoding only;
+    endif
+    :Set dense_ready;
+  }
 
-partition "Save Cache" {
-  :Save index.npz;
-  :Save manifest.json;
-}
+else (no: single model)
+
+  partition "Auto-Tune Model" {
+    if (Files < 50) then (small)
+      :all-MiniLM-L6-v2 (22 MB);
+    elseif (Files < 200) then (medium)
+      :all-mpnet-base-v2 (420 MB);
+    else (large)
+      :nomic-embed-text-v1.5;
+    endif
+  }
+
+  partition "Cache Lookup" {
+    :Load manifest.json;
+    if (model matches?) then (yes)
+      :Compare file hashes;
+      if (hash matches) then (hit)
+        :Load from index.npz;
+      else (miss)
+        :Mark for re-indexing;
+      endif
+    else (changed)
+      :Full re-index;
+    endif
+  }
+
+  partition "Chunking + Embedding" {
+    :Chunk stale files (tree-sitter);
+    :Add document prefix;
+    :Batch encode chunks;
+    :Store in chunk_store;
+    :Save index.npz + manifest.json;
+  }
+
+endif
 
 stop
 
@@ -113,6 +150,8 @@ note right
   - Only changed files re-indexed
   - File watcher on save
   - Debounced at 1.5s
+  - Never loads index.pkl
+    (deleted if found)
 end note
 
 @enduml

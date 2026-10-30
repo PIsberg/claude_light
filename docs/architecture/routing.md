@@ -79,18 +79,28 @@ partition "1. Query Routing" {
   :Set retrieval budget:\nlow=1.5K, med=3K, high=6K, max=9K tokens;
 }
 
-partition "2. Chunk Retrieval" {
-  :Load embedding matrix from chunk_store;
-  :Encode query with prefix\n(e.g., "search_query: ");
-  :Compute similarity scores\nscores = embeddings @ query_emb;
-  
-  fork
-    :Filter 1: MIN_SCORE >= 0.35\n(absolute floor);
-  fork again
-    :Filter 2: score >= top_score * 0.60\n(relative floor);
-  end fork
-  
-  :Select top-k chunks\nwithin token budget;
+partition "2. Chunk Retrieval (hybrid, default)" {
+  :Static scores: emb_fast @ query\n(static-retrieval-mrl-en-v1);
+  if (dense_ready?) then (yes)
+    :Dense scores: emb @ query\n(all-mpnet-base-v2, with query prefix);
+  else (dense pass running)
+    :Static scores alone;
+  endif
+  if (Any model's best score >= its\nHYBRID_MIN_SCORE (0.22 / 0.21)?) then (no)
+    :Send no context\n(off-topic question);
+    stop
+  else (yes)
+  endif
+  :z-score each model's scores,\naverage them (HYBRID_FAST_WEIGHT 0.5);
+  :Drop chunks under a test directory\nunless the question mentions tests;
+  :Boost chunks in modified, staged or\nuntracked files (WORKTREE_BOOST 1.0);
+  :Keep chunks within HYBRID_SCORE_GAP (1.5)\nof the top fused score;
+  :Select top-k chunks within token budget,\nfile diversity first;
+  note right
+    CLAUDE_LIGHT_HYBRID=0: one model,
+    MIN_SCORE 0.35 absolute floor and
+    score >= top * 0.60 relative floor
+  end note
   if (Multiple chunks from\nsame file?) then (yes)
     :Deduplicate: emit preamble once,\nlist methods below;
   endif
@@ -133,7 +143,7 @@ note right
   <b>Key Optimizations:</b>
   1. Dynamic model routing saves 8x on simple queries
   2. Effort-based retrieval budget prevents over-fetching
-  3. Two-stage filtering (absolute + relative) removes noise
+  3. Per-model floors and the fused-score gap remove noise
   4. Deduplication saves 5-20% on multi-method queries
   5. Code block stripping prevents history bloat
 end note
