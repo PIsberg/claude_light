@@ -180,7 +180,12 @@ def test_fr003_fake_provider_gets_the_request_claude_gets(monkeypatch, neutral_t
     assert "claude" in seen, "Claude's complete() was never reached through llm.chat"
     assert len(fake.requests) == 1
     assert fake.requests[0]["system"] == seen["claude"]["system"]
-    assert fake.requests[0]["messages"] == seen["claude"]["messages"]
+    # FR-008: the effort-only system message is Claude-only (EFFORT capability), so
+    # compare the rest: the retrieved chunks and history must be identical.
+    def _without_effort(messages):
+        return [m for m in messages
+                if not (m.get("role") == "system" and "effort" in m.get("output_config", {}))]
+    assert fake.requests[0]["messages"] == _without_effort(seen["claude"]["messages"])
     assert "CHUNK TEXT" in str(fake.requests[0]["messages"])
     assert "SKELETON" in str(fake.requests[0]["system"])
 
