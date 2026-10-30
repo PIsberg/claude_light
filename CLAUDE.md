@@ -41,7 +41,7 @@ pytest
 ### Tools, `/budget` and affected tests
 
 - **`fetch_chunk(id)`**: returns up to 5 method bodies by `path::symbol` or bare name, with callers and callees. It needs the index to be ready.
-- **`shell`**: runs one command from the project root, only if it starts with an `--allow-command` prefix. Commands containing `; & | < > `` ` `` $` or a newline are rejected. It is always in `TOOLS`, so the cached prompt prefix stays stable.
+- **`shell`**: runs one command from the project root, only if it starts with an `--allow-command` prefix. Commands containing `; & | < > `` ` `` $` or a newline are rejected, and PowerShell commands also `( ) { } @` (an argument in those is evaluated). The OAuth CLI agent gets the same rule from the `cli_shell_guard.py` `PreToolUse` hook, because the CLI's own allow rule checks only the first statement. It is always in `TOOLS`, so the cached prompt prefix stays stable.
 - **`/budget`**: `/budget 2.50` sets a spend cap, `/budget off` removes it, `/budget` shows cap and spend. At the cap, routing drops to Haiku at low effort. While a budget is set, the route line shows a per-turn estimate.
 - **Affected tests**: after an auto-commit, if a pytest command is allowed, the tests that mention the edited module run. On failure it offers to revert the commit and never reverts on its own. It does not run after OAuth-agent edits.
 

@@ -17,6 +17,7 @@ import os
 import re
 from pathlib import Path
 
+from claude_light.cli_shell_guard import SHELL_FORBIDDEN, forbidden_chars
 from claude_light.config import SKIP_DIRS
 
 _MAX_READ_LINES = 400
@@ -126,7 +127,6 @@ TOOLS = [
     },
 ]
 
-_SHELL_FORBIDDEN = set(";&|<>`$\n\r")
 _SHELL_HEAD_LINES = 20
 _SHELL_TAIL_LINES = 80
 _SHELL_TIMEOUT_DEFAULT = 120
@@ -323,6 +323,13 @@ def _trim_output(raw):
     return _cap(raw)
 
 
+def _refuse_chars(command, forbidden):
+    bad = sorted(set(command) & forbidden)
+    if bad:
+        raise _ToolError("command may not contain " + " ".join(repr(c) for c in bad)
+                         + "; run one simple command")
+
+
 def _shell(root, tool_input):
     """Run an allowlisted command. Returns (output, is_error); a non-zero exit
     is reported as an error result so the model sees the run failed."""
@@ -330,16 +337,16 @@ def _shell(root, tool_input):
     raw_command = _str_arg(tool_input, "command")
     # Check before collapsing whitespace: split() would turn a newline into a
     # space and let "echo a\necho b" through as one harmless-looking command.
-    bad = sorted(set(raw_command) & _SHELL_FORBIDDEN)
-    if bad:
-        raise _ToolError("command may not contain " + " ".join(repr(c) for c in bad)
-                         + "; run one simple command")
+    # The OAuth CLI agent's PreToolUse hook (cli_shell_guard) applies the
+    # same rule.
+    _refuse_chars(raw_command, SHELL_FORBIDDEN)
     command = " ".join(raw_command.split())
     tool = _match_allowed(command)
     if tool is None:
         raise _ToolError(
             f"{command!r} is not allowed. The user must start claude_light with "
             "--allow-command '<prefix>' to permit it.")
+    _refuse_chars(command, forbidden_chars(tool))
     if tool == "PowerShell":
         argv, use_shell = ["powershell", "-NoProfile", "-NonInteractive", "-Command", command], False
     else:
