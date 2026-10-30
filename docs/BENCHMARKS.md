@@ -94,16 +94,16 @@ realistic session costs (turn 1 = cold, turns 2–10 = warm).
 
 ```bash
 # All presets (default)
-python benchmark.py
+python tests/benchmarks/benchmark.py
 
 # One preset
-python benchmark.py --preset large
+python tests/benchmarks/benchmark.py --preset large
 
 # Machine-readable JSON
-python benchmark.py --json
+python tests/benchmarks/benchmark.py --json
 
 # Fast mode (uses precomputed token counts — skips the iteration loop)
-python benchmark.py --fast
+python tests/benchmarks/benchmark.py --fast
 ```
 
 ### Interpreting Results
@@ -197,28 +197,28 @@ The live SWE-bench dataset spans repositories such as `django/django`,
 
 ```bash
 # Offline committed fixture (used in CI)
-python benchmark_retrieval.py --fixture tests/fixtures/retrieval_cases.json
+python tests/benchmarks/benchmark_retrieval.py --fixture tests/fixtures/retrieval_cases.json
 
 # Install dependencies for the larger live benchmark
 pip install datasets sentence-transformers numpy
 
 # Full dev split (23 instances — fast, no API key needed)
-python benchmark_retrieval.py --split dev
+python tests/benchmarks/benchmark_retrieval.py --split dev
 
 # Subset of the test split (300 instances total)
-python benchmark_retrieval.py --split test --n 50
+python tests/benchmarks/benchmark_retrieval.py --split test --n 50
 
 # One specific repo only
-python benchmark_retrieval.py --split test --repo django/django
+python tests/benchmarks/benchmark_retrieval.py --split test --repo django/django
 
 # Custom K values
-python benchmark_retrieval.py --k 5 10 20
+python tests/benchmarks/benchmark_retrieval.py --k 5 10 20
 
 # Machine-readable JSON
-python benchmark_retrieval.py --json
+python tests/benchmarks/benchmark_retrieval.py --json
 
 # Use pre-cloned repos (avoids re-cloning)
-python benchmark_retrieval.py --repos-dir /path/to/repos
+python tests/benchmarks/benchmark_retrieval.py --repos-dir /path/to/repos
 ```
 
 ### Disk Space
@@ -596,19 +596,19 @@ These repos were chosen because they are:
 export ANTHROPIC_API_KEY=sk-ant-...
 
 # Full run (all 4 repos × 10 queries = 40 API calls)
-python benchmark_cost.py
+python tests/benchmarks/benchmark_cost.py
 
 # One repo only
-python benchmark_cost.py --repo pallets/flask
+python tests/benchmarks/benchmark_cost.py --repo pallets/flask
 
 # Dry-run (clone repos, count tokens, no API calls)
-python benchmark_cost.py --dry-run
+python tests/benchmarks/benchmark_cost.py --dry-run
 
 # Use already-cloned repos
-python benchmark_cost.py --repos-dir /path/to/repos
+python tests/benchmarks/benchmark_cost.py --repos-dir /path/to/repos
 
 # JSON output
-python benchmark_cost.py --json
+python tests/benchmarks/benchmark_cost.py --json
 ```
 
 ### Estimated Costs
@@ -707,13 +707,13 @@ The current published comparison uses:
 
 ```bash
 # First capture claude_light's real-cost benchmark output
-python benchmark_cost.py --json > cl_results.json
+python tests/benchmarks/benchmark_cost.py --json > cl_results.json
 
 # Then run the Claude Code comparison
-python benchmark_claude_code.py --claude-light-results cl_results.json
+python tests/benchmarks/benchmark_claude_code.py --claude-light-results cl_results.json
 
 # One repo only
-python benchmark_claude_code.py --repo pallets/flask --claude-light-results cl_results.json
+python tests/benchmarks/benchmark_claude_code.py --repo pallets/flask --claude-light-results cl_results.json
 ```
 
 ### Published Result Snapshot
@@ -732,22 +732,22 @@ The current README numbers are:
 
 ```bash
 # 1. Analytical (free, instant)
-python benchmark.py
+python tests/benchmarks/benchmark.py
 
 # 2. Retrieval quality
-python benchmark_retrieval.py --fixture tests/fixtures/retrieval_cases.json
+python tests/benchmarks/benchmark_retrieval.py --fixture tests/fixtures/retrieval_cases.json
 # or the larger live benchmark:
 pip install datasets sentence-transformers numpy
-python benchmark_retrieval.py --split dev
+python tests/benchmarks/benchmark_retrieval.py --split dev
 
 # 3. Real-world cost (requires API key, incurs ~$0.10 in costs)
 export ANTHROPIC_API_KEY=sk-ant-...
-python benchmark_cost.py --dry-run  # preview without API calls
-python benchmark_cost.py            # real run
+python tests/benchmarks/benchmark_cost.py --dry-run  # preview without API calls
+python tests/benchmarks/benchmark_cost.py            # real run
 
 # 4. Claude Code comparison (requires Claude Code plus benchmark_cost JSON)
-python benchmark_cost.py --json > cl_results.json
-python benchmark_claude_code.py --claude-light-results cl_results.json
+python tests/benchmarks/benchmark_cost.py --json > cl_results.json
+python tests/benchmarks/benchmark_claude_code.py --claude-light-results cl_results.json
 ```
 
 ## Sharing Results
@@ -756,11 +756,11 @@ To share benchmark results with other claude_light users:
 
 ```bash
 # Capture all three
-python benchmark.py --json       > results_analytical.json
-python benchmark_retrieval.py \
+python tests/benchmarks/benchmark.py --json       > results_analytical.json
+python tests/benchmarks/benchmark_retrieval.py \
     --fixture tests/fixtures/retrieval_cases.json \
     --json                       > results_retrieval.json
-python benchmark_cost.py \
+python tests/benchmarks/benchmark_cost.py \
     --json 2>/dev/null           > results_cost.json
 ```
 
