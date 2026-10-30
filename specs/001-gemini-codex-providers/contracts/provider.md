@@ -9,10 +9,11 @@ make it.
 ```python
 # claude_light/providers/__init__.py
 NAMES: tuple[str, ...] = ("claude", "gemini", "codex")
+DEFAULT: str = "claude"             # the provider when none is chosen; neutral code names it only through this
 def get(name: str) -> Provider      # imports claude_light.providers.<name> on first use, returns its PROVIDER;
                                     # ValueError naming NAMES for an unknown name
 def select(name: str) -> Provider   # get(name), then state.provider = it under state.lock
-def active() -> Provider            # state.provider, or get("claude") when it is None
+def active() -> Provider            # state.provider, or get(DEFAULT) when it is None
 
 # claude_light/providers/base.py
 CACHING, EFFORT, TOP_TIER, USD_BUDGET, USAGE, AGENT, SHELL = (
@@ -78,11 +79,18 @@ Neither argv carries `-m` or any Claude model id (FR-007, D3). Why each flag: `r
 
 ## Isolation rule (FR-004, SC-003)
 
-For every `claude_light/**/*.py` except `providers/<name>.py`: no `import`/`from` of that
-provider's SDK (`anthropic` for claude; `google.genai`, `google.generativeai` for gemini; `openai`
-for codex), and no string constant, docstrings excluded, matching
-`(?<![\w./-])(claude|gemini|codex)(\.exe|\.cmd)?(?![\w-])` for that name. f-string parts count as
-constants.
+For every `claude_light/**/*.py` except `providers/<name>.py` and the registry
+`providers/__init__.py` (whose `NAMES` and `DEFAULT` are provider names, not binaries; it imports
+no SDK and runs nothing): no `import`/`from` of that provider's SDK (`anthropic` for claude;
+`google.genai`, `google.generativeai` for gemini; `openai` for codex), and no string constant,
+docstrings excluded, matching
+`(?<![\w./-])(claude|gemini|codex)(\.exe|\.cmd)?(?![\w.-]| light)` for that name. f-string parts
+count as constants. The rule matches the binary as a bare name (`"claude"`, `which("codex")`) or
+as the first word of a command line (`"claude setup-token"`); it does not match a file name with
+a suffix (`"claude.md"` in `claude_light/skeleton.py: _FULL_MD_NAMES`, the project doc every
+provider's skeleton keeps under FR-003), the product name `claude light` (`claude_light/ui.py`
+banner) or `claude_light` (an identifier character follows). Neutral code that needs the
+default provider's name uses `providers.DEFAULT`.
 
 ## Messages
 
