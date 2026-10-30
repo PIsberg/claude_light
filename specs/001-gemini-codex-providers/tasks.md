@@ -85,7 +85,7 @@ arguments of `complete` and `summarize` and returns canned values.
 
 ### Slice S11: manual verification and token gates (US5, FR-015, SC-001, SC-004, SC-007, constitution III)
 
-- [ ] T026 [P] [US5] Run `quickstart.md` steps 0-5 and record each command, its output and a verdict per tool in `specs/001-gemini-codex-providers/verification.md`; Gemini's verdict is `fail` with its output (plan.md D9).
+- [X] T026 [P] [US5] Run `quickstart.md` steps 0-5 and record each command, its output and a verdict per tool in `specs/001-gemini-codex-providers/verification.md`; Gemini's verdict is `fail` with its output (plan.md D9).
 
 ## Dependencies
 
