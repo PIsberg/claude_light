@@ -43,13 +43,13 @@ arguments of `complete` and `summarize` and returns canned values.
 
 ### Slice S3: Gemini (US1 scenario 1, US2 scenarios 1-2, FR-007, FR-010, FR-011)
 
-- [ ] T011 [P] [US1] Stub `claude_light/providers/gemini.py`: `BINARY = "gemini"`, `GeminiProvider(Provider)` with `name = "gemini"`, `capabilities = frozenset()` and stub methods, `PROVIDER = GeminiProvider()`.
+- [X] T011 [P] [US1] Stub `claude_light/providers/gemini.py`: `BINARY = "gemini"`, `GeminiProvider(Provider)` with `name = "gemini"`, `capabilities = frozenset()` and stub methods, `PROVIDER = GeminiProvider()`.
 - [ ] T012 [P] [US1] Tests in `tests/unit/test_provider_gemini.py` for US1 scenario 1, US2 scenarios 1-2, FR-007, FR-010, FR-011 and the missing-tool and not-logged-in edge cases, argv and messages from `contracts/provider.md`. Not settled: `claude_light.providers.gemini.run_cli` patched; stdin is `transcript(request)` joined by `"\n\n"`; argv holds no `-m` and no string starting `claude-`; `require_auth` with `claude_light.providers.gemini.shutil.which` patched, each of the three env vars or the credentials file alone passes, `Path.home` patched to `tmp_path`; empty stdout raises `ProviderError`; US2: in a temp git repo (pattern: `tests/unit/test_claude_light.py: TestGitManager.setUp`) a `llm.chat(..., auto_apply=True)` turn whose stdout is a SEARCH/REPLACE block for a committed file changes it and commits with `git_manager.COMMIT_PREFIX`, and `git_manager.undo_last_commit()` restores it (`llm.retrieve` patched); the same turn runs with `sys.modules` entries for `claude_light.providers.claude` and `.codex` set to `None` (US4).
 - [ ] T013 [P] [US1] Implement `claude_light/providers/gemini.py: GeminiProvider` per `contracts/provider.md`: `model_label`, `header`, `require_auth` (stderr message, `sys.exit(1)`), `complete` and `summarize` through `claude_light/providers/runner.py: run_cli` and `claude_light/providers/base.py: transcript`, wrapped in `claude_light/ui.py: _Spinner`; `complete` returns `(stdout.strip(), None, False)`.
 
 ### Slice S4: Codex (US1 scenario 2, US2 scenarios 1-2, FR-007, FR-010, FR-011)
 
-- [ ] T014 [P] [US1] Stub `claude_light/providers/codex.py`: `BINARY = "codex"`, `CodexProvider(Provider)` with `name = "codex"`, `capabilities = frozenset()` and stub methods, `PROVIDER = CodexProvider()`.
+- [X] T014 [P] [US1] Stub `claude_light/providers/codex.py`: `BINARY = "codex"`, `CodexProvider(Provider)` with `name = "codex"`, `capabilities = frozenset()` and stub methods, `PROVIDER = CodexProvider()`.
 - [ ] T015 [P] [US1] Tests in `tests/unit/test_provider_codex.py` for the IDs of T012 with US1 scenario 2, same patterns, `claude_light.providers.codex.run_cli` patched. Not settled beyond T012: `require_auth` honours `CODEX_HOME`; the reply is the last `agent_message` when narration messages precede it (event shapes: `research.md` R1); non-JSON lines are skipped; output with no `agent_message` raises `ProviderError`.
 - [ ] T016 [P] [US1] Implement `claude_light/providers/codex.py: CodexProvider` as T013 does for Gemini, plus the JSONL parse of `contracts/provider.md`.
 
